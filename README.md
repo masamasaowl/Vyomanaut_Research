@@ -458,20 +458,120 @@ Open Questions after reading:
         resolving the DHT republication problem (needs design to implement)
 
 ```
+### Research paper 5
+```java
+Paper: Storj: A Decentralised Cloud Storage Network Framework
+       Storj Labs, Inc. | v3.0 Oct 2018, v3.1 Mar 2024
+
+Research topics addressed: #1, #2, #3, #4, #5 
+
+Problem solved: 
+#(Listed at start of each topic in the detailed notes of the paper)
+	 
+Trade-offs:
+1. Dropped Kademlia for the central coordination server (satellite) discussed
+   in Appendix A
+2. Reed Solomon over simple replication -> optimised redundancy
+3. Explicit node selection over Dynamo -> geographic/performance/reputation
+   filtering possible
+4. Stripe-level erasure coding over segment-level -> disputable solve by paper 
+   Separation and Optimisation of Encryption and Erasure Coding in Decentralised Storage
+5. Random stripe audits (Berlekamp-Welch) over pre-generated Merkle proofs
+   provide avoids Audit false positive risk
+6. No payments for the first 6 months to incentivise long-lived nodes
+  
+
+Breaks in our case:
+1. It assumes MTTF to be 6–12 months due to NAS operators in the network, 
+   With the inclusion of mobile operators, MTTF comes to 1 month, changing 
+   erasure parameters and increasing repair bandwidth 
+2. It targets desktop users with symmetric bandwidth, whereas mobile
+   operators have 1-5 Mbps upload, so the piece size needs to be reduced 
+3. It depends on the satellite for repairs; we need to be robust with repairs
+   to handle mobile users volatility
+4. The waiting period of 6 months is very taxing for an average user 
+5. No background execution takes place as a dedicated daemon or server 
+   runs on the desktop 
+
+Decisions influenced:
+1. Repair bandwidth consumption is the biggest challenge of the entire 
+   project 
+2. Use erasure coding instead of simple replication, look for more
+   optimised erasure algorithms
+3. Use four erasure parameters (k, m, o, n) for long tail transfers
+   The starting values can be k=29, n=80, m=35, o=52 but need to be 
+   optimised for the 1-month MTTF, as much higher 'n' might be needed to 
+   distribute load
+4. Use Berlekamp-Welch error detection instead of Merkle challenges 
+   for audits 
+5. For the betting period, use Bayesian audit scoring with Jeffery prior 
+   β(0.5, 0.5) -> 80 audits give 99% trust in provider
+6. A pointer must be created and maintained at the end of the data owner
+   storing node IDs, erasure parameters, piece IDs, encryption info,
+   repair threshold, piece hashes, and a signature
+7. We hold the earnings for 6 months. This is bound to change with research
+8. Adopt Neuman's proxy protocol, which reads the used bandwidths agnostically
+   of payments, incremental accounting prevents frauds
+9. Utilise bloom filters [cit:50] for garbage collection to check if the 
+   marked out segment has been deleted or not 
+   
+
+Disagreements:
+1. "Design & Evaluation of IPFS" (Trautwein 2022): Shows how DHT is the 
+    optimised method for node discovery 
+2. "Handling Churn in a DHT" (Rhea et al. 2004): Shows MTTF of a few hours 
+    or days, challenging the 6-12 months MTTF assumption
+3. "High Availability, Scalable Storage, Dynamic Peer Networks: Pick Two"
+  (Blake & Rodrigues, 2003) -> Storj chooses availability and scalability, 
+  accepting high repair bandwidths utilised in peer networks, we can disagree
+  
+1. Satellite coordination dropped the reliability of data owners in the system
+2. Repair consumed significant bandwidth -> Walrus and EC survey tackled
+   this problem with regenerating codes and 2D coding schemes
+3. Provider payments are volatile with the Storj token; providers earn for
+   storing and not for continuous availability
+4. Provider discovery suffered latency due to the satellite
+5. Encrypt, then apply erasure, opposed by Separation and Optimisation of
+   Encryption and Erasure Coding in Decentralized Storage**,** *Marcell Szabó et al*
+
+Open Questions after reading:
+1. What challenges or drawbacks does a central entity like satellites pose? Can 
+   all of its tasks be performed in a decentralised manner
+2. At what MTTF does the model become viable, with repair bandwidth being
+   the biggest challenge in the architecture?
+3. 
+
+```
 ### Research papers to continue reading
 | **#** | **Title** | **Type** | **Phase** | **Priority** | **Topics Covered** |
 | --- | --- | --- | --- | --- | --- |
 | **1** | Storj Whitepaper v3 | Whitepaper | **Ph 1** | **MANDATORY** | #1, #2, #3, #4, #5 |
-| **2** | Filecoin Whitepaper | Whitepaper | **Ph 1** | **MANDATORY** | #1, #2, #5, #13 |
+| 1 | High availability, scalable storage, dynamic
+peer networks: Pick two, Charles Blake and Rodrigo Rodrigues | paper  | ph1 | mandatory | #1 |
+| 1 |  **A practical guideline to be lazy. IEEE Global CommunicationsConference (GlobeCom), 12 2010** | Paper | Ph1 | Mandatory | #1 |
+| **2** | Filecoin Whitepaper | Paper | **Ph 1** | **MANDATORY** | #1, #2, #5, #13 |
 | **3** | Design & Evaluation of IPFS (Trautwein 2022) | Paper | **Ph 1** | **MANDATORY** | #1, #5, #6 |
 | **4** | Coral DSHT (Freedman 2004) | Paper | **Ph 1** | **MANDATORY** | #1, #5 |
 | **5** | Measurement Study of P2P File Sharing (Saroiu) | Paper | **Ph 1** | **MANDATORY** | #3, #5, #6 |
+| 6 | SoK: Decentralized Storage Network (Chuanlei Li et al.) | paper  | Ph 1 | Mandatory | #1, #2, #3, #5, and #13 |
+| 7 | Coordination avoidance in database systems, Peter Bailis, Alan Fekete | paper  | ph2 | mandatory
+(storj) | #14 |
 | **6** | A Tutorial on Reed-Solomon Coding (Plank 1997) | Paper | **Ph 2** | **MANDATORY** | #3 |
+| 7 | Erasure Codes for Cold Data in Distributed Storage Systems (Chao Yin et al.) | Paper | ph 2 | Mandatory  | #3 |
 | **7** | Erasure Codes for Storage Systems (Plank 2013) | Paper | **Ph 2** | **MANDATORY** | #3, #4 |
+| 7  | **Separation and Optimization of Encryption and Erasure Coding in Decentralized Storage,** *Marcell Szabó et al., Budapest University of Technology* | paper  | ph2 | mandatory | #3, #9, #15 |
+| 7 | Survey of the Past, Present, and Future of Erasure Coding for Storage Systems (Shen, Cai, Lee et al. — ACM ToS Dec 2024) | paper | ph2 | mandatory | #3 |
+| 7 | Towards Benchmarking Erasure Coding Schemes in Object Storage Systems (Upoma, Afrin et al. — FGCS 2025) | paper | ph2 | recommended | #3 |
+| 7 | ELECT: Enabling Erasure Coding Tiering for LSM-tree-based Storage (USENIX FAST 2024) | paper | ph2 | recommended | #16 — Provider-Side Storage Engine |
+| 8 | Walrus: An Efficient Decentralized Storage Network | paper | ph2 | recommended | #1, #2, #3 |
 | **8** | Dynamo: Amazon's Highly Available KV Store | Paper | **Ph 2** | **MANDATORY** | #4, #6 |
+| 8 | Sanjay Ghemawat, Howard Gobioff, and Shun-Tak Leung. The Google File System | paper  | ph 2 | Read only |  |
+| 9 | Lustre. Introduction to Lustre Architecture | paper | ph 2 | Read only |  |
 | **9** | OceanStore: Architecture for Global Storage | Paper | **Ph 2** | **RECOMMENDED** | #2, #3, #4 |
 | **10** | EigenTrust: Managing Trust in P2P Networks | Paper | **Ph 3** | **MANDATORY** | #8 |
+| 10  | B. C. Neuman. Proxy-based authorization and accounting for distributed systems. | paper  | ph3 | mandatory  | #13 |
 | **11** | S/Kademlia Sibling List & Attack Model | Paper | **Ph 3** | **— (done) —** | #1 ✓ |
+| 12 | "Handling Churn in a DHT" (Rhea et al. 2004) | paper  | ph3  | mandatory  |  |
 | **12** | The Double Ratchet Algorithm (Marlinspike) | Paper | **Ph 3** | **RECOMMENDED** | #9 |
 | **13** | Keybase Architecture (blog + whitepaper) | Blog | **Ph 3** | **RECOMMENDED** | #9, #10 |
 | **14** | Tresorit Whitepaper | Whitepaper | **Ph 3** | **RECOMMENDED** | #9, #10 |
@@ -479,7 +579,8 @@ Open Questions after reading:
 | **16** | QUIC: A UDP-Based Multiplexed Transport (IETF) | Paper | **Ph 4** | **MANDATORY** | #12 |
 | **17** | WebRTC for the Curious (open book) | Docs | **Ph 4** | **MANDATORY** | #12 |
 | **18** | An Incentive-Compatible Mechanism for DSN | Paper | **Ph 4** | **MANDATORY** | #13 |
-| **19** | BTT Whitepaper 2019 | Whitepaper | **Ph 4** | **OPTIONAL** | #12, #13 |
+| **19** | BTT Whitepaper 2019 | Whitepaper | **Ph 4** | Read only | #12, #13 |
+| 20 | Satoshi Nakamoto. Bitcoin: A peer-to-peer electronic cash system | paper | ph4 | Read only | #8 |
 | **20** | Android WorkManager Docs | Docs | **Ph 4** | **RECOMMENDED** | #11 |
 | **21** | iOS BGTaskScheduler Docs | Docs | **Ph 4** | **RECOMMENDED** | #11 |
 | **22** | Vakilinia 2022 — Incentive-Compatible DSN | Paper | **Ph 5** | **MANDATORY** | #13 |
@@ -488,5 +589,3 @@ Open Questions after reading:
 | **25** | Building Microservices — Sam Newman (book) | Book | **Ph 6** | **RECOMMENDED** | #4, #6, #7 |
 | **26** | Designing Data-Intensive Applications — Kleppmann | Book | **Ph 6** | **MANDATORY** | #4, #6, #8 |
 | **27** | Netflix Tech Blog — Chaos Engineering | Blog | **Ph 6** | **OPTIONAL** | #6 |
-
-
