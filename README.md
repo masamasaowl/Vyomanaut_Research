@@ -546,8 +546,7 @@ Open Questions after reading:
 | **#** | **Title** | **Type** | **Phase** | **Priority** | **Topics Covered** |
 | --- | --- | --- | --- | --- | --- |
 | **1** | Storj Whitepaper v3 | Whitepaper | **Ph 1** | **MANDATORY** | #1, #2, #3, #4, #5 |
-| 1 | High availability, scalable storage, dynamic
-peer networks: Pick two, Charles Blake and Rodrigo Rodrigues | paper  | ph1 | mandatory | #1 |
+| 1 | High availability, scalable storage, dynamic peer networks: Pick two, Charles Blake and Rodrigo Rodrigues | paper  | ph1 | mandatory | #1 |
 | 1 |  **A practical guideline to be lazy. IEEE Global CommunicationsConference (GlobeCom), 12 2010** | Paper | Ph1 | Mandatory | #1 |
 | **2** | Filecoin Whitepaper | Paper | **Ph 1** | **MANDATORY** | #1, #2, #5, #13 |
 | **3** | Design & Evaluation of IPFS (Trautwein 2022) | Paper | **Ph 1** | **MANDATORY** | #1, #5, #6 |
