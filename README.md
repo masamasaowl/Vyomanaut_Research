@@ -2,7 +2,7 @@
 The V1 of the project is available here 
 https://github.com/masamasaowl/Vyomanaut
 </br>It failed due to 
-1. Lack of research-based in architecture
+1. Lack of research in architecture
 2. Structural compromises made during build
 3. Inefficient transfer speed, storage & peer discovery
    
@@ -542,49 +542,138 @@ Open Questions after reading:
 3. 
 
 ```
-### Research papers to continue reading
-| **#** | **Title** | **Type** | **Phase** | **Priority** | **Topics Covered** |
+## Research papers to continue reading
+### Phase 0
+    
+Motive: 
+
+Get a fair idea about developments in the P2P file transfer & distributed storage networks domain
+
+| # | Title | Type | Priority | Topics | Key Extraction Target |
 | --- | --- | --- | --- | --- | --- |
-| **1** | Storj Whitepaper v3 | Whitepaper | **Ph 1** | **MANDATORY** | #1, #2, #3, #4, #5 |
-| 1 | High availability, scalable storage, dynamic peer networks: Pick two, Charles Blake and Rodrigo Rodrigues | paper  | ph1 | mandatory | #1 |
-| 1 |  **A practical guideline to be lazy. IEEE Global CommunicationsConference (GlobeCom), 12 2010** | Paper | Ph1 | Mandatory | #1 |
-| **2** | Filecoin Whitepaper | Paper | **Ph 1** | **MANDATORY** | #1, #2, #5, #13 |
-| **3** | Design & Evaluation of IPFS (Trautwein 2022) | Paper | **Ph 1** | **MANDATORY** | #1, #5, #6 |
-| **4** | Coral DSHT (Freedman 2004) | Paper | **Ph 1** | **MANDATORY** | #1, #5 |
-| **5** | Measurement Study of P2P File Sharing (Saroiu) | Paper | **Ph 1** | **MANDATORY** | #3, #5, #6 |
-| 6 | SoK: Decentralized Storage Network (Chuanlei Li et al.) | paper  | Ph 1 | Mandatory | #1, #2, #3, #5, and #13 |
-| 7 | Coordination avoidance in database systems, Peter Bailis, Alan Fekete | paper  | ph2 | mandatory
-(storj) | #14 |
-| **6** | A Tutorial on Reed-Solomon Coding (Plank 1997) | Paper | **Ph 2** | **MANDATORY** | #3 |
-| 7 | Erasure Codes for Cold Data in Distributed Storage Systems (Chao Yin et al.) | Paper | ph 2 | Mandatory  | #3 |
-| **7** | Erasure Codes for Storage Systems (Plank 2013) | Paper | **Ph 2** | **MANDATORY** | #3, #4 |
-| 7  | **Separation and Optimization of Encryption and Erasure Coding in Decentralized Storage,** *Marcell Szabó et al., Budapest University of Technology* | paper  | ph2 | mandatory | #3, #9, #15 |
-| 7 | Survey of the Past, Present, and Future of Erasure Coding for Storage Systems (Shen, Cai, Lee et al. — ACM ToS Dec 2024) | paper | ph2 | mandatory | #3 |
-| 7 | Towards Benchmarking Erasure Coding Schemes in Object Storage Systems (Upoma, Afrin et al. — FGCS 2025) | paper | ph2 | recommended | #3 |
-| 7 | ELECT: Enabling Erasure Coding Tiering for LSM-tree-based Storage (USENIX FAST 2024) | paper | ph2 | recommended | #16 — Provider-Side Storage Engine |
-| 8 | Walrus: An Efficient Decentralized Storage Network | paper | ph2 | recommended | #1, #2, #3 |
-| **8** | Dynamo: Amazon's Highly Available KV Store | Paper | **Ph 2** | **MANDATORY** | #4, #6 |
-| 8 | Sanjay Ghemawat, Howard Gobioff, and Shun-Tak Leung. The Google File System | paper  | ph 2 | Read only |  |
-| 9 | Lustre. Introduction to Lustre Architecture | paper | ph 2 | Read only |  |
-| **9** | OceanStore: Architecture for Global Storage | Paper | **Ph 2** | **RECOMMENDED** | #2, #3, #4 |
-| **10** | EigenTrust: Managing Trust in P2P Networks | Paper | **Ph 3** | **MANDATORY** | #8 |
-| 10  | B. C. Neuman. Proxy-based authorization and accounting for distributed systems. | paper  | ph3 | mandatory  | #13 |
-| **11** | S/Kademlia Sibling List & Attack Model | Paper | **Ph 3** | **— (done) —** | #1 ✓ |
-| 12 | "Handling Churn in a DHT" (Rhea et al. 2004) | paper  | ph3  | mandatory  |  |
-| **12** | The Double Ratchet Algorithm (Marlinspike) | Paper | **Ph 3** | **RECOMMENDED** | #9 |
-| **13** | Keybase Architecture (blog + whitepaper) | Blog | **Ph 3** | **RECOMMENDED** | #9, #10 |
-| **14** | Tresorit Whitepaper | Whitepaper | **Ph 3** | **RECOMMENDED** | #9, #10 |
-| **15** | libp2p Spec & Architecture Docs | Docs | **Ph 3** | **MANDATORY** | #1, #12 |
-| **16** | QUIC: A UDP-Based Multiplexed Transport (IETF) | Paper | **Ph 4** | **MANDATORY** | #12 |
-| **17** | WebRTC for the Curious (open book) | Docs | **Ph 4** | **MANDATORY** | #12 |
-| **18** | An Incentive-Compatible Mechanism for DSN | Paper | **Ph 4** | **MANDATORY** | #13 |
-| **19** | BTT Whitepaper 2019 | Whitepaper | **Ph 4** | Read only | #12, #13 |
-| 20 | Satoshi Nakamoto. Bitcoin: A peer-to-peer electronic cash system | paper | ph4 | Read only | #8 |
-| **20** | Android WorkManager Docs | Docs | **Ph 4** | **RECOMMENDED** | #11 |
-| **21** | iOS BGTaskScheduler Docs | Docs | **Ph 4** | **RECOMMENDED** | #11 |
-| **22** | Vakilinia 2022 — Incentive-Compatible DSN | Paper | **Ph 5** | **MANDATORY** | #13 |
-| **23** | Stripe Connect Docs | Docs | **Ph 5** | **MANDATORY** | #13 |
-| **24** | Chord (Stoica 2003) | Paper | **Ph 5** | **OPTIONAL** | #1 |
-| **25** | Building Microservices — Sam Newman (book) | Book | **Ph 6** | **RECOMMENDED** | #4, #6, #7 |
-| **26** | Designing Data-Intensive Applications — Kleppmann | Book | **Ph 6** | **MANDATORY** | #4, #6, #8 |
-| **27** | Netflix Tech Blog — Chaos Engineering | Blog | **Ph 6** | **OPTIONAL** | #6 |
+| 1 | Incentives Build Robustness in BitTorrent, Bram Cohen, May 22, 2003 | Paper | MANDATORY | #1 | •  |
+| 2 | Kademlia: A P2P information system based on XOR metric, Peter Maymounkov & David Mazieres, New York University | Paper | MANDATORY | #1 | •  |
+| 3 | S/Kademlia: A Practicable Approach Towards Secure Key-Based Routing, Ingmar Baumgart and Sebastian Mies, Institute of Telematics Universitat Karlsruhe, Germany | Paper | MANDATORY | #1 | •  |
+| 4 | IPFS - Content Addressed, Versioned, P2P File System, Juan Benet, 2015 | Paper | MANDATORY | #1,#2 | •  |
+| 5 | Storj V3 whitepaper  | Whitepaper | MANDATORY | #1,#2,#13 | •  |
+    
+### Phase 1
+    
+Coordination and storage systems
+
+Decide #1 Coordination Architecture & #2 Proof of Storage
+
+| # | Title | Type | Priority | Topics | Key Extraction Target |
+| --- | --- | --- | --- | --- | --- |
+| 1 | High Availability, Scalable Storage, Dynamic Peer Networks: Pick Two (Blake & Rodrigues, HotOS 2003) | Paper | MANDATORY | #1 | • The P2P storage trilemma — pick two of three properties • Read before Storj: makes every Storj design choice legible • Identify which two properties your V2 picks and document why |
+| 2 | SoK: Decentralised Storage Network (Li et al. — IEEE S&P / CCS) | Paper | MANDATORY | #1–3,#5,#13 | • Landscape map: all major DSN systems compared on one framework • Extract the failure taxonomy — why each system collapsed • Map your architecture against their comparison axes |
+| 3 | Storj Whitepaper v3 (2018) | Whitepaper | DONE | #1–6 | • COMPLETED — key decisions extracted • Satellite = your microservices analogue • Repair bandwidth underestimated at scale: see Phase 2 fix |
+| 4 | P2P Storage Systems: A Practical Guideline to Be Lazy (Giroire et al., GlobeCom 2010) | Paper | MANDATORY | #1,#4,#6 | • 'Lazy' repair = defer repair until redundancy falls below threshold • Quantifies repair cost vs redundancy decay tradeoff • Sets your repair trigger threshold decision |
+| 5 | Filecoin Whitepaper (Protocol Labs, 2017) | Whitepaper | MANDATORY | #1,#2,#13 | • Sections 3.1–3.2 only: PoRep and PoSt mechanisms • Skip all token/blockchain sections • Audit gap closure mechanism — extract the proof structure, not the crypto |
+| 6 | Design & Evaluation of IPFS (Trautwein et al., SIGCOMM 2022) | Paper | MANDATORY | #1,#5,#6 | • Real production measurements: lookup latency, content decay, churn rates • Sets empirical floor for your redundancy and polling interval decisions • Section 5 (availability decay) is the most important section |
+| 7 | Coral DSHT (Freedman, Mazières, NSDI 2004) | Paper | MANDATORY | #1,#5 | • Sloppy DHT: store pointers not values — your exact architecture • Geographic clustering for provider selection • Section 3 (hierarchical clustering) is the key extraction target |
+| 8 | Measurement Study of P2P File Sharing (Saroiu et al., 2002) | Paper | MANDATORY | #3,#5,#6 | • Median node session < 1 hour — empirical basis for redundancy factor k • Table 2–4: actual uplink/downlink distributions for consumer devices • Grounds your provider tier model in measured reality |
+
+### Phase 2A
+    
+Finalise the Erasure Coding mechanism for hot and cold storages
+
+Decide #3 Erasure Coding and #15 Encryption-Erasure Interaction (if possible)
+
+| # | Title | Type | Priority | Topics | Key Extraction Target |
+| --- | --- | --- | --- | --- | --- |
+| 9 | Survey of the Past/Present/Future of Erasure Coding (Shen, Lee et al., ACM ToS Dec 2024) | Paper | MANDATORY | #3 | • Read this first — landscape map for all EC schemes • RS vs LRC vs MSR vs MLEC comparison table • Tells you which of the 6 repair papers below are worth your time |
+| 10 | A Tutorial on Reed-Solomon Coding (Plank 1997) | Paper | MANDATORY | #3 | • Implementation-depth understanding of RS arithmetic • Sections 1–5 mandatory; skip appendix proofs • Foundation required before reading any MSR or LRC paper |
+| 11 | Erasure Codes for Storage Systems: A Brief Primer (Plank 2013) | Paper | MANDATORY | #3,#4 | • LRC codes: why repair bandwidth matters and how to reduce it • Facebook/Google real deployment numbers — production precedent • Directly informs your (k,m) parameter decision |
+| 12 | Minimum Storage Regenerating Codes (Dimakis et al., 2010) | Paper | MANDATORY | #3,#17 | • FOUNDATIONAL: proves the information-theoretic lower bound on repair bandwidth • MSR codes: minimum storage AND minimum repair bandwidth simultaneously • All subsequent repair papers build on this result |
+| 13 | Erasure Codes for Cold Data in Distributed Storage Systems (Chao Yin et al.) | Paper | MANDATORY | #3 | • Consumer device storage = cold data model • Storage overhead vs reconstruction speed tradeoff • Compare their optimal (k,m) against your Saroiu-derived redundancy requirement |
+| 14 | Separation and Optimization of Encryption + Erasure Coding (Szabó et al., FGCS Feb 2025) | Paper | MANDATORY | #3,#9,#15 | • BLOCKING: must decide encrypt-then-code vs code-then-encrypt before chunk design • Quantifies key management overhead of each choice • Directly targeted paper for Topic #15 decision |
+| 15 | Walrus: An Efficient Decentralised Storage Network (Mysten Labs) | Whitepaper | RECOMMENDED | #1,#2,#3 | • 2D erasure coding: row/column repair requires only sqrt(k) download • Byzantine fault tolerant encoding without separate PoS mechanism • Read after Dimakis |
+
+### Phase 2B
+    
+Repair Bandwidth optimisation
+
+Decide #4 Replication / RepairProtocol & #17 Repair Bandwidth Optimisation
+
+| # | Title | Type | Priority | Topics | Key Extraction Target |
+| --- | --- | --- | --- | --- | --- |
+| 16 | Lazy Means Smart: Reducing Repair Bandwidth in Erasure-Coded DSS (Silberstein et al.) | Paper | MANDATORY | #4,#17 | • Lazy repair: batch lost shards and repair together to amortise bandwidth • Proves optimal repair scheduling is NP-hard but greedy approx is near-optimal |
+| 17 | ParaRC: Embracing Sub-Packetization for Repair Parallelization in MSR-Coded Storage (FAST 2023) | Paper | MANDATORY | #4,#17 | • Parallel repair across multiple helper nodes • Sub-packetization: split repair into parallel microtasks |
+| 18 | Non-Systematic MSR Codes for I/O-Efficient Repair in Warm Blob Storage (FAST 2025) | Paper | RECOMMENDED | #3,#17 | • Non-systematic codes trade slightly higher CPU for better I/O during repair |
+| 19 | SMFRepair: Single-Node Multi-Level Forwarding Repair for Heterogeneous Bandwidth (IEEE TKDE 2022) | Paper | RECOMMENDED | #4,#17 | • Helper node forwarding for heterogeneous bandwidth providers |
+| 20 | Towards Benchmarking Erasure Coding Schemes in Object Storage (FGCS 2025) | Paper | RECOMMENDED | #3 | • Benchmark data: RS vs MSR vs LRC in object storage |
+| 21 | Design Considerations for Multi-Level Erasure Coding (SC'23) | Paper | OPTIONAL | #3,#17 | • Datacenter-scale multi-level EC architecture |
+
+### Phase 2C
+    
+Architecture design & Consistency
+
+| # | Title | Type | Priority | Topics | Key Extraction Target |
+| --- | --- | --- | --- | --- | --- |
+| 22 | Dynamo: Amazon's Highly Available Key-Value Store (SOSP 2007) | Paper | MANDATORY | #4,#6 | • N/R/W quorum model • Gossip-based failure detection |
+| 23 | Coordination Avoidance in Database Systems (VLDB 2015) | Paper | MANDATORY | #14 | • Invariant confluence framework for deciding strong vs eventual consistency |
+| 24 | IRON File Systems (SOSP 2005) | Paper | MANDATORY | #19 | • Adversarial provider simulation: partial writes, silent corruption |
+| 25 | ELECT: Enabling Erasure Coding Tiering for LSM-tree Storage (FAST 2024) | Paper | RECOMMENDED | #16 | • LSM-tree storage engines like RocksDB for provider chunk indexing |
+| 26 | OceanStore: Architecture for Global Persistent Storage (ASPLOS 2000) | Paper | RECOMMENDED | #1,#3,#4 | • Early DSN attempt and its failure modes |
+| 27 | The Google File System (SOSP 2003) | Paper | CONTEXT | — | • Centralised DFS vocabulary and master pattern |
+| 28 | Lustre Architecture Introduction | Docs | CONTEXT | — | • HPC parallel filesystem architecture |
+
+### Phase 3
+    
+Identity & Authorisation 
+
+Decide #8 Reliability Scoring Model & #10 Key Management Strategy(if possible)
+
+| # | Title | Type | Priority | Topics | Key Extraction Target |
+| --- | --- | --- | --- | --- | --- |
+| 29 | EigenTrust: Managing Trust in P2P Networks | Paper | MANDATORY | #8 | • Global reputation from local interactions |
+| 30 | TrustDSN: Reputation Without Blockchain for Distributed Storage | Paper | MANDATORY | #8,#19 | • Reputation system without blockchain |
+| 31 | Handling Churn in a DHT | Paper | MANDATORY | #1,#6 | • DHT churn handling strategies |
+| 32 | Proxy-Based Authorization and Accounting for Distributed Systems | Paper | MANDATORY | #13 | • Delegated payment authority |
+| 33 | The Double Ratchet Algorithm | Paper | RECOMMENDED | #9 | • Forward secrecy and ratchet key derivation |
+| 34 | Keybase Architecture | Blog | RECOMMENDED | #9,#10 | • Team key rotation and per-file key hierarchy |
+| 35 | Tresorit Security Whitepaper | Whitepaper | RECOMMENDED | #9,#10 | • Key escrow vs zero-knowledge design |
+| 36 | libp2p Specification & Architecture | Docs | MANDATORY | #1,#12 | • Kademlia implementation + NAT traversal |
+
+### Phase 4
+    
+Decide on #12 P2P Transfer Protocol  & #11 Background OS Execution
+
+| # | Title | Type | Priority | Topics | Key Extraction Target |
+| --- | --- | --- | --- | --- | --- |
+| 37 | QUIC: A UDP-Based Multiplexed and Secure Transport (RFC 9000) | RFC | MANDATORY | #12 | • Connection migration and multiplexed streams |
+| 38 | WebRTC for the Curious | Book | MANDATORY | #12 | • ICE/STUN/TURN NAT traversal |
+| 39 | Q-Learning + Fuzzy Logic for P2P Peer Selection (JSAN 2025) | Paper | RECOMMENDED | #5,#8 | • Reinforcement learning for peer selection |
+| 40 | Android WorkManager — Background Task Docs | Docs | RECOMMENDED | #11 | • Android background execution constraints |
+| 41 | iOS BGTaskScheduler Docs | Docs | RECOMMENDED | #11 | • iOS background execution limits |
+| 42 | BTT Whitepaper 2019 (BitTorrent) | Whitepaper | CONTEXT | #12,#13 | • Micropayment flow pattern |
+| 43 | Bitcoin: A Peer-to-Peer Electronic Cash System | Paper | CONTEXT | — | • Proof-of-work and blockchain vocabulary |
+
+ ### Phase 5
+    
+Economics and payments 
+
+Decide on #13 Escrow & Payment Basis & #18 Economic Mechanism Design
+
+| # | Title | Type | Priority | Topics | Key Extraction Target |
+| --- | --- | --- | --- | --- | --- |
+| 44 | A Game Theoretic Framework for Incentives in P2P Systems | Paper | MANDATORY | #18 | • Nash equilibrium conditions for honest storage |
+| 45 | Survey of Algorithmic Mechanism Design: From Markets to P2P Systems | Paper | MANDATORY | #18 | • VCG mechanisms and P2P market design |
+| 46 | Quality-Aware P2P Data Sharing Market for Mobile Crowdsensing | Paper | RECOMMENDED | #5,#13,#18 | • Pricing heterogeneous providers |
+| 47 | Incentive-Compatible Mechanism for Decentralised Storage Networks | Paper | MANDATORY | #13,#18 | • Fiat-based payment model and audit frequency |
+| 48 | Credit-Based Incentive Mechanism for P2P Storage Without Central Authority | Paper | RECOMMENDED | #13,#18 | • Credit-based incentives |
+| 49 | TrustDSN: Reputation Without Blockchain | Paper | RECOMMENDED | #8,#18 | • SLA enforcement and provider penalties |
+| 50 | Storj SLA System + Filecoin Auction Mechanism Design | Ref | RECOMMENDED | #13,#18 | • Real production SLA and storage markets |
+| 51 | Stripe Connect Docs | Docs | MANDATORY | #13 | • Escrow payout architecture |
+| 52 | Chord (Stoica et al., SIGCOMM 2001) | Paper | OPTIONAL | #1 | • DHT ring architecture |
+
+### Phase 6
+    
+Engineering behind the mechanism
+
+| # | Title | Type | Priority | Topics | Key Extraction Target |
+| --- | --- | --- | --- | --- | --- |
+| 53 | Building Microservices — Sam Newman | Book | RECOMMENDED | #4,#6,#7 | • Service decomposition and resilience patterns |
+| 54 | Designing Data-Intensive Applications — Martin Kleppmann | Book | MANDATORY | #4,#6,#8 | • Consistency, consensus, and distributed data systems |
+| 55 | Netflix Tech Blog: Chaos Engineering & Resilience | Blog | OPTIONAL | #6 | • Chaos Monkey and resilience mindset |
