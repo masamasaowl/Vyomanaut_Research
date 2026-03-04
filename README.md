@@ -34,91 +34,83 @@ What the system must do.
 | Architecture | Microservices coordination layer + pure P2P transfers |
 | Decentralization | Hybrid. Microservices for orchestration, P2P for all data movement |
 
-## Research dependency order 
+## Topics of study
 ```java
-[1] Coordination Architecture          ← Everything depends on this
-        |
-        |──[2] Proof of Storage        ← Depends on how coordination works
-        |
-        |──[3] Erasure Coding          ← Determines redundancy strategy
-                |
-                |──[4] Replication Protocol    ← Depends on redundancy math
-                        |
-                        |──[5] Peer Selection Algorithm
-                        |
-                        |──[6] Availability / Polling Protocol
-                                |
-                                |──[7] Provider Exit State Machine
-                                        |
-                                        |──[8] Reliability Scoring Model
+#1 Coordination Architecture: 
+   Central vs DHT balance; what stays decentralised and why; Satellite
+	 design
 
-[9] Client-Side Encryption             ← Parallel, blocks key management
-        |
-        |──[10] Key Management Strategy
+#2 Proof of Storage: 
+   Audit mechanism: full PoRep vs random Merkle challenge vs
+	 lightweight heartbeat
 
-[11] Background OS Execution           ← Parallel, blocks mobile provider design
+#3 Erasure Coding:
+   EC scheme selection (RS/MSR/LRC); (k,m) parameters; cold vs
+	 warm tradeoffs
 
-[12] P2P Transfer Protocol             ← Parallel, blocks all transfer designs
+#4 Replication / RepairProtocol: 
+   Who triggers repair; peer-to-peer chunk transfer during repair; repair
+	 bandwidth budget
 
-[13] Escrow & Payment Basis            ← Last, depends on the reliability model
+#5 Peer Selection Algorithm
+   Selection criteria: latency, uptime, geography, free space; initial
+	 assignment
+
+#6 Availability & Polling
+   Polling interval vs audit gap attack surface; heartbeat failure
+   detection
+
+#7 Provider Exit State Mechanism:
+	Accidental / announced / promised exit; grace period; migration
+  orchestration
+
+#8 Reliability Scoring Model
+	 EigenTrust vs rolling audit rate vs hybrid; bootstrapping new
+	 providers; decay function
+
+#9 Client-Side Encryption Encryption
+   scheme; key derivation per chunk vs per file; forward secrecy
+
+#10 Key Management Strategy
+   Owner key loss scenario; key rotation; delegation to service for
+   republication
+
+#11 Background OS Execution
+   iOS/Android background execution limits; provider tier model 
+   (desktop vs mobile)
+
+#12 P2P Transfer Protocol 
+   QUIC vs WebRTC; NAT traversal; connection migration for mobile
+   providers
+
+#13 Escrow & Payment Basis
+   Per GB stored vs per audit passed vs per GB transferred; penalty
+   structure
+
+#14 Consistency Model
+   Which operations need strong consistency vs eventual; invariant
+   confluence framework, all nodes need to see the same data at the same time
+   
+#15 Encryption-Erasure Interaction
+	 Encrypt-then-code vs code-then-encrypt; key management cost of
+	 each choice
+
+#16 Provider-Side Storage Engine
+	 How providers store chunks locally; LSM-tree vs object store; EC
+	 tiering
+
+#17 Repair Bandwidth Optimisation
+	 MSR/LRC regenerating codes; repair parallelisation; helper node
+	 selection
+
+#18 Economic Mechanism Design
+	 Game-theoretic incentive compatibility; credit systems; SLA
+	 enforcement
+
+#19 Adversarial Provider Behaviour
+	 Provider deletes data between audits; false audit responses;
+	 collusion modelling
 ```
-
-## Topics under study
-| Concepts | Study | Summary |
-| --- | --- | --- |
-| Coordination layer design | **BitTorrent spec**, **IPFS architecture** | Tracker vs trackerless, DHT design |
-| Pure P2P architecture | **Kademlia DHT paper** (Maymounkov & Mazières 2002) | The gold standard for decentralized peer discovery |
-| Proof of Storage | **Filecoin whitepaper**, **Storj whitepaper** | Both solve this differently — great for trade-off study |
-| Erasure Coding | **Reed-Solomon coding**, **Storj's erasure implementation** | Storj is your closest architectural cousin overall |
-| Replication & availability | **Apache Cassandra replication model**, **Dynamo paper** (Amazon 2007) | How large systems maintain replica health |
-| Availability polling | **Consul health checks**, **etcd** | Heartbeat and failure detection in distributed systems |
-| Reliability/reputation scoring | **BitTorrent tit-for-tat**, **EigenTrust paper** | Scoring peers in untrusted P2P networks |
-| Client-side encryption | **Signal Protocol**, **libsodium docs**, **age encryption** | Modern, audited, well-documented |
-| Key management | **Keybase architecture**, **Tresorit whitepaper** | Zero-knowledge key management done right |
-| Background execution | **Android WorkManager docs**, **iOS BGTaskScheduler docs**, **WhatsApp engineering blog** | OS-level background strategies |
-| P2P file transfer protocol | **WebRTC**, **libp2p**, **QUIC protocol** | Modern P2P transport options |
-| Escrow & payments | **Stripe Connect docs**, **Upwork escrow model**, **Airbnb payment architecture blog** | Marketplace escrow patterns |
-| Microservices design | **Building Microservices — Sam Newman (book)**, **Netflix tech blog** | Industry-grade service decomposition |
-
-## System design concepts to study
-```java
-1. Distributed systems fundamentals
-      - CAP theorem 
-
-2. Distributed Hash tables 
-      - Trackerless P2P transfer 
-
-3. Erasure Coding
-      - Reed Solomon algorithm
- 
-4. Merkle trees
-      - proof of storage used by IPFS
-      
-5. Consisten hashing
-      - replication handling
-      
-6. Heartbeat and Gossip Protocols 
-      - Availibilty protocol
-      
-7. Zero-Knowledge Architecture
-      - Service routes data it cannot read
-      
-8. Saga Pattern (Distributed Transactions) 
-      - When upload fails, how to rollback
-      
-9. Backpressure and Flow Control
-      - Slow providers slow the system intead of collapse                                                
-```
-
-## Decisions made 
-1. All file encryption happens client-side, before upload. The service never possesses plaintext data.
-2. The coordination layer is hybrid: microservices for critical orchestration, Kademlia DHT for peer discovery and metadata routing (The exact  functionalities which microservices handle are yet to be finalised).
-3. File data moves purely peer-to-peer. The coordination layer moves metadata only.
-4. Three provider exit types with distinct handling: accidental (penalty), announced (no penalty, smooth migration), promised (conditional, high-reliability providers only).
-5. Payments are fiat-based via escrow. No crypto tokens.
-6. Content addressing via cryptographic hash is used for chunk integrity verification (Merkle DAG principle from IPFS).
-7. Provider identity must persist across sessions — cross-session reliability scoring requires a stable identity (public key derived NodeId from S/Kademlia / IPFS pattern).
-8. Chunk pinning (IPFS model) is the storage contract primitive: pin = commit, unpin = terminate.
    
 ## Research briefing  
 ```java
