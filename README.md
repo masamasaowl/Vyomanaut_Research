@@ -534,6 +534,99 @@ Open Questions after reading:
 3. 
 
 ```
+### Research paper 6
+```java
+Paper: High Availability, Scalable Storage, Dynamic Peer Networks: Pick Two
+        Charles Blake & Rodrigo Rodrigues, MIT Laboratory for Computer Science
+        Venue: HotOS IX (USENIX), May 2003 | 6 pages
+        TOPICS: #3, #5, #6
+ 
+Problem solved:   
+1. Basic idea is these three things cannot happen at once, extending to the
+   CAP theorem
+	   - High peer churn (Partition)
+	   - Data always accessible (Availability)
+	   - Store large amounts of data at scale (Consistency)
+	   
+	 In the case of Partition, one must choose between A and C
+2. Idle upstream bandwidth is the limiting resource that volunteers 
+   contribute, not idle disk space
+3. Average bandwidth consumed per node  = 2 ((space per node) / uptime)
+4. Quantifies the relation between node lifetime v/s number of nodes by 
+   assuming 'k' and bandwidth
+4. Provides availability data in 6 nines, the gold standard of system
+   uptimes, offering downtimes of 2.6 seconds per month, making our 
+   model extremely reliable 
+5. Presented the math of the consumed bandwidth after applying erasure, delayed 
+   redundancy calls and admission control
+
+Trade-offs:
+1. Assuming 6 nines of premium availability 
+2. Assumes low values of bandwidth and high replication factors, but 
+   they help in designing a model for adverse situations
+
+Breaks in our case:
+1. A million cable modem users to provide a month of continuous service for
+   The network to hold 1000 TB would not work for us.
+   (note redundancy factor of k=20 is very high, and 200Kbps per node
+   upload bandwidth is also very low). Research needed to implement 
+   in our model
+   
+
+Decisions influenced:
+1. Calculating the bandwidth of the network is more integral than the 
+   Combined storage it offers 
+2. The volatility of the users directly decreases the storage capacity
+   of the network, as bandwidth gets wasted in replication 
+3. Use erasure to decrease the replication factor 'k' and we assume that 
+   network speeds would increase at reduced rates, according to recent 
+   ISP trends
+4. ISPs promise symmetrical bandwidths up to 100Mbps for 600rupees which
+   significantly favours the architecture 
+5. The promised exit, where a user can announce the set time he would be 
+   unavailable would be implemented to save bandwidth through the node
+   downtimes and triggering replication only at true departures 
+6. The polling interval is described as 't', a 24-hour timeout reduces
+   maintenance bandwidth by a factor of 30x compared to instant timeouts 
+   Use it in #6 Availability polling
+7. Erasure coding allows 't'=25 for 'k'=15, proving 8x bandwidth savings 
+   compared to replication, finalising them as the redundancy protocol
+8. The architecture must move more towards stable providers rather than 
+   more inclusion of nodes, as every new flaky node burdens the existing ones 
+   bandwidth provided by reliable nodes
+
+Disagreements:
+1. It clearly states that common home storage suppliers cannot run the 
+   architecture, but Storj and Filecoin show it works in production with
+   the right coding, membership delay and admission control 
+
+Open Questions after reading:
+1. At what provider MTTF does the repair bandwidth consume
+   more than 30% of the total system bandwidth?
+   Ans: Using the formula, assuming each provider serves 50GB 
+   At MTTF = 1 month  → BW/node = 2 × 50GB / 30 days = ~3.3 GB/day = ~310 KB/s continuous
+	 At MTTF = 3 months → BW/node = 2 × 50GB / 90 days = ~1.1 GB/day = ~103 KB/s continuous
+	 At MTTF = 6 months → BW/node = 2 × 50GB / 180 days = ~556 MB/day = ~52 KB/s continuous
+   
+   If background OS (#11) provides 100Kb/s, then MTTF must be more than 
+   3 months for an average user 
+
+2. What is the minimum provider MTTF your escrow model must enforce to 
+   Keep the system economically viable?
+   Ans: 
+   Entry of Low MTTF is unprofitable for existing nodes 
+   As if repair due to peer churn > revenue per provider 
+   then the network is at a loss 
+   If a provider earns 'x' but churn triggers '2x' repair costs then 
+   good providers pay for bad providers 
+   
+3. What value of 't' should the system accept?
+   Ans: 
+   The paper promises 30x bandwidth savings for 24 hoour timeout 
+   but we are compromising availability for partitioning in the network
+   suggested period for now is 8-24 hours, but research is needed to 
+   finalise the value of 't'
+```
 ## Research papers to continue reading
 ### Phase 0
     
