@@ -539,7 +539,7 @@ Open Questions after reading:
 Paper: High Availability, Scalable Storage, Dynamic Peer Networks: Pick Two
         Charles Blake & Rodrigo Rodrigues, MIT Laboratory for Computer Science
         Venue: HotOS IX (USENIX), May 2003 | 6 pages
-        TOPICS: #3, #5, #6
+        TOPICS: #3, #4, #5, #6
  
 Problem solved:   
 1. Basic idea is these three things cannot happen at once, extending to the
@@ -548,7 +548,7 @@ Problem solved:
 	   - Data always accessible (Availability)
 	   - Store large amounts of data at scale (Consistency)
 	   
-	 In the case of Partition, one must choose between A and C
+	 In the case of Partition one must choose between A or C
 2. Idle upstream bandwidth is the limiting resource that volunteers 
    contribute, not idle disk space
 3. Average bandwidth consumed per node  = 2 ((space per node) / uptime)
@@ -557,7 +557,7 @@ Problem solved:
 4. Provides availability data in 6 nines, the gold standard of system
    uptimes, offering downtimes of 2.6 seconds per month, making our 
    model extremely reliable 
-5. Presented the math of the consumed bandwidth after applying erasure, delayed 
+5. Presented math of consumed bandwidth after applying erasure, delayed 
    redundancy calls and admission control
 
 Trade-offs:
@@ -567,32 +567,32 @@ Trade-offs:
 
 Breaks in our case:
 1. A million cable modem users to provide a month of continuous service for
-   The network to hold 1000 TB would not work for us.
-   (note redundancy factor of k=20 is very high, and 200Kbps per node
+   the network to hold 1000 TB would not work for us.
+   (note redundancy factor of k=20 is very high and 200Kbps per node
    upload bandwidth is also very low). Research needed to implement 
    in our model
    
 
 Decisions influenced:
 1. Calculating the bandwidth of the network is more integral than the 
-   Combined storage it offers 
+   combined storage network offers 
 2. The volatility of the users directly decreases the storage capacity
    of the network, as bandwidth gets wasted in replication 
-3. Use erasure to decrease the replication factor 'k' and we assume that 
-   network speeds would increase at reduced rates, according to recent 
-   ISP trends
-4. ISPs promise symmetrical bandwidths up to 100Mbps for 600rupees which
-   significantly favours the architecture 
-5. The promised exit, where a user can announce the set time he would be 
-   unavailable would be implemented to save bandwidth through the node
-   downtimes and triggering replication only at true departures 
-6. The polling interval is described as 't', a 24-hour timeout reduces
-   maintenance bandwidth by a factor of 30x compared to instant timeouts 
-   Use it in #6 Availability polling
-7. Erasure coding allows 't'=25 for 'k'=15, proving 8x bandwidth savings 
+3. We assume that network speeds would increase at reduced rates
+   according to recent ISP trends. ISPs promise symmetrical bandwidths
+   upto 100Mbps for 600rupees which significantly favours the architecture 
+4. Decision #4: The promised exit, where a user can announce the set time 
+                he would be unavailable would be implemented to save bandwidth
+                triggering replication only for true departures 
+                (Failing a promise leads to direct collection of fines 
+                from the linked payments account)
+5. Decision #6: The polling interval is described as 't', a 24-hour
+                timeout reduces maintenance bandwidth by a factor of
+                30x compared to instant timeouts 
+   6. Erasure coding allows 't'=25 for 'k'=15, proving 8x bandwidth savings 
    compared to replication, finalising them as the redundancy protocol
-8. The architecture must move more towards stable providers rather than 
-   more inclusion of nodes, as every new flaky node burdens the existing ones 
+7. The architecture must move more towards stable providers rather than 
+   More inclusion of nodes, as every new flaky node burdens the existing ones 
    bandwidth provided by reliable nodes
 
 Disagreements:
@@ -625,7 +625,126 @@ Open Questions after reading:
    The paper promises 30x bandwidth savings for 24 hoour timeout 
    but we are compromising availability for partitioning in the network
    suggested period for now is 8-24 hours, but research is needed to 
-   finalise the value of 't'
+   Finalise the valur of 't'
+```
+### Research paper 7
+```java
+Paper: SoK: Decentralized Storage Network
+       Chuanlei Li, Minghui Xu, Jiahao Zhang, Hechuan Guo, Xiuzhen Cheng
+       Shandong University | IEEE S&P
+
+Research topics addressed: #1, #2, #5, #8, #13, #19
+
+Problem solved: 
+1. No single paper before it summarised the entire DSN landscape
+2. Provides classification of major systems like Sia, Storj, Filecoin, Swarm
+3. Names the failures each design choice creates
+4. Points out how data updation is very complex in DSNs
+5. Defines Proof of storage and consensus mechanisms
+6. Pointed the biggest challenges 
+   - File version control
+	 - Network hijacking giving DoS (central entity risk)
+	 - Privacy leaks through DHTs
+	 - Illegal content cannot be traced in the network
+	 - No access control, data owner cannot share access
+	 - Honest Geppetto attack
+	 - Bandwidth optimisations 
+
+	 
+Trade-offs:
+1. Filecoin chose PoRep + PoSt over lightweight Merkle challenges
+   requires 256 GB RAM + GPU with ≥11 GB VRAM, so all mobile and desktop 
+   users eliminated; ruthlessly anti-sybil but only for Network Attached 
+   Storage (NAS) operators
+2. Storj chose reputation-gated vetting over cryptographic identity proofs
+   So faster onboarding and lower hardware intensive participation
+   but introduces "Honest Geppetto attack" 
+3. Sia chose frequent Merkle challenges over PoS by Berlekamp-Welch; 
+   lightweight for mobile users but can be bypassed by adversarial node
+   having predicted the challenge timing
+4. Swarm chose bandwidth-as-currency (SWAP), where payments take place to 
+   settle large BW imbalances, clean for symmetric peer set and not for 
+   Data owner & provider structure, it also breaks in production
+5. All DSNs use cryptocurrency for payments
+   
+
+Breaks in our case:
+1. Every surveyed DSN uses blockchain/cryptocurrency as the trust anchor
+2. File coin uses heavy cryto challenges to prevent sybil attacks, we 
+   instead use registation gating 
+3. The Satellite architecture of Storj is centralised and prone to DoS attacks 
+4. DHT lookups exposes CIDs
+
+Decisions influenced:
+1. Reconsider the decision of making the coordination microservice as
+   the trust anchor instead of a public ledger like blockchain compromising
+   on data owner trust; blockchain implements automatic verifiability. 
+   We would have to create an audit trail
+2. To prevent blockchain Storj finally implemented the Satellite which 
+   reduced trust in the network; If we move with microservice architecture 
+   then it would be a hardened service using 
+3. To prevent DoS in central microservice the quorum read mechanism 
+   can be implemented for consistency but introduces latency 
+4. During DHT lookups via Kademlia, the content addressing must not 
+   reveal the file identity 
+5. Decision #2: Continuous Proof of Storage will be done using PoR 
+                (Merkle challenges) as PoRep and PoSt are computation
+                heavy 
+                Trasitory PoS would run at upload time when node signs 
+                a receipt of the chunks stored 
+                 
+6. Decision #5: Storj four subsystem reputation is adopted 
+								1. Identity gate: registration with KYC/phone-number 
+								   limits Sybil node flood without cryptographic cost.
+								2. Vetting: new nodes receive non-critical chunks under
+								   high erasure redundancy to monitor and build trust								      
+								3. Filtering: nodes failing audits or retrieval challenges
+								   are downgraded, not immediately ejected
+								4. Preference: after vetting, rank surviving nodes by 
+								   throughput and latency measured during audits;
+								   High-ranked nodes receive more new assignments
+								   
+7. Decision #19: Defence against the following attacks 
+                1. Honest Geppetto attack: A single correlated provider
+                   group (same subnet, same ISP AS number) must not hold 
+                   multiple shards of the same file 
+                2. Outsourcing attack: Use Filecoin's Seal idea 
+                3. Just-in-time retrieval: Unpredictable challenge times
+                
+
+Disagreements:
+1. Lakhani et al. 2022 & 2023: Do not model payment based on bandwidth
+   exchange as it failed for Swarm 
+2. "Understanding Availability" (Bhagwan, Savage, Voelker, IPTPS 2003):
+   Individual MTTF < nodes going offline together 
+
+Open Questions after reading:
+1. What is the lightest proof-of-storage that resists 
+   just-in-time retrieval on a 5 Mbps mobile provider?
+   Ans: 
+		   1. Set response deadline = (chunk_size / declared_upload_speed) × 1.5
+		   2. Randomise challenge timing so the provider cannot pre-cache
+   
+2. Does Storj's Honest Geppetto attack have a practical 
+   mitigation that doesn't require centrally watching all nodes?
+   Ans: Storj says
+       1. Analyse the correlations between shards 
+       2. If cluster C holds shards {i, j, k}
+          |{i,j,k}| / n > ceiling (e.g. 20%)
+          Then new assignments don't take place before major peer churn happens
+       3. It's a placement constraint put during write time
+       4. New networks hav few shards so implement only after 5 × n
+   
+3. Since we have no blockchain, what replaces its role as the 
+   neutral audit trail that both data owners and providers trust? 
+   Ans: Blockchain does three jobs
+        1. Immutable audit log — provider submitted proof X at time T
+        2. Automatic payment trigger — proof verified → escrow released
+				3. Public dispute resolution — anyone can inspect the proof chain      
+				We need to replicate 1. and 2. and find substitute for 3.
+				We can maintain a write once audit log and all receipts of the 
+				data owner and provider can be verified for disputes 
+				Gives auditable paper trail without blockchain
 ```
 ## Research papers to continue reading
 ### Phase 0
