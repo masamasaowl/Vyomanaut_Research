@@ -688,13 +688,13 @@ Decisions influenced:
 4. During DHT lookups via Kademlia, the content addressing must not 
    reveal the file identity 
 5. Decision #2: Continuous Proof of Storage will be done using PoR 
-                (Merkle challenges) as PoRep and PoSt are computation
+                (Merkle challenges) as PoRep and PoSt are computationally
                 heavy 
                 Trasitory PoS would run at upload time when node signs 
                 a receipt of the chunks stored 
                  
-6. Decision #5: Storj four subsystem reputation is adopted 
-								1. Identity gate: registration with KYC/phone-number 
+6. Decision #5: Storj's four subsystem reputation is adopted 
+								1. Identity gate: registration with KYC/phone number 
 								   limits Sybil node flood without cryptographic cost.
 								2. Vetting: new nodes receive non-critical chunks under
 								   high erasure redundancy to monitor and build trust								      
@@ -714,7 +714,7 @@ Decisions influenced:
 
 Disagreements:
 1. Lakhani et al. 2022 & 2023: Do not model payment based on bandwidth
-   exchange as it failed for Swarm 
+   exchange, as it failed for Swarm 
 2. "Understanding Availability" (Bhagwan, Savage, Voelker, IPTPS 2003):
    Individual MTTF < nodes going offline together 
 
@@ -733,7 +733,7 @@ Open Questions after reading:
           |{i,j,k}| / n > ceiling (e.g. 20%)
           Then new assignments don't take place before major peer churn happens
        3. It's a placement constraint put during write time
-       4. New networks hav few shards so implement only after 5 × n
+       4. New networks have few shards, so implement only after 5 × n
    
 3. Since we have no blockchain, what replaces its role as the 
    neutral audit trail that both data owners and providers trust? 
@@ -741,10 +741,97 @@ Open Questions after reading:
         1. Immutable audit log — provider submitted proof X at time T
         2. Automatic payment trigger — proof verified → escrow released
 				3. Public dispute resolution — anyone can inspect the proof chain      
-				We need to replicate 1. and 2. and find substitute for 3.
-				We can maintain a write once audit log and all receipts of the 
+				We need to replicate 1. and 2. and find a substitute for 3.
+				We can maintain a write-once audit log and all receipts of the 
 				data owner and provider can be verified for disputes 
-				Gives auditable paper trail without blockchain
+				Gives an auditable paper trail without blockchain
+```
+### Research Paper 8
+```java
+Paper:  Understanding Availability
+        Ranjita Bhagwan, Stefan Savage, Geoffrey M. Voelker
+        UC San Diego | IPTPS 2003 (Workshop on Peer-to-Peer Systems)
+
+Research topics addressed: #5, #6, #8
+
+Problem solved: 
+1. Existing measurements and models do not capture the complex 
+   time-varying nature of availability in peer-to-peer environments
+2. Study availability in large P2P systems over the span of a week
+3. Results affect the design of high-availability P2P services
+	 
+	 
+Trade-offs:
+1. 7-day trace only, making it risky to form concrete decisions
+2. Studied Overnet and not Gnutella which is unstructured
+3. Measured parameters based on HostID and not IP 
+
+Breaks in our case:
+1. The study population is voluntary file-sharers, not paid storage 
+   providers so our availability is higher than 0.3 as proposed in the 
+   paper
+2. 6.4 joins/leaves per host per day was measured on a DHT, where 
+   joining/leaving is free with zero state consequences, so financial 
+   Friction would become our saviour
+
+Decisions influenced:
+1. Decision #8: The reliability score must weight recent behaviour more 
+                Heavily but not discard long-term history entirely
+                Maintain three rolling windows per provider — 24h, 7d, 30d 
+                (period can be altered)
+                weight the score as a weighted combination
+                
+2. Decision #6: The polling interval 't' must be set longer than the diurnal 
+								absence window A provider offline for 6–8 hours (nighttime) 
+								must not trigger repair. Minimum safe value of 't' is therefore 
+								≥ 8 hours, ideally 12–24 hours, confirming the Blake & Rodrigues 
+								suggestion
+								
+3. Decision #7: Follow two-component model (daily churn vs permanent departure) 
+								maps directly to four exit states:
+								Note: A lower bound of the threshold is maintained, crossing
+								      which repair happens irrespective of 't'
+								1. Accidental/temporary absence → no repair, wait for 't'
+								   decrease reliability ()
+								2. Promised exit → no repair, wait for the promised period
+								   'p' to end, then only repair and penalise directly
+							  3. Permanent silent departure → Crossing a warning limit
+							     of time declared at the start of the session, failing which, we 
+							     trigger repair, seize escrow earnings, node signed out
+							     from network
+							  4. Announced departure → Node announces his permanent exit
+							     from the network; trigger repair, release pending escrow
+							     Sign out the user from the network 
+
+4. Decision #5: Independence of randomly selected hosts is confirmed
+							  Random selection within a filtered pool (vetted,
+							  geographically close) gives near-independent failure 
+							  probabilities
+
+Disagreements:
+1. Saroiu et al. 2002 (Gnutella measurement study): their availability numbers are ~4x 
+   lower than Bhagwan's because they used IP address probing  
+   -> So we must be cautious when reading papers earlier than 2003 
+2. Weatherspoon & Kubiatowicz 2002 (cited in paper): modelled 
+   failures as independent
+   -> So we must keep a small safety margin in erasure
+
+Open Questions after reading:
+1. What is the actual MTTF of a financially-incentivised 
+   storage provider on a mobile device vs Bhagwan's 
+   0.3-median voluntary peer?
+   Ans: our own provider telemetry (no paper 
+        answers this; must be measured empirically at launch)
+        Just like Storj came up with 6-12 months MTTF
+
+2. What polling interval 't' separates a sleeping provider 
+   from a dead one, and what is the repair bandwidth cost 
+   of getting it wrong in either direction?
+   Ans: 't' is too short -> say 2hours, then overnight leaves would 
+         also trigger repair 
+         't' too long -> say 48hours, we may miss permanent departures
+         't' sweet spot -> 12–24 hours (Blake and Rodrigues)
+										       Start with 24 hours, then keep decreasing 
 ```
 ## Research papers to continue reading
 ### Phase 0
