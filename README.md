@@ -791,9 +791,9 @@ Decisions influenced:
 								maps directly to four exit states:
 								Note: A lower bound of the threshold is maintained, crossing
 								      which repair happens irrespective of 't'
-								1. Accidental/temporary absence → no repair, wait for 't'
+							  1. Accidental/temporary absence (downtime) → no repair, wait for 't'
 								   decrease reliability ()
-								2. Promised exit → no repair, wait for the promised period
+							  2. Promised downtime → no repair, wait for the promised period
 								   'p' to end, then only repair and penalise directly
 							  3. Permanent silent departure → Crossing a warning limit
 							     of time declared at the start of the session, failing which, we 
@@ -833,6 +833,121 @@ Open Questions after reading:
          't' sweet spot -> 12–24 hours (Blake and Rodrigues)
 										       Start with 24 hours, then keep decreasing 
 ```
+### Research paper 9
+```java
+Paper:  Feasibility of a Serverless Distributed File System 
+        Deployed on an Existing Set of Desktop PCs
+        William J. Bolosky, John R. Douceur, David Ely, Marvin Theimer
+        Microsoft Research | ACM SIGMETRICS 2000
+
+Research topics addressed: #1, #5, #6, #11
+
+Problem solved: 
+1. Measures feasibility using 51,662 machines at Microsoft over five 
+   weeks
+2. Clearly states it won't work on consumer desktops without optimisations
+   only fine-tuned replication and downtime v/s departure separation 
+   can help
+3. Promises availability fails of just 0.3 to 3.0 (order of 1) per user
+   per 1000 days
+	 
+	 
+Trade-offs:
+1. Simple replication over erasure for simpler design
+2. Lazy update reduces write traffic but also takes away consistency 
+   32MB/hr -> 7MB/hr
+3. Replica placement by availability score (greedy algorithm)
+
+Breaks in our case:
+1. The paper focuses on the storage of files as done on a usual PC; we instead
+   try to make a hyperscale cloud platform that relies on file updates and
+   duplicate file checks
+2. The machines researched are in a professional corporate environment, so
+   It is less comparable to home users we are targeting, so 95% uptime
+   and a 290-day lifetime is an upper bound 
+3. The security ensured is much lower as the nodes are employees of the 
+   same company
+4. 50% free disk space was assumed in the 2000s; in today's world, it has become
+   hypothetical
+
+Decisions influenced:
+1. Decision #7: Promised Downtimes and Announced departures would skyrocket
+                reliability as the machines warn before leaving, providing
+                time for reconstruction
+                
+2. Decision #7: Replication Trigger time for exits 
+								Note: Time varies based on provider tier
+								1. Accidental/temporary absence (downtime): 0–24h, we 
+								   Wait till 72h before announcing a Permanent silent departure
+								2. Promised downtime: Provide options from 0-72h, exceeding
+								   declares Permanent silent departure
+								3. Permanent silent departure: After 72h pass, perform 
+								   replication
+								4. Announced departure: instant 
+       
+3. Decision #11: Median CPU load of 1–2% and disk load means we can occupy 
+								 5-10% of CPU for background audits and transfers without 
+								 Hindering user experience 
+								 
+4. Decision #5: Provider tier list
+								- Tier 1: NAS providers
+								          MTTF: 290–380 days
+								          Availability: 0.95
+								          Storage: 30–70% of free disk
+								          Payment: Premium       
+			          - Tier 2: Standard desktop
+								          MTTF: 180-290 days
+								          Availability: 0.7
+								          Storage: 30–40% of free disk
+								          Payment: Standard
+							  - Tier 3: Mobile users
+													MTTF: 120-180 (minimum needed) days
+								          Availability: 0.3-0.5
+								          Storage: 10–15% of free disk
+								          Payment: According to the service    
+								          						  								        								        							       					
+Disagreements:
+1. Blake and Rodrigues 2003 stated that 24hr acceptable downtime, whereas Bolosky 
+   suggests a bimodal figure for it 
+2. Bhagwan et al. 2003 found availability to be 0.3, whereas Bolosky suggests 
+   It is to be 0.9 because of the corporate atmosphere  
+
+Open Questions after reading:
+1. What is the correct repair trigger threshold for 
+   desktop vs mobile providers, and what is the 
+   bandwidth cost of getting it wrong?
+   Ans: tier-specific thresholds are necessary
+        Desktop: 72h (Bolosky)
+			  Mobile:  24–36h (Bhagwan)
+			  The bimodal distribution given by it was 
+			  Nightly: µ=14h, σ=1.9h → 99.7% return within 20h
+        Weekend: µ=64h, σ=2.1h → 99.7% return within 70h
+  
+2. How does the provider tier model change the erasure coding parameters
+   Inherited from Storj?
+   Ans: Storj used uniform parameters (k=29, n=80), assuming 
+				a homogeneous NAS operator population
+				We follow tier-based providers and find that 1 file must never 
+				be present only with the mobile tier
+				The desktop tier is the stability layer 
+				Moreover we plan provider distribution based on the access 
+				frequency (hot or cold storage), but the idea has not yet been 
+				researched
+
+3. Can convergent encryption be safely used for 
+   deduplication in our zero-knowledge system, 
+   And where does it break?	
+   Ans: Convergent encryption derives the encryption key from the hash
+        of the plaintext
+        So two files having the same hash are duplicates 	
+        This is needed for the deduplication of files in the network
+        It reveals the access patterns without decrypting the content 
+        compromising security
+        Moreover we don't need deduplication as it's the property of the 
+        data owner to store and pay for all its content 
+        There is no need to catch duplicates
+```
+
 ## Research papers to continue reading
 ### Phase 0
     
