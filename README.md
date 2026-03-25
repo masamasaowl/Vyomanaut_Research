@@ -1058,12 +1058,21 @@ Decide #1 Coordination Architecture & #2 Proof of Storage
 | --- | --- | --- | --- | --- | --- |
 | 1 | High Availability, Scalable Storage, Dynamic Peer Networks: Pick Two (Blake & Rodrigues, HotOS 2003) | Paper | MANDATORY | #1 | • The P2P storage trilemma — pick two of three properties • Read before Storj: makes every Storj design choice legible • Identify which two properties your V2 picks and document why |
 | 2 | SoK: Decentralised Storage Network (Li et al. — IEEE S&P / CCS) | Paper | MANDATORY | #1–3,#5,#13 | • Landscape map: all major DSN systems compared on one framework • Extract the failure taxonomy — why each system collapsed • Map your architecture against their comparison axes |
-| 3 | Storj Whitepaper v3 (2018) | Whitepaper | DONE | #1–6 | • COMPLETED — key decisions extracted • Satellite = your microservices analogue • Repair bandwidth underestimated at scale: see Phase 2 fix |
-| 4 | P2P Storage Systems: A Practical Guideline to Be Lazy (Giroire et al., GlobeCom 2010) | Paper | MANDATORY | #1,#4,#6 | • 'Lazy' repair = defer repair until redundancy falls below threshold • Quantifies repair cost vs redundancy decay tradeoff • Sets your repair trigger threshold decision |
-| 5 | Filecoin Whitepaper (Protocol Labs, 2017) | Whitepaper | MANDATORY | #1,#2,#13 | • Sections 3.1–3.2 only: PoRep and PoSt mechanisms • Skip all token/blockchain sections • Audit gap closure mechanism — extract the proof structure, not the crypto |
-| 6 | Design & Evaluation of IPFS (Trautwein et al., SIGCOMM 2022) | Paper | MANDATORY | #1,#5,#6 | • Real production measurements: lookup latency, content decay, churn rates • Sets empirical floor for your redundancy and polling interval decisions • Section 5 (availability decay) is the most important section |
-| 7 | Coral DSHT (Freedman, Mazières, NSDI 2004) | Paper | MANDATORY | #1,#5 | • Sloppy DHT: store pointers not values — your exact architecture • Geographic clustering for provider selection • Section 3 (hierarchical clustering) is the key extraction target |
-| 8 | Measurement Study of P2P File Sharing (Saroiu et al., 2002) | Paper | MANDATORY | #3,#5,#6 | • Median node session < 1 hour — empirical basis for redundancy factor k • Table 2–4: actual uplink/downlink distributions for consumer devices • Grounds your provider tier model in measured reality |
+| 3 | "Understanding Availability in Peer-to-Peer Applications"
+Bhagwan, Savage, Voelker — IPTPS 2003 | paper | MANDATORY | #6, #5, #8 | • correlated failure model; availability ≠ individual uptime |
+| 4 | Feasibility of a Serverless Distributed File System Deployed
+on an Existing Set of Desktop PCs"
+Rodrigues, Blake, Liskov — ACM SIGMETRICS 2000 | paper | RECOMMENDED | #1, #6, #11 | voluntary participation floor; admission control necessity |
+| 5 | P2P Storage Systems: A Practical Guideline to Be Lazy (Giroire et al., GlobeCom 2010) | Paper | MANDATORY | #1,#4,#6 | • 'Lazy' repair = defer repair until redundancy falls below threshold • Quantifies repair cost vs redundancy decay tradeoff • Sets your repair trigger threshold decision |
+| 5 | Coordination Avoidance in Database Systems (VLDB 2015) | Paper | MANDATORY | #14 | • Crucial to study the requirement for blockchain
+Invariant confluence framework for deciding strong vs eventual consistency |
+| 6 | Filecoin Whitepaper (Protocol Labs, 2017) | Whitepaper | MANDATORY | #1,#2,#13 | • Sections 3.1–3.2 only: PoRep and PoSt mechanisms • Skip all token/blockchain sections • Audit gap closure mechanism — extract the proof structure, not the crypto |
+| 7 | Design & Evaluation of IPFS (Trautwein et al., SIGCOMM 2022) | Paper | MANDATORY | #1,#5,#6 | • Real production measurements: lookup latency, content decay, churn rates • Sets empirical floor for your redundancy and polling interval decisions • Section 5 (availability decay) is the most important section |
+| 8 | Coral DSHT (Freedman, Mazières, NSDI 2004) | Paper | MANDATORY | #1,#5 | • Sloppy DHT: store pointers not values — your exact architecture • Geographic clustering for provider selection • Section 3 (hierarchical clustering) is the key extraction target |
+| 9 | Measurement Study of P2P File Sharing (Saroiu et al., 2002) | Paper | MANDATORY | #3,#5,#6 | • Median node session < 1 hour — empirical basis for redundancy factor k • Table 2–4: actual uplink/downlink distributions for consumer devices • Grounds your provider tier model in measured reality |
+| 10 | Replication Strategies for Highly Available
+Peer-to-Peer Storage" — Bhagwan, Moore, Savage,
+Voelker (FuDiCo 2002) | paper | Mandatory | #3, #5, #6 | Necessary to derive the erasure parameters out of the availability model |
 
 ### Phase 2A
     
@@ -1089,6 +1098,9 @@ Decide #4 Replication / RepairProtocol & #17 Repair Bandwidth Optimisation
 
 | # | Title | Type | Priority | Topics | Key Extraction Target |
 | --- | --- | --- | --- | --- | --- |
+| 16 | Analysis of Failure Correlation Impact on
+Peer-to-Peer Storage Systems | paper | mandatory | #3 #4 #17 | quantifies how correlated failures make
+BWavg formula an underestimate; gives the safety & margin multiplier needed for production budgeting. |
 | 16 | Lazy Means Smart: Reducing Repair Bandwidth in Erasure-Coded DSS (Silberstein et al.) | Paper | MANDATORY | #4,#17 | • Lazy repair: batch lost shards and repair together to amortise bandwidth • Proves optimal repair scheduling is NP-hard but greedy approx is near-optimal |
 | 17 | ParaRC: Embracing Sub-Packetization for Repair Parallelization in MSR-Coded Storage (FAST 2023) | Paper | MANDATORY | #4,#17 | • Parallel repair across multiple helper nodes • Sub-packetization: split repair into parallel microtasks |
 | 18 | Non-Systematic MSR Codes for I/O-Efficient Repair in Warm Blob Storage (FAST 2025) | Paper | RECOMMENDED | #3,#17 | • Non-systematic codes trade slightly higher CPU for better I/O during repair |
@@ -1103,7 +1115,6 @@ Architecture design & Consistency
 | # | Title | Type | Priority | Topics | Key Extraction Target |
 | --- | --- | --- | --- | --- | --- |
 | 22 | Dynamo: Amazon's Highly Available Key-Value Store (SOSP 2007) | Paper | MANDATORY | #4,#6 | • N/R/W quorum model • Gossip-based failure detection |
-| 23 | Coordination Avoidance in Database Systems (VLDB 2015) | Paper | MANDATORY | #14 | • Invariant confluence framework for deciding strong vs eventual consistency |
 | 24 | IRON File Systems (SOSP 2005) | Paper | MANDATORY | #19 | • Adversarial provider simulation: partial writes, silent corruption |
 | 25 | ELECT: Enabling Erasure Coding Tiering for LSM-tree Storage (FAST 2024) | Paper | RECOMMENDED | #16 | • LSM-tree storage engines like RocksDB for provider chunk indexing |
 | 26 | OceanStore: Architecture for Global Persistent Storage (ASPLOS 2000) | Paper | RECOMMENDED | #1,#3,#4 | • Early DSN attempt and its failure modes |
