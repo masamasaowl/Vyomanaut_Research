@@ -947,6 +947,91 @@ Open Questions after reading:
         data owner to store and pay for all its content 
         There is no need to catch duplicates
 ```
+### Research paper 10
+```java
+Paper:  Peer-to-Peer Storage Systems: A Practical Guideline to Be Lazy
+        Frédéric Giroire, Julian Monteiro, Stéphane Pérennes
+        MASCOTTE joint project INRIA / I3S (CNRS, Univ. of Nice-Sophia)
+        IEEE GlobeCom 2010 
+
+Research topics addressed: #3, #4, #6, #17
+
+Problem solved: 
+1. Provides actual mathematical formulas for the entire DSN
+2. Helps in deciding the delay in the trigger of repair and deciding the erasure 
+   parameters 
+3. Formulas: 
+   a. Average BW consumption 
+      = ((B·α) / (N · ln(s+r / s+r0) · τ) · (s + r − r0 − 1) · lf
+   b. Data loss rate 
+      = B/((s+r0+1)·ln(s+r/s+r0)·τ)·(s+r0)!/(s-1)!·(α/γ)^(r0+2)
+   c. Best BW consumption for given s and r0
+      = r0 − s − r + (s + r) · ln(s + rs / s + r0) = 0
+   
+	 
+Trade-offs:
+1. Lazy repair over eager repair, as BW savings grow logarithmically
+   with gap in r-r0 (gap of 8 reduces BWavg by ~3× vs gap of 1) but
+   the data loss probability increases
+2. Markov chain model assumes independent peer failures; we use the 
+   diversity cap from SoK to amke this assumption work
+3. Has fixed timeout for peer loss and not the diurnal churn
+4. B ≥ N² constraint requires large data volumes, for small networks 
+   it gets difficult 
+
+Breaks in our case:
+1. Assumes homogenous peer distribution and not the tier-wise population
+   which changes MTTF 
+2. Assumes peer reenters with no data, the promised downtime allows
+   it to them
+3. No. of peers N and the network storage capacity D are kept constant 
+   whereas they increase with time 
+
+Decisions influenced:
+1. Decision #3 : Our target is LossRate < 10^-15 per year
+								 We fix 
+								 initial fragments(s)=16, frament size(lf)=256KB
+								 repair threshold(r0)=8, redundancy fragments=40
+								 Bavg comes out to be 39 Kbps/peer
+								 
+2. Decision #4: We use r0 to refer to the repair trigger threshold 
+								It can be derived from the formulas given in the paper 
+
+3. Decision #17: The peak bandwidth formula Qpeek is the key input 
+								  for sizing our repair bandwidth budget; For each 
+								  provider failure event, the network must absorb
+								  Qpeek/θ bandwidth over reconstruction window θ
+
+Disagreements:
+1. Dimakis et al. 2007: Shows that standard RS repair is not bandwidth-optimal
+
+Open Questions after reading:
+1. What is the repair bandwidth spike Qpeek when a mobile provider
+   fails, and how long must repair complete to avoid data loss?
+   Ans: For N=1000, B=25M, s=16, r=40, r0=8, lf=256KB
+        Qpeek=793 GB per peer
+        
+        At 100Kbps per peer
+        It takes 8hours to consume the loss of one peer 
+        which is less than our 12hour reconstruction window 'θ'
+        So the MTTF must not fall any more lower 
+   
+ 2. What is the optimal lazy repair strategy for our three-tier 
+    mixed network, and does it make sense to have different r0 
+    per tier?
+    Ans: 1. Simpler approach: use a single r0 calibrated to 
+						the most volatile tier (mobile), giving desktops 
+						more buffer than they need but simplifying the 
+						repair state machine
+				  
+				 2. Sophisticated approach: separate shard pools per tier
+				    A file's n=56 shards are assigned as:
+					  - 20 shards to Tier 1 (desktop) with r0_desktop=12
+					  - 36 shards to Tier 3 (mobile) with r0_mobile=8
+					  gives optimal bandwidth per tier but requires 
+					  the repair scheduler to track two independent 
+					  Markov chains per block	     
+```
 
 ## Research papers to continue reading
 ### Phase 0
