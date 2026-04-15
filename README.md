@@ -1007,13 +1007,13 @@ Disagreements:
 
 Open Questions after reading:
 1. What is the repair bandwidth spike Qpeek when a mobile provider
-   fails, and how long must repair complete to avoid data loss?
+   fails, and how long must the repair be completed to avoid data loss?
    Ans: For N=1000, B=25M, s=16, r=40, r0=8, lf=256KB
         Qpeek=793 GB per peer
         
         At 100Kbps per peer
         It takes 8hours to consume the loss of one peer 
-        which is less than our 12hour reconstruction window 'θ'
+        which is less than our 12-hour reconstruction window 'θ'
         So the MTTF must not fall any more lower 
    
  2. What is the optimal lazy repair strategy for our three-tier 
@@ -1031,6 +1031,185 @@ Open Questions after reading:
 					  gives optimal bandwidth per tier but requires 
 					  the repair scheduler to track two independent 
 					  Markov chains per block	     
+```
+### Research Paper 11
+```java
+Paper: Coordination Avoidance in Database Systems
+       Peter Bailis, Alan Fekete, Michael J. Franklin, Ali Ghodsi, 
+       Joseph M. Hellerstein, Ion Stoica
+       UC Berkeley + University of Sydney | VLDB 2015
+
+Research topics addressed: #14, #1
+
+Problem solved: 
+1. Every DSN decides to implement consistency wherever it is possible 
+   for them, without testing its implications of reduced scalability 
+2. This paper gives you a formal test of invariant confluence (I-confluence)
+   to check where consistency is precisely needed
+3. When we specify the database invariants, then we get to know 
+   the sufficient condition for coordination-free execution
+	
+Findings:
+1. Sec-2: Coordination is catastrophically bad at scale, with 8 servers 
+   and two-phase commit, we get 173 transactions/second max. Our
+   audit log alone will exceed this at 10,000 providers
+2. Sec 4.2: If an operation is I-confluent we must not add coordination, 
+   If not I-confluent we cannot remove coordination (Table 2)
+3. Sec 5.1: If uniqueness has to be maintained then coordination has to exist 
+   if we assign unique values (IDs) into the network
+4. Sec 5.1: Materialized view maintenance updates are I-confluent
+   Meaning the log of all audits in postgres must be maintained
+   instead of updating score on every audit receipt insert
+5. Sec 5.1: Insertions under foreign key constraints are I-confluent
+   All deletions are unsafe without cascading, so don't delete a 
+   provider while receipts reference it
+6. Sec 5.2: If we have a greater-than (>) threshold, then invariant is 
+   is I-confluent for counter increment but not decrement and reverse 
+   for (<) threshold (we have the > greater than threshold for 
+   reliability scores, so audit checker must be made accordingly)
+7. Sec 6.1: TPC-C can scale to 12.7M txns/sec with coordination-free 
+	 execution on 200 servers; our system being simpler can handles 
+	 95%+ of operations with zero coordination with the 0.19% cycle cost of
+	 the one non-I-confluent operation (ID Assignment Synchronization
+	 (spinlock contention))
+	 
+	 
+Trade-offs:
+1. Coordination-free execution over serialisable execution
+			- Scales linearly with hardware; 25× throughput gain
+			- Requires programmer to specify invariants explicitly
+			- If invariants are wrong or incomplete, silent incorrectness
+2. Eventual consistency over strong consistency for non-critical 
+   operations
+3. Merge-based convergence over consensus-based convergence
+			- No central coordinator; merges happen asynchronously
+			- Merge operator must be commutative, associative, 
+        idempotent (CAI) to guarantee convergence
+      - Our reputation score: last-write-wins is NOT CAI (order-dependent) 
+        Must use a CRDT counter instead
+
+Breaks in our case:
+1. Paper assumes transactions are known in advance
+2. Paper's merge operator is set-union, our Escrow balance violates
+   it and requires a CRDT PN-counter (positive-negative counter that 
+   tracks increments and decrements separately and merges by 
+   summing each)
+3. We do not know all the invariants
+
+Decisions influenced:
+1. 
+┌──────────────────────────────────────────────────┬──────────────┬─────────────────────────┐
+│ OPERATION                                        │ I-CONFLUENT? │ IMPLEMENTATION          │
+├──────────────────────────────────────────────────┼──────────────┼─────────────────────────┤
+│ INSERT audit receipt (audit pass)                │ YES          │ Append-only, fire-forget │
+│ INSERT audit receipt (audit fail)                │ YES (append) │ Append-only, fire-forget │
+│ UPDATE reputation score (increment on pass)      │ YES          │ Async materialised view  │
+│ UPDATE reputation score (decrement on fail)      │ NO (floor)   │ Single authoritative     │
+│                                                  │              │ scorer, check floor      │
+│ INSERT provider registration                     │ YES (UUID)   │ UUIDv7, no coordinator   │
+│ INSERT file record                               │ YES (UUID)   │ UUIDv7, no coordinator   │
+│ INSERT chunk record                              │ YES (UUID)   │ UUIDv7, no coordinator   │
+│ READ provider metadata                           │ YES          │ Any replica, no coord    │
+│ READ chunk location                              │ YES          │ Any replica, no coord    │
+│ DECREMENT escrow balance (payment release)       │ NO (floor≥0) │ Single payment service   │
+│                                                  │              │ with idempotency key     │
+│ INCREMENT escrow balance (new deposit)           │ YES          │ Async, no coordinator    │
+│ DELETE provider (soft delete, status flag)       │ YES          │ Append status update     │
+│ DELETE provider (physical row removal)           │ NO           │ NEVER — use soft delete  │
+│ ASSIGN chunk to provider (new file upload)       │ NO (unique   │ Assignment service,      │
+│                                                  │ placement)   │ single coordinator       │
+│ TRIGGER repair (redundancy below r0)             │ YES          │ Async event, eventual    │
+│ RECORD repair completion                         │ YES          │ Append-only log          │
+│ ISSUE audit challenge                            │ YES          │ Async scheduler          │
+│ VALIDATE capability token (retrieval auth)       │ NO (expiry)  │ Token service, TTL check │
+│ RELEASE escrow on announced exit                 │ NO           │ Payment service,         │
+│                                                  │              │ serialised per provider  │
+│ SEIZE escrow on silent departure                 │ NO           │ Payment service,         │
+│                                                  │              │ serialised per provider  │
+└──────────────────────────────────────────────────┴──────────────┴─────────────────────────┘
+Out of 20 core operations, only 6 require 
+coordination. The other 14 can scale horizontally without limit
+
+2. Decision #14 [Consistency Model — FINAL]: 
+		   - Coordinate on: escrow debit, escrow seizure, reputation 
+				 score floor enforcement, chunk placement uniqueness, 
+			   capability token validation
+			 - The operations that blockchains were providing coordination 
+         for payment finality, audit receipt immutability map 
+				 exactly to our 6 non-I-confluent operations. 
+				 A single, hardened payment microservice with an 
+				 idempotency-keyed Postgres table handles all 6
+
+Disagreements:
+1. Classic database literature (Gray 1981, Bernstein 1987)
+2. CALM Theorem (Hellerstein, Alvaro 2011)
+
+Open Questions after reading:
+Q1: How do you implement the PN-counter CRDT for 
+    escrow balance without losing auditability?
+    Ans: 
+		Store every deposit and release as an append-only 
+		event row:
+		
+		  escrow_events table:
+		    event_id       UUIDv7        PRIMARY KEY
+		    provider_id    UUID          NOT NULL
+		    event_type     ENUM(DEPOSIT, RELEASE, SEIZURE)
+		    amount_paise   BIGINT        NOT NULL  // never decimals
+		    audit_period   UUID          FK
+		    idempotency_key VARCHAR(64)  UNIQUE    // SHA256(provider+period)
+		    created_at     TIMESTAMPTZ   NOT NULL
+		
+		Balance = SUM(amount) WHERE event_type=DEPOSIT 
+		        - SUM(amount) WHERE event_type IN (RELEASE, SEIZURE)
+		        for a given provider_id
+		
+		This gives you:
+		  1. Full audit trail (every paise accounted for)
+		  2. Idempotency (duplicate release = duplicate key error)
+		  3. CRDT-compatible (append-only, mergeable)
+		  4. No float arithmetic (always integer paise)
+		
+		The signed receipt for payments becomes:
+		  SHA256(event_id + provider_id + amount + 
+		         audit_period + created_at) 
+		  signed by the payment microservice private key
+		 
+Q2: What is the exact DB schema for the audit 
+    receipt table that satisfies all I-confluence 
+    requirements?
+    Ans: 
+    audit_receipts table:
+    receipt_id        UUIDv7      PRIMARY KEY   // I-confluent: UUID namespace
+    schema_version    SMALLINT    NOT NULL DEFAULT 1
+    chunk_id          BYTEA(32)   NOT NULL      // SHA256 of chunk content
+    file_id           UUID        NOT NULL      // pseudonymous file handle
+    provider_id       UUID        NOT NULL      // FK → providers (soft delete only)
+    challenge_nonce   BYTEA(32)   NOT NULL      // HMAC(server_secret, chunk_id+ts)
+    server_challenge_ts TIMESTAMPTZ NOT NULL    // set by server, not provider
+    response_hash     BYTEA(32)   NOT NULL      // SHA256(chunk||nonce)
+    response_latency_ms INT       NOT NULL      // just-in-time detector
+    audit_result      ENUM(PASS,FAIL,TIMEOUT)
+    provider_sig      BYTEA(64)   NOT NULL      // Ed25519 over all above
+    service_sig       BYTEA(64)   NOT NULL      // Ed25519 over provider_sig+ts
+    service_countersign_ts TIMESTAMPTZ NOT NULL
+    -- CONSTRAINTS:
+    -- INSERT only, no UPDATE, no DELETE (enforced via Postgres row security)
+    -- provider_id must reference an existing provider (soft FK, checked at insert)
+    -- receipt_id is UUIDv7 (time-ordered, no coordinator needed)
+   
+ Q3: How do you apply I-confluence analysis to a new 
+    operation before adding it to the codebase?
+    Ans: 
+    STEP 1: State the invariant explicitly
+    STEP 2: Ask the merge question
+    "If two replicas independently execute this operation 
+     starting from the same valid state, and then merge, 
+     is the merged state still valid under the invariant?"
+    STEP 3: Check against Table 2 of this paper
+    STEP 4: If NOT I-confluent, scope coordination to 
+    the minimum
+    STEP 5: Document the decision in the PR description
 ```
 ## Exclusive Decisions made 
 ```java
