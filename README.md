@@ -1,6 +1,6 @@
 # Vyomanaut Research
 
-> Distributed storage network powered by over a billion smartphones
+> Distributed storage network powered by over a billion devices
 
 V1 is archived at [masamasaowl/Vyomanaut](https://github.com/masamasaowl/Vyomanaut).
 V1 failed due to:

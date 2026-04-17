@@ -118,22 +118,7 @@ When a new question arises from the paper: add it to `open-questions.md` under a
 ---
 
 ## Quality checklist before finalising
-
-**Research note:**
-- [ ] Suggested file path given at top
-- [ ] Problem Solved is specific — names a failure mode, not just a domain
-- [ ] Every "Breaks" entry uses `≠` with `→` adaptation
-- [ ] Decisions Influenced reference ADR numbers with status tags
-- [ ] Open Questions section points to question IDs in open-questions.md
-- [ ] No open questions duplicated from previous papers
-
-**ADR(s):**
-- [ ] Title is ≤50 chars, imperative mood
-- [ ] Status is set correctly
-- [ ] If superseding an existing ADR — the old number is referenced
-- [ ] Options Considered has at least 2 options with honest cons
-- [ ] Consequences names at least one negative trade-off
-- [ ] Open constraints section states what must remain true
+Run the quality checklist in `docs/references/style-guide.md` before finalising.
 
 ---
 
