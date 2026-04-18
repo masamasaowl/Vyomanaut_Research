@@ -51,7 +51,7 @@ Status values: `open` · `answered` · `deferred-v3` · `rejected`
 
 | ID | Question | Status | Answer / Blocked on |
 |---|---|---|---|
- Q04-1 | Which P2P replication protocol: BitSwap, libp2p, QUIC, or alternative? | open | libp2p (Paper 13) confirms: framework = libp2p, transport = QUIC v1. BitSwap is not used — direct escrow-motivated transfer replaces it. Fully resolves when RFC 9000 (reading-list Phase 1 #9) is read and ADR-021 is accepted. |
+| Q04-1 | Which P2P replication protocol: BitSwap, libp2p, QUIC, or alternative? | answered | Framework = libp2p. Transport = QUIC v1 (RFC 9000) primary; TCP + Noise + yamux fallback. BitSwap is not used — direct escrow-motivated transfer replaces it. NAT traversal: AutoNAT → DCUtR → Circuit Relay v2. ADR-021 accepted. |
 | Q04-2 | Can the Merkle DAG links array store chunk-to-provider mappings for redundant siblings? | answered | No — Kademlia handles provider lookup; mixing use-cases creates confusion |
 | Q04-3 | How to use IPNS for file routing if the data owner is not part of the network? | answered | Microservice proxy signatures can resolve DHT republication (needs implementation design) |
 
@@ -161,3 +161,11 @@ Status values: `open` · `answered` · `deferred-v3` · `rejected`
 | Q13-2 | Should libp2p GossipSub be used for repair event propagation to surviving chunk holders, or should repair job orchestration remain exclusively in the microservice? | open | GossipSub would allow the surviving fragment holders to self-organise a repair without a central repair scheduler. This reduces microservice load during a burst failure event but introduces a new failure mode: if GossipSub mesh formation fails during the same network partition that caused the chunk loss, repair is silently delayed. The microservice-driven repair model (ADR-004) is deterministic and auditable; GossipSub adds complexity with unclear benefit for V2 scale. Blocked on: repair scheduler implementation in V2; revisit if microservice repair throughput becomes a bottleneck at V3 scale (>10,000 providers). |
 
 ---
+
+## From Paper 14 — RFC 9000 (QUIC)
+
+| ID | Question | Status | Answer / Blocked on |
+|---|---|---|---|
+| Q14-1 | What is the fallback when UDP is blocked at a provider's ISP or home router? Does libp2p handle TCP/WebTransport fallback transparently, and what fraction of Indian home ISPs block UDP in practice? | answered | libp2p automatically falls back to TCP + Noise XX + yamux when UDP is unreachable (Paper 13). The fallback is transparent — multiaddr dialling selects the best reachable transport. The UDP-block rate at Indian ISPs is unknown and must be measured at launch, but the fallback path is architecturally in place. |
+| Q14-2 | Should 0-RTT be disabled for all chunk transfer connections to eliminate replay risk, and what is the p99 latency penalty for forcing 1-RTT on every reconnect from a returning provider? | open | Blocked on: prototype measurement. RFC 9000 Section 8.1 allows servers to reject 0-RTT data selectively. The latency cost depends on round-trip time to the microservice and the frequency of provider reconnects relative to audit interval. |
+| Q14-3 | During a QUIC connection migration mid-audit-challenge, response_latency_ms in the audit receipt will spike due to path validation (PATH_CHALLENGE / PATH_RESPONSE). How do we distinguish a migration event from a JIT retrieval attempt? Should the audit receipt schema (ADR-017) include an optional migration_event flag, and if so, what proves the flag is honest? | open | Blocked on: libp2p spec (migration signalling) and empirical data from provider telemetry at launch. Migration events from stable desktop providers with static IPs should be rare enough that false-positive JIT detections are negligible in V2. Revisit if migration-flag abuse emerges. |
