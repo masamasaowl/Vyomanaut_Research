@@ -1,10 +1,10 @@
 # ADR-022 — Encrypt-Then-Code vs Code-Then-Encrypt
 
-**Status:** Proposed — blocked on Szabó et al. 2025
+**Status:** Paper 15 has been read but it only partially informs us and does not close the decision
 **Topic:** #15 Encryption-Erasure Interaction
 **Supersedes:** —
 **Superseded by:** —
-**Research source:** TBD — reading-list Phase 1 #10
+**Research source:** Paper 15 (Szabó 2025)
 
 ---
 
