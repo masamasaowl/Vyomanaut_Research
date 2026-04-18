@@ -2,9 +2,9 @@
 name: document
 description: >
   Produces a research paper summary formatted for the Vyomanaut Research docs,
-  ready to save as docs/research/paper-NN-<slug>.md on GitHub.
+  ready to save as docs/research/paper-NN-(slug).md on GitHub.
   Also produces any Architecture Decision Records (ADRs) triggered by the paper,
-  ready to save as docs/decisions/ADR-NNN-<slug>.md.
+  ready to save as docs/decisions/ADR-NNN-(slug).md.
   Trigger when a paper PDF or text is provided and the user wants it documented,
   summarised, or added to the research log. Also trigger on "document this",
   "write up the paper", "add this to the readme", "summarise for the project".
@@ -78,7 +78,7 @@ Abstract → Conclusion → Introduction → Figures/Tables → full text.
 
 ## Output 1 — Research Note
 
-**Suggested file path:** `docs/research/paper-NN-<slug>.md`
+**Suggested file path:** `docs/research/paper-NN-(slug).md`
 
 Follow the format in `docs/references/style-guide.md` exactly.
 
@@ -95,7 +95,7 @@ Key rules:
 
 Produce one ADR per decision this paper **closes or revises**. Do not produce an ADR for a decision that is still open.
 
-**Suggested file path:** `docs/decisions/ADR-NNN-<slug>.md`
+**Suggested file path:** `docs/decisions/ADR-NNN-(slug).md`
 where NNN is the next number after ADR-024.
 
 If the paper **supersedes** an existing Accepted ADR:
@@ -107,13 +107,17 @@ Follow the ADR format in `docs/references/style-guide.md`.
 
 ---
 
-## Before checking open questions
+## Build new Open questions
+
+Open questions are crucial questions based on architecture, engineering or validity surrounding the project that must be answered before the build starts
 
 Before adding any new open question, search `docs/research/open-questions.md` by keyword. A question that appears to be new may already exist under a different paper's section. Duplicates clutter the tracker.
 
-When a question is answered by the new paper: update its status to `answered` in `open-questions.md` and add the answer.
+After generating the Outputs 1 & 2, ask the user to manually add them into `open-questions.md` under a new section for this paper, with status `open` and a specific `Blocked on:` reference these questions into open-questions.md
 
-When a new question arises from the paper: add it to `open-questions.md` under a new section for this paper, with status `open` and a specific `Blocked on:` reference.
+When a question is answered by the new paper, ask the reader to update its status to `answered` in `open-questions.md` and paste the answer there.
+
+The manual addition instruction given to the reader must be detailed, mentioning all the changes that need to be made in `open-questions.md`
 
 ---
 
@@ -138,7 +142,7 @@ Run the quality checklist in `docs/references/style-guide.md` before finalising.
 ## Closing note to the developer
 
 After presenting both outputs, add one paragraph (outside all code blocks) stating:
-1. The single most important finding for the current build phase
+1. The most important findings for the current build phase
 2. Which existing ADR this paper strengthens or supersedes, if any
 3. The next paper to read if the reader wants to go deeper on the most critical open question
-4. Which questions in `open-questions.md` were answered and which new ones were added
+4. Provide to the reader: Which questions in `open-questions.md` were answered and which new ones were added
