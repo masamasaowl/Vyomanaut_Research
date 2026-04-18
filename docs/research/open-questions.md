@@ -30,7 +30,8 @@ Status values: `open` · `answered` · `deferred-v3` · `rejected`
 |---|---|---|---|
 | Q02-1 | Edge cases where lookup doesn't converge — how to handle? | answered | S/Kademlia sibling nodes fix it (Paper 03) |
 | Q02-2 | How to decide replication parameter k? | answered | S/Kademlia sets k=8,16 (Paper 03) |
-| Q02-3 | How to set branching factor b (accelerated lookups)? | open | libp2p spec — reading-list Phase 1 #8 |
+| Q02-3 | How to set branching factor b (accelerated lookups)? | answered | libp2p Kademlia: k=20 bucket size (configure to k=16 per ADR-001), alpha=3 parallel queries. Binary XOR tree has branching factor 2; alpha=3 concurrency gives O(log n / 3) round trips in practice. |
+
 | Q02-4 | Should the data owner also be part of the DHT as a node with no stored value? | answered | No — tracker handles data owner; DHT handles provider swarm only |
 | Q02-5 | How to implement republication of key-value pairs in k-buckets efficiently? | answered | One node republishes per hour; availability service uses same logic |
 
@@ -50,7 +51,7 @@ Status values: `open` · `answered` · `deferred-v3` · `rejected`
 
 | ID | Question | Status | Answer / Blocked on |
 |---|---|---|---|
-| Q04-1 | Which P2P replication protocol: BitSwap, libp2p, QUIC, or alternative? | open | Phase 1 — libp2p spec + RFC 9000 (reading-list Phase 1 #8, #9) |
+ Q04-1 | Which P2P replication protocol: BitSwap, libp2p, QUIC, or alternative? | open | libp2p (Paper 13) confirms: framework = libp2p, transport = QUIC v1. BitSwap is not used — direct escrow-motivated transfer replaces it. Fully resolves when RFC 9000 (reading-list Phase 1 #9) is read and ADR-021 is accepted. |
 | Q04-2 | Can the Merkle DAG links array store chunk-to-provider mappings for redundant siblings? | answered | No — Kademlia handles provider lookup; mixing use-cases creates confusion |
 | Q04-3 | How to use IPNS for file routing if the data owner is not part of the network? | answered | Microservice proxy signatures can resolve DHT republication (needs implementation design) |
 
@@ -141,3 +142,22 @@ Status values: `open` · `answered` · `deferred-v3` · `rejected`
 | Q11-5 | At what provider count does the chunk assignment service (the one non-I-confluent write) become a bottleneck? | answered | At 1,000 uploads/day the assignment service handles ~0.01 ops/sec. Not a bottleneck until V3+ scale. |
 | Q11-6 | Can capability token validation be made I-confluent by pre-computing all valid tokens at upload time? | answered | No. Token expiry is a time-based recency guarantee (Sec 5.3). Removing expiry defeats the security purpose. Accept the coordination cost. |
 
+---
+
+## From Paper 12 — Dynamo
+
+| ID | Question | Status | Answer / Blocked on |
+|---|---|---|---|
+| Q12-1 | At what microservice cluster size does hand-rolled gossip membership (ADR-025) become harder to operate than managed consensus (etcd/Consul)? | open | Dynamo Section 6.6 notes that full-membership gossip works for hundreds of nodes but does not scale to tens of thousands. Our cluster is 3–5 replicas so gossip is appropriate in V2. The threshold to revisit is: if the cluster ever grows beyond ~10 replicas, evaluate etcd. Blocked on: production telemetry post-launch. |
+| Q12-2 | Should hinted handoff be implemented for the coordination microservice metadata store when one replica is temporarily unavailable during a write? | open | Dynamo uses hinted handoff to preserve write availability during single-node outages — the write is sent to a substitute replica with a hint, then replayed to the intended replica on recovery. Our (3,2,2) quorum survives one failure without hinted handoff, so it is not strictly necessary in V2. Whether the added complexity is worth the durability improvement during rolling restarts is an operational decision. Blocked on: implementation phase and observed failure patterns in staging. |
+
+---
+
+## From Paper 13 — libp2p
+
+| ID | Question | Status | Answer / Blocked on |
+|---|---|---|---|
+| Q13-1 | Does libp2p Circuit Relay v2 introduce enough additional round-trip latency to violate the audit response deadline for providers behind symmetric NAT? | open | The audit response deadline is (chunk_size / declared_upload_speed) × 1.5. At 256 KB and 5 Mbps, this is ~614 ms. A relay adds 50–200 ms depending on relay geographic distance. This is likely acceptable for India-first V2 deployment (Vyomanaut-operated relay nodes would be co-located in Indian cloud regions), but it must be measured. Blocked on: network measurement with relay nodes during pre-launch testing. If relay overhead consistently exceeds 300 ms, the deadline multiplier must be increased to 2.0 for relay-only providers, or such providers must be excluded from auditing. |
+| Q13-2 | Should libp2p GossipSub be used for repair event propagation to surviving chunk holders, or should repair job orchestration remain exclusively in the microservice? | open | GossipSub would allow the surviving fragment holders to self-organise a repair without a central repair scheduler. This reduces microservice load during a burst failure event but introduces a new failure mode: if GossipSub mesh formation fails during the same network partition that caused the chunk loss, repair is silently delayed. The microservice-driven repair model (ADR-004) is deterministic and auditable; GossipSub adds complexity with unclear benefit for V2 scale. Blocked on: repair scheduler implementation in V2; revisit if microservice repair throughput becomes a bottleneck at V3 scale (>10,000 providers). |
+
+---
