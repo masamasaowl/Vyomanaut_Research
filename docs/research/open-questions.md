@@ -187,3 +187,12 @@ Status values: `open` · `answered` · `deferred-v3` · `rejected`
 |-------|----------|--------|---------------------|
 | Q16-1 | What is AONT encoding throughput on minimum-spec provider hardware without AES-NI (e.g., dual-core 1.8 GHz)? Does the ≤5% CPU budget (ADR-009) hold for 14 MB segments? | open | Blocked on: benchmark on target hardware before V2 launch. If AES-NI is absent and throughput drops below 10 MB/s, switch to ChaCha20-Poly1305 (RFC 8439). |
 | Q16-2 | If the pointer file is the sole retrieval credential, should the pointer file itself be stored redundantly via a separate AONT-RS encoding (recursive), or via a threshold backup with trusted parties? What is the recovery path if the data owner loses their pointer file? | open | Blocked on: ADR-020 (pointer file management, deferred to Phase 3 after Tahoe-LAFS paper). |
+
+---
+
+## From Paper 17 — RFC 8439 (ChaCha20-Poly1305)
+
+| ID    | Question | Status | Blocked on |
+|-------|----------|--------|------------|
+| Q17-1 | What fraction of V2 target providers (Indian home desktop, NAS) lack AES-NI? Is the 3× performance gap real for our specific hardware distribution, or is AES-NI ubiquitous enough that a single AES path is sufficient? | open | Provider telemetry at launch. If >20% of providers lack AES-NI, both paths must be maintained. If <5%, ChaCha20-only simplifies the codebase. |
+| Q17-2 | Should the pointer file nonce counter be stored in the daemon's local database or in the pointer file itself (as a version number)? If stored externally, what happens when a provider device is restored from backup with a stale counter? | open | Blocked on: ADR-020 (pointer file management, Phase 3). A stale counter after device restore could cause nonce reuse — the recovery procedure must address this. |
