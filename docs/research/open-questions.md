@@ -170,9 +170,20 @@ Status values: `open` · `answered` · `deferred-v3` · `rejected`
 | Q14-2 | Should 0-RTT be disabled for all chunk transfer connections to eliminate replay risk, and what is the p99 latency penalty for forcing 1-RTT on every reconnect from a returning provider? | open | Blocked on: prototype measurement. RFC 9000 Section 8.1 allows servers to reject 0-RTT data selectively. The latency cost depends on round-trip time to the microservice and the frequency of provider reconnects relative to audit interval. |
 | Q14-3 | During a QUIC connection migration mid-audit-challenge, response_latency_ms in the audit receipt will spike due to path validation (PATH_CHALLENGE / PATH_RESPONSE). How do we distinguish a migration event from a JIT retrieval attempt? Should the audit receipt schema (ADR-017) include an optional migration_event flag, and if so, what proves the flag is honest? | open | Blocked on: libp2p spec (migration signalling) and empirical data from provider telemetry at launch. Migration events from stable desktop providers with static IPs should be rare enough that false-positive JIT detections are negligible in V2. Revisit if migration-flag abuse emerges. |
 
+---
+
 ## From Paper 15 — Szabó et al. (Encrypt-Erasure Separation)
 
 | ID | Question | Status | Answer / Blocked on |
 |---|---|---|---|
 | Q15-1 | If mobile providers are introduced in V3 and operator partnerships are unavailable, can client-side RS erasure coding on a mobile device fit within battery and CPU budgets at our parameters (s=16, r=40, lf=256 KB)? | open | Blocked on: mobile MTTF research (V3) and Phase 1 #11 (Background OS Execution). The paper shows proxy-based offloading reduces this cost by ~20% but requires ISP cooperation. |
-| Q15-2 | The paper confirms encrypt-then-code preserves zero-knowledge. Does code-then-encrypt offer any meaningful additional security guarantee that would justify its higher key management cost (56 keys per file vs 1)? | open | Blocked on: a cryptographic analysis paper comparing the two orderings under our threat model (adversarial storage nodes, not adversarial proxies). No such paper has been read yet. |
+| Q15-2 | The paper confirms encrypt-then-code preserves zero-knowledge. Does code-then-encrypt offer any meaningful additional security guarantee that would justify its higher key management cost (56 keys per file vs 1)? | answered | Code-then-encrypt with per-chunk keys offers no meaningful additional security over AONT-RS for our threat model. AONT-RS achieves computational security of 2^256 with zero external key management, at storage overhead ≈ Rabin. The threshold alone is sufficient. |
+
+---
+
+## From Paper 16 — AONT-RS
+
+| ID    | Question | Status | Answer / Blocked on |
+|-------|----------|--------|---------------------|
+| Q16-1 | What is AONT encoding throughput on minimum-spec provider hardware without AES-NI (e.g., dual-core 1.8 GHz)? Does the ≤5% CPU budget (ADR-009) hold for 14 MB segments? | open | Blocked on: benchmark on target hardware before V2 launch. If AES-NI is absent and throughput drops below 10 MB/s, switch to ChaCha20-Poly1305 (RFC 8439). |
+| Q16-2 | If the pointer file is the sole retrieval credential, should the pointer file itself be stored redundantly via a separate AONT-RS encoding (recursive), or via a threshold backup with trusted parties? What is the recovery path if the data owner loses their pointer file? | open | Blocked on: ADR-020 (pointer file management, deferred to Phase 3 after Tahoe-LAFS paper). |
