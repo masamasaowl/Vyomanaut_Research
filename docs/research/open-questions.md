@@ -215,3 +215,16 @@ Status values: `open` · `answered` · `deferred-v3` · `rejected`
 | Q19-1 | Our n=56 puts us in wide-stripe territory (Section 3.3). ECWide's combined locality assumes rack-based topology for local repair groups. Is there any equivalent locality structure in a P2P consumer network that could give a local repair benefit, or does wide-stripe RS without locality remain the only viable option? | open | Phase 2A #5 (Erasure Codes for Cold Data) and network topology telemetry at V2 launch. |
 | Q19-2 | Clay codes support general (n, k) and are access-optimal MSR codes. What is the sub-packetisation level β for our (n=56, k=16, d=55) configuration, and does this produce sub-chunks small enough to cause non-sequential I/O problems for desktop HDDs and NAS devices at 256 KB fragment size? | open | Blocked on: Dimakis et al. (Phase 2A #4). The sub-packetisation formula is derived in that paper. |
 | Q19-3 | The survey cites a Facebook warehouse cluster measurement showing >98% of per-stripe failure events are single-chunk failures — the case MSR codes optimise for. Does this hold in a P2P consumer desktop network with correlated failures (power outages, ISP events, OS updates)? If multi-chunk events are common, MSR's single-failure optimisation is less well-targeted. | open | Blocked on: Phase 2A #2 (Trautwein et al., IPFS production measurements) and own provider telemetry at launch. |
+
+---
+
+## From Paper 20 — Trautwein et al. (IPFS, SIGCOMM 2022)
+
+| ID | Question | Status | Blocked on |
+|---|---|---|---|
+| Q20-1 | IPFS shows 45.5% of discovered peers are always unreachable without hole-punching (measured before DCUtR was production-deployed). What fraction of Indian desktop home-router deployments are behind symmetric NAT (Circuit Relay v2 required vs cone NAT / DCUtR)? This determines the relay infrastructure load Vyomanaut must operate. Linked to Q13-1. | open | Network measurement during pre-launch provider onboarding testing. |
+| Q20-2 | IPFS uses a 12h republication interval with a 24h expiry, providing a 12-hour buffer against delayed republication. Our availability service currently republishes every 24h (ADR-001, ADR-006) — zero buffer against delay. Should the republication interval be reduced to 12h, or should record expiry be extended to 48h to restore the buffer? | open | Implementation decision — must be resolved before the availability service is built. Both options are operationally equivalent; 12h republication doubles availability-service DHT write traffic. |
+| Q20-3 | IPFS demonstrates an unincentivized churn floor of 87.6% of sessions under 8h. Vyomanaut's escrow model targets MTTF 180–380 days. What held-earnings percentage and minimum vetting period are required to empirically achieve the target MTTF from an operator population that, without incentives, would behave like IPFS peers? Linked to Q05-4. | open | Blocked on: Phase 5 economic mechanism research (ADR-024). The IPFS data provides the unincentivized baseline; the escrow design determines how far above it Vyomanaut can push its providers. |
+
+---
+
