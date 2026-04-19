@@ -233,3 +233,11 @@ Status values: `open` · `answered` · `deferred-v3` · `rejected`
 | ID | Question | Status | Blocked on |
 |---|---|---|---|
 | Q21-1 | The paper shows that only the top 20% of unincentivized P2P peers have IP-level uptime ≥93%. In Vyomanaut's vetting subsystem (ADR-005), the 4–6 month vetting period is designed to select from this reliable tail. What fraction of registered providers in V2 will be rejected or downgraded during vetting, and does the vetting period length need to be calibrated to the actual uptime distribution of Indian desktop users rather than the Storj NAS assumption? | open | Own provider telemetry at V2 launch. The paper's 20%/93% figure is from unincentivized 2001 broadband users; the Indian desktop provider population under financial incentives in 2025 will differ. |
+
+---
+
+## From Paper 23 — Yin et al. (Cold Data Erasure Codes, Applied Sciences 2023)
+
+| ID | Question | Status | Blocked on |
+|---|---|---|---|
+| Q23-1 | The paper's write throughput crossover (EC = replication) is at ~512 KB block sizes. Vyomanaut's fragment size is 256 KB, just below the crossover. At upload time, the provider encodes and stores 56 fragments of 256 KB each. Is the ~10–15% write throughput penalty at 256 KB vs 512 KB observable in practice on Indian desktop hardware, and does it warrant increasing lf to 512 KB? The metadata overhead per segment scales with n=56 fragments regardless of lf; only the upload I/O pattern changes. | open | Benchmark on target hardware at V2 launch. If write time per segment at lf=256 KB vs lf=512 KB shows >20% difference, revisit lf. This requires changing ADR-003, which has downstream effects on ADR-004 (Qpeek formula) and ADR-006 (departure threshold). |
