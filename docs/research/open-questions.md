@@ -89,7 +89,7 @@ Status values: `open` · `answered` · `deferred-v3` · `rejected`
 | Q07-1 | What is the lightest proof-of-storage that resists just-in-time retrieval on a 5 Mbps mobile provider? | answered | Response deadline = (chunk_size / declared_upload_speed) × 1.5; randomise challenge timing — [ADR-002](../decisions/ADR-002-proof-of-storage.md) |
 | Q07-2 | Does the Honest Geppetto attack have a practical mitigation without centrally watching all nodes? | answered | Placement constraint at write time: no cluster holds >20% of shards for one file — [ADR-014](../decisions/ADR-014-adversarial-defences.md) |
 | Q07-3 | What replaces blockchain as the neutral audit trail both parties trust? | answered | Write-once audit log + signed receipts — [ADR-015](../decisions/ADR-015-audit-trail.md) |
-| Q07-4 | Can correlated failure detection be built into the reliability scorer without a central coordinator seeing all audit results simultaneously? | open | Blocked on: reading-list Phase 2B #17 (EigenTrust paper). EigenTrust distributes reputation computation — check if it can propagate correlation signals without centralisation. |
+| Q07-4 | Can correlated failure detection be built into the reliability scorer without a central coordinator seeing all audit results simultaneously? | deferred-v3 | EigenTrust (Paper 24) confirms distributed reputation propagation is possible when pairwise interactions exist. V2 has no pairwise provider interactions — audit signal flows only through the microservice. Correlated failure detection stays centralised (ADR-014 ASN cap). V3 candidate: EigenTrust-style ratings on repair-event provider-to-provider chunk transfers. |
 | Q07-5 | How do we pseudonymise chunk IDs in the DHT to prevent a monitoring node from reconstructing which files a client is accessing, while still allowing Kademlia FIND_VALUE to function? | open | Candidate: derive DHT key as `HMAC(chunk_hash, file_owner_key)` so only the file owner can map DHT key → chunk. Blocked on: reading-list Phase 1 #10 (encryption and key management papers). Lookup overhead unknown. |
 
 ---
@@ -241,3 +241,12 @@ Status values: `open` · `answered` · `deferred-v3` · `rejected`
 | ID | Question | Status | Blocked on |
 |---|---|---|---|
 | Q23-1 | The paper's write throughput crossover (EC = replication) is at ~512 KB block sizes. Vyomanaut's fragment size is 256 KB, just below the crossover. At upload time, the provider encodes and stores 56 fragments of 256 KB each. Is the ~10–15% write throughput penalty at 256 KB vs 512 KB observable in practice on Indian desktop hardware, and does it warrant increasing lf to 512 KB? The metadata overhead per segment scales with n=56 fragments regardless of lf; only the upload I/O pattern changes. | open | Benchmark on target hardware at V2 launch. If write time per segment at lf=256 KB vs lf=512 KB shows >20% difference, revisit lf. This requires changing ADR-003, which has downstream effects on ADR-004 (Qpeek formula) and ADR-006 (departure threshold). |
+
+---
+
+ ## From Paper 24 — EigenTrust
+
+| ID | Question | Status | Blocked on |
+|---|---|---|---|
+| Q24-1 | In V3, repair events create direct provider-to-provider chunk transfers (provider i fetches from provider j to reconstruct a lost segment). Can these repair interactions serve as EigenTrust-style pairwise rating events — provider i rates provider j's reliability based on whether the chunk was available and valid? If so, what is the minimum number of repair interactions per provider pair before a score is statistically meaningful? | open | V3 repair architecture; Phase 2B #3 (IRON file systems, adversarial provider simulation) for the attack surface this creates. |
+| Q24-2 | EigenTrust requires pre-trusted peers as seeds for convergence and collective-breaking. In Vyomanaut, the microservice plays this role structurally. If the microservice is ever decentralised (V3+), what replaces the pre-trusted anchor — registered provider certificates, or a multi-party threshold of long-tenured providers? | open | V3 decentralisation research; blocked on V2 launch telemetry to understand actual provider distribution. |
