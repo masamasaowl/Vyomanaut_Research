@@ -45,13 +45,13 @@ How, in an infinitely large library, can each visitor find any book individually
 
 - **[ADR-001](../decisions/ADR-001-coordination-architecture.md) [#1 Coordination]:** Provider discovery, metadata routing, and peer lookup all happen via Kademlia. To find a chunk: use FIND_VALUE. For replication candidate selection: use FIND_NODE to find the k best candidates.
 
-- **[ADR-009](../decisions/ADR-009-reliability-scoring.md) [#8 Reliability Scoring]:** Providers with high uptime continue to stay connected (Gnutella graph property) — they must be proportionally rewarded
+- **[ADR-008](../decisions/ADR-008-reliability-scoring.md) [#8 Reliability Scoring]:** Providers with high uptime continue to stay connected (Gnutella graph property) — they must be proportionally rewarded
 
 - **[ADR-001](../decisions/ADR-001-coordination-architecture.md) [#1 Coordination]:** Caching can be handled autonomously by the nodes
 
 - **[ADR-005](../decisions/ADR-005-peer-selection.md) [#5 Peer Selection]:** New storage provider join procedure — if the head of the k-bucket responds, reject the new value and shift the table up; if it doesn't respond, remove the oldest node
 
-- **[ADR-008](../decisions/ADR-008-polling-interval.md) [#6 Polling]:** The availability checker must update the key-value pair every 24 hours; Kademlia does not keep stale values
+- **[ADR-006](../decisions/ADR-006-polling-interval.md) [#6 Polling]:** The availability checker must update the key-value pair every 24 hours; Kademlia does not keep stale values
 
 ---
 

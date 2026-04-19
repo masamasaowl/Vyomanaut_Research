@@ -67,9 +67,9 @@ r0 − s − r + (s + r) · ln((s + r) / (s + r0)) = 0
   - Redundancy fragments: r = 40
   - Result: BWavg ≈ 39 Kbps/peer
 
-- **[ADR-006](../decisions/ADR-006-repair-protocol.md) [#4 Repair Protocol — DECIDED]:** r0 is the repair trigger threshold. Derived from the formulas in this paper.
+- **[ADR-004](../decisions/ADR-004-repair-protocol.md) [#4 Repair Protocol — DECIDED]:** r0 is the repair trigger threshold. Derived from the formulas in this paper.
 
-- **[ADR-017](../decisions/ADR-017-repair-bw-optimisation.md) [#17 Repair BW — DECIDED]:** Peak bandwidth formula Qpeek is the key input for sizing the repair bandwidth budget. For each provider failure event, the network must absorb Qpeek/θ bandwidth over reconstruction window θ.
+- **[ADR-026](../decisions/ADR-026-repair-bw-optimisation.md) [#26 Repair BW — DECIDED]:** Peak bandwidth formula Qpeek is the key input for sizing the repair bandwidth budget. For each provider failure event, the network must absorb Qpeek/θ bandwidth over reconstruction window θ.
 
 ---
 

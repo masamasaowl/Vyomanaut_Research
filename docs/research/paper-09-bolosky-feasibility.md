@@ -50,9 +50,9 @@
   3. **Permanent silent departure:** after 72 h, perform replication
   4. **Announced departure:** immediate replication
 
-- **[ADR-012](../decisions/ADR-012-background-execution.md) [#11 Background Execution — DECIDED]:** Median CPU load of 1–2% and disk load means we can occupy 5–10% of CPU for background audits and transfers without hindering user experience.
+- **[ADR-009](../decisions/ADR-009-background-execution.md) [#11 Background Execution — DECIDED]:** Median CPU load of 1–2% and disk load means we can occupy 5–10% of CPU for background audits and transfers without hindering user experience.
 
-- **[ADR-011](../decisions/ADR-011-desktop-only.md) [#5 Peer Selection — TIER MODEL]:** Provider tier model (before collapse to single tier — see ADR-011):
+- **[ADR-010](../decisions/ADR-010-desktop-only.md) [#5 Peer Selection — TIER MODEL]:** Provider tier model (before collapse to single tier — see ADR-011):
   - **Tier 1: NAS providers** — MTTF: 290–380 days; Availability: 0.95; Storage: 30–70% of free disk; Payment: Premium
   - **Tier 2: Standard desktop** — MTTF: 180–290 days; Availability: 0.7; Storage: 30–40% of free disk; Payment: Standard
   - **Tier 3: Mobile users** — MTTF: 120–180 days (minimum needed); Availability: 0.3–0.5; Storage: 10–15% of free disk; Payment: Per service

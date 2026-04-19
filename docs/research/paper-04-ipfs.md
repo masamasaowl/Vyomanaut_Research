@@ -45,9 +45,9 @@ IPFS is the closest existing system to our architecture. Knowing its strengths a
 
 - **[ADR-001](../decisions/ADR-001-coordination-architecture.md) [#1 Coordination]:** To store a chunk, pin it to the node; to remove or delete, unpin the object.
 
-- **[ADR-009](../decisions/ADR-009-reliability-scoring.md) [#8 Reliability Scoring]:** The reliability score can be based on storage uptime and response latency
+- **[ADR-008](../decisions/ADR-008-reliability-scoring.md) [#8 Reliability Scoring]:** The reliability score can be based on storage uptime and response latency
 
-- **[ADR-017](../decisions/ADR-017-payment-db-schema.md) [#13 Escrow]:** The provider earnings ledger uses these mathematical relations from BitSwap:
+- **[ADR-016](../decisions/ADR-016-payment-db-schema.md) [#13 Escrow]:** The provider earnings ledger uses these mathematical relations from BitSwap:
   - Debt ratio: `r = bytes_sent / (bytes_recv + 1)`
   - Probability of sending to a debtor: `P(send|r) = 1 - (1 / (1 + exp(6 - 3r)))`
 

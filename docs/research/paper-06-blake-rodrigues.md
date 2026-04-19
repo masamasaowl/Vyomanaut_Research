@@ -46,7 +46,7 @@ Additional findings:
 
 - **[ADR-007](../decisions/ADR-007-provider-exit-states.md) [#7 Provider Exit]:** Promised exit — a user announces the time they will be unavailable — saves bandwidth by triggering replication only for true departures. Failing a promise leads to direct collection of fines from the linked payments account. (`Decision #4` in original README)
 
-- **[ADR-008](../decisions/ADR-008-polling-interval.md) [#6 Polling]:** Polling interval described as t. A 24-hour timeout reduces maintenance bandwidth by a factor of 30× compared to instant timeouts. (`Decision #6` in original README)
+- **[ADR-006](../decisions/ADR-006-polling-interval.md) [#6 Polling]:** Polling interval described as t. A 24-hour timeout reduces maintenance bandwidth by a factor of 30× compared to instant timeouts. (`Decision #6` in original README)
 
 - **[ADR-003](../decisions/ADR-003-erasure-coding.md) [#3 Erasure Coding]:** Erasure coding allows t=25 for k=15, proving 8× bandwidth savings compared to replication — finalising erasure coding as the redundancy protocol.
 

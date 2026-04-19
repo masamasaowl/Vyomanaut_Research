@@ -40,13 +40,13 @@
   → Taxing for an average provider; must be redesigned
 
 - **No background execution — dedicated daemon on desktop** ≠ **our requirement for background-capable operation**
-  → Background execution strategy required — addressed by [ADR-012](../decisions/ADR-012-background-execution.md)
+  → Background execution strategy required — addressed by [ADR-009](../decisions/ADR-009-background-execution.md)
 
 ---
 
 ## Decisions Influenced
 
-- **[ADR-004](../decisions/ADR-004-audit-trail.md) [#2 Proof of Storage]:** Repair bandwidth consumption is the biggest challenge of the entire project
+- **[ADR-0015](../decisions/ADR-0015-audit-trail.md) [#2 Proof of Storage]:** Repair bandwidth consumption is the biggest challenge of the entire project
 
 - **[ADR-003](../decisions/ADR-003-erasure-coding.md) [#3 Erasure Coding]:** Use erasure coding instead of simple replication; look for more optimised erasure algorithms. Use four erasure parameters (k, m, o, n) for long-tail transfers. Starting values: k=29, n=80, m=35, o=52 — but must be optimised for our MTTF, as much higher n may be needed.
 
@@ -56,7 +56,7 @@
 
 - **[ADR-002](../decisions/ADR-002-proof-of-storage.md) [#2 Proof of Storage]:** A pointer must be created and maintained at the data owner end storing: node IDs, erasure parameters, piece IDs, encryption info, repair threshold, piece hashes, and a signature
 
-- **[ADR-013](../decisions/ADR-013-escrow-payments.md) [#13 Escrow]:** Adopt Neuman's proxy protocol, which reads used bandwidth agnostically of payments; incremental accounting prevents fraud
+- **[ADR-011](../decisions/ADR-011-escrow-payments.md) [#13 Escrow]:** Adopt Neuman's proxy protocol, which reads used bandwidth agnostically of payments; incremental accounting prevents fraud
 
 - **[ADR-001](../decisions/ADR-001-coordination-architecture.md) [#1 Coordination]:** Utilise bloom filters for garbage collection to check if the marked-out segment has been deleted
 
