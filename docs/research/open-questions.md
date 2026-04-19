@@ -196,3 +196,12 @@ Status values: `open` · `answered` · `deferred-v3` · `rejected`
 |-------|----------|--------|------------|
 | Q17-1 | What fraction of V2 target providers (Indian home desktop, NAS) lack AES-NI? Is the 3× performance gap real for our specific hardware distribution, or is AES-NI ubiquitous enough that a single AES path is sufficient? | open | Provider telemetry at launch. If >20% of providers lack AES-NI, both paths must be maintained. If <5%, ChaCha20-only simplifies the codebase. |
 | Q17-2 | Should the pointer file nonce counter be stored in the daemon's local database or in the pointer file itself (as a version number)? If stored externally, what happens when a provider device is restored from backup with a stale counter? | open | Blocked on: ADR-020 (pointer file management, Phase 3). A stale counter after device restore could cause nonce reuse — the recovery procedure must address this. |
+
+---
+
+## From Paper 18 — Tahoe-LAFS
+
+| ID    | Question | Status | Blocked on |
+|-------|----------|--------|------------|
+| Q18-1 | What Argon2id parameters (t, m, p) are correct for minimum-spec Indian entry-level hardware (~2 GB RAM, dual-core)? The ADR uses t=3, m=64MB as a starting point — is this achievable within the session-start latency budget? | open | Blocked on: benchmark on target hardware before V2 launch. Target: ≤500ms on minimum-spec device. |
+| Q18-2 | Should the owner's Ed25519 signing key (used to sign pointer files) also be derived from the master secret via HKDF, or generated separately and stored encrypted in the local key store? Deriving it makes recovery simpler; storing it separately allows rotation without re-uploading all pointer files. | open | Blocked on: V2 implementation design. If the signing key is derived, rotating it (after a compromise) requires re-signing all pointer files. If stored separately, the key store becomes a second backup target. |
