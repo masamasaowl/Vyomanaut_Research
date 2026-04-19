@@ -82,6 +82,8 @@ Specific questions that must be answered before this ADR can be accepted:
 **Not yet made.** Candidates are Clay codes and Hitchhiker codes as identified by Paper 19.
 Fill this ADR after Phase 2A #4 (Dimakis) is read.
 
+**Update** Clay codes removed as candidate, Hitchhiker retained
+
 ## Consequences
 
 **If Clay codes are adopted (V3):**

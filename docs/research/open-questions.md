@@ -126,7 +126,7 @@ Status values: `open` · `answered` · `deferred-v3` · `rejected`
 | Q10-1 | What is repair bandwidth spike Qpeek when a provider fails? | answered | For N=1000, s=16, r=40, r0=8: Qpeek=793 GB/peer; at 100 Kbps takes 8 h < 12 h window |
 | Q10-2 | What is the optimal lazy repair strategy for a mixed-tier network — single or per-tier r0? | answered | V2 uses single r0=8 (desktop-only, uniform tier); per-tier approach deferred to V3 |
 | Q10-3 | Desktop-only BWavg at current parameters? | answered | BWavg ≈ 13.7 KB/s per peer at MTTF=300 days (α=1/7200 per hour, Giroire Eq. 2) — well within 100 KB/s background budget |
-| Q10-4 | How does the optimal r change when provider temporary absence (diurnal churn) is separated from permanent departure? Giroire uses a single α — does splitting into α_temporary and α_permanent change the optimal r derived from Equation (3)? | open | Blocked on: Phase 2A (Erasure Coding papers). Only α_permanent should enter the LossRate formula; α_temporary is handled by timeout t. Whether this changes the optimal r requires rederiving Eq. (3) with a split α. |
+| Q10-4 | How does the optimal r change when provider temporary absence (diurnal churn) is separated from permanent departure? ... | open → **partially resolved** | Saroiu (Paper 21) provides the unincentivized α_temporary floor (median session ~60 min in zero-incentive systems). In Vyomanaut's incentivized model, α_temporary is orders of magnitude lower, meaning the conservative assumption in Giroire (treating all departures as permanent) safely overestimates repair bandwidth. The optimal r=40 is therefore robust to the α split. Formally proving the split-α formula still requires Dimakis (Phase 2A #4). |
 | Q10-5 | At launch (D << N² × lf), repair load is unevenly distributed. Which providers bear the excess repair burden, and how does this affect their BWavg? | open | Blocked on: [ADR-005](../decisions/ADR-005-peer-selection.md) and the repair assignment algorithm. Uneven block distribution at launch concentrates repair on a small set of high-reliability providers. |
 
 ---
@@ -228,3 +228,8 @@ Status values: `open` · `answered` · `deferred-v3` · `rejected`
 
 ---
 
+## From Paper 21 — Saroiu et al. (Gnutella/Napster Measurement, MMCN 2002)
+
+| ID | Question | Status | Blocked on |
+|---|---|---|---|
+| Q21-1 | The paper shows that only the top 20% of unincentivized P2P peers have IP-level uptime ≥93%. In Vyomanaut's vetting subsystem (ADR-005), the 4–6 month vetting period is designed to select from this reliable tail. What fraction of registered providers in V2 will be rejected or downgraded during vetting, and does the vetting period length need to be calibrated to the actual uptime distribution of Indian desktop users rather than the Storj NAS assumption? | open | Own provider telemetry at V2 launch. The paper's 20%/93% figure is from unincentivized 2001 broadband users; the Indian desktop provider population under financial incentives in 2025 will differ. |
