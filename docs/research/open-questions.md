@@ -205,3 +205,13 @@ Status values: `open` · `answered` · `deferred-v3` · `rejected`
 |-------|----------|--------|------------|
 | Q18-1 | What Argon2id parameters (t, m, p) are correct for minimum-spec Indian entry-level hardware (~2 GB RAM, dual-core)? The ADR uses t=3, m=64MB as a starting point — is this achievable within the session-start latency budget? | open | Blocked on: benchmark on target hardware before V2 launch. Target: ≤500ms on minimum-spec device. |
 | Q18-2 | Should the owner's Ed25519 signing key (used to sign pointer files) also be derived from the master secret via HKDF, or generated separately and stored encrypted in the local key store? Deriving it makes recovery simpler; storing it separately allows rotation without re-uploading all pointer files. | open | Blocked on: V2 implementation design. If the signing key is derived, rotating it (after a compromise) requires re-signing all pointer files. If stored separately, the key store becomes a second backup target. |
+
+---
+
+## From Paper 19 — EC Survey (Shen et al., ACM ToS 2025)
+
+| ID | Question | Status | Blocked on |
+|---|---|---|---|
+| Q19-1 | Our n=56 puts us in wide-stripe territory (Section 3.3). ECWide's combined locality assumes rack-based topology for local repair groups. Is there any equivalent locality structure in a P2P consumer network that could give a local repair benefit, or does wide-stripe RS without locality remain the only viable option? | open | Phase 2A #5 (Erasure Codes for Cold Data) and network topology telemetry at V2 launch. |
+| Q19-2 | Clay codes support general (n, k) and are access-optimal MSR codes. What is the sub-packetisation level β for our (n=56, k=16, d=55) configuration, and does this produce sub-chunks small enough to cause non-sequential I/O problems for desktop HDDs and NAS devices at 256 KB fragment size? | open | Blocked on: Dimakis et al. (Phase 2A #4). The sub-packetisation formula is derived in that paper. |
+| Q19-3 | The survey cites a Facebook warehouse cluster measurement showing >98% of per-stripe failure events are single-chunk failures — the case MSR codes optimise for. Does this hold in a P2P consumer desktop network with correlated failures (power outages, ISP events, OS updates)? If multi-chunk events are common, MSR's single-failure optimisation is less well-targeted. | open | Blocked on: Phase 2A #2 (Trautwein et al., IPFS production measurements) and own provider telemetry at launch. |
