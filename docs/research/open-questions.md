@@ -372,6 +372,15 @@ Q27-2 — WiscKey's vLog stores chunks sequentially by append time, placing chun
 
 ---
 
+## From Paper 31 — PeerTrust (Xiong & Liu, IEEE TKDE 2004)
+
+| ID | Question | Status | Blocked on |
+|---|---|---|---|
+| Q31-1 | PeerTrust's adaptive time-window mechanism (dual-window scoring) maps to a graduated escrow penalty structure for Vyomanaut: compute a rolling score over 30d and over 7d; if the 7d score drops below the 30d score by a threshold, apply a partial earnings hold immediately. What threshold drop and what partial hold percentage are correct? The threshold must be large enough to avoid false positives from transient outages but small enough to detect genuine deterioration before the 72h departure threshold triggers full seizure. | open | ADR-024 design phase; V2 beta provider telemetry to calibrate the threshold empirically. |
+| Q31-2 | PeerTrust's PSM metric requires shared interaction history between any evaluating node and the raters it weights. In V3, if repair events create provider-to-provider chunk transfers, those interactions could serve as PeerTrust-style transaction events — provider i fetches from provider j, rates j's availability and data integrity. What minimum number of such repair interactions per provider pair would be needed before a PSM-derived score is statistically meaningful, given that repair events are rare at MTTF=300 days? | open | V3 repair architecture; Phase 2B #4 (PeerTrust V3 application); repair event telemetry from V2 launch. |
+
+---
+
 ## Update on remaining open questions
 Will be answered by launch telemetry (not research)
 
