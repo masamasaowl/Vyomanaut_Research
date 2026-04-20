@@ -102,3 +102,17 @@ These two papers were not in the original plan but directly answer blocking open
 After reading Phase 5, ADR-024 can be written and the pricing model finalised.
 
 ---
+
+
+## Remaining read:
+1. Filecoin Whitepaper — Protocol Labs, 2017 
+2. "Challenging Tribal Knowledge: Large-Scale
+Measurement Campaign on Decentralized NAT Traversal" — arXiv 2025
+3. "Handling Churn in a DHT" — Rhea, Geels, Roscoe, Kubiatowicz (USENIX ATC 2004)
+4. "Flash Reliability in Production: The Expected and the Unexpected" — Schroeder et al. (FAST 2016)
+5. "ELECT: Enabling Erasure Coding Tiering for LSM-tree-based Storage" — FAST 2024
+6. Razorpay Escrow API Documentation + UPI Split Payment technical reference
+7. "Incentive Mechanisms in Peer-to-Peer Networks — A Systematic Literature Review" — Ihle et al. 
+8. PeerTrust: Supporting Reputation-Based Trust for Peer-to-Peer Electronic Communities
+9. DCUtR measurement 
+10. Ihle P2P incentives survey

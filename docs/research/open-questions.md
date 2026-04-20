@@ -340,6 +340,15 @@ Q27-2 — WiscKey's vLog stores chunks sequentially by append time, placing chun
 
 ---
 
+## From Paper 28 — Rhea et al. (DHT Churn, USENIX ATC 2004)
+
+| ID | Question | Status | Blocked on |
+|---|---|---|---|
+| Q28-1 | The paper shows that fixed timeouts roughly double mean failure-detection latency vs TCP-style per-neighbour RTO (AVG + 4×VAR). Should the availability service implement per-provider RTO tracking for audit challenge timeouts, storing per-provider (avg_rtt_ms, var_rtt_ms) in the reliability scoring DB? If so, how is RTO bootstrapped for a new provider with no RTT history — use the 30th-percentile RTT of the vetted provider pool as the initial estimate? | open | ADR-006 implementation phase. The formula is specified; the bootstrapping value and storage schema need to be decided before the availability service is built. |
+| Q28-2 | libp2p's Kademlia (ADR-021) uses the default bucket-filling algorithm. The paper shows global sampling (performing DHT lookups for random target prefixes, selecting the closest responder) gives a 24% latency reduction for virtually no bandwidth increase. Should Vyomanaut's libp2p DHT be configured to run periodic global sampling for routing table proximity optimisation? Given that all V2 providers are in India, geographic proximity in the DHT may materially reduce lookup latency. | open | Phase 4-1 (Balduf NAT traversal paper) and V2 launch telemetry on actual inter-provider latency distribution. |
+
+---
+
 ## Update on remaining open questions
 Will be answered by launch telemetry (not research)
 
