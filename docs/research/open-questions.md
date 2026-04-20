@@ -349,6 +349,15 @@ Q27-2 — WiscKey's vLog stores chunks sequentially by append time, placing chun
 
 ---
 
+## From Paper 29 — Filecoin Whitepaper
+
+| ID | Question | Status | Blocked on |
+|---|---|---|---|
+| Q29-1 | Filecoin uses a graduated penalty structure: proportional collateral slash per missed proof, then full cancellation at Δfault. Vyomanaut's current model is binary: score decrement per polling cycle, full escrow seizure at 72h. Should ADR-024 introduce a graduated intermediate step — a partial earnings hold or warning at, say, 48h — to reduce false-positive seizures from transient outages that resolve before 72h? What retention impact does binary vs. graduated seizure have on providers near the 72h boundary? | open | ADR-024 design phase; empirical departure pattern data from V2 launch telemetry. |
+| Q29-2 | Filecoin requires clients to specify erasure coding parameters (replication factor, coding scheme) per bid order. Vyomanaut fixes RS(s=16, r=40) system-wide (ADR-003). If Vyomanaut introduces tiered storage (ADR-018 Hot band, V3), should hot-band uploads specify different erasure parameters at upload time? What is the pricing model for a client choosing a lower redundancy factor (lower storage cost, higher loss risk)? | open | ADR-024 pricing design; ADR-018 Hot band V3 implementation; Ihle et al. incentive survey (Phase 5 #3). |
+
+---
+
 ## Update on remaining open questions
 Will be answered by launch telemetry (not research)
 
