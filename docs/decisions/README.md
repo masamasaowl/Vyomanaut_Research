@@ -8,34 +8,31 @@ Status values: `Accepted` · `Proposed` · `Superseded by ADR-NNN` · `Deprecate
 
 ## Accepted decisions
 
-| ADR | Topic | Title | Set by |
+| ADR | Topic | True Status | Closed by |
 |---|---|---|---|
-| [ADR-001](ADR-001-coordination-architecture.md) | #1 | Microservices + Kademlia DHT for coordination | Papers 01–05, 07 |
-| [ADR-002](ADR-002-proof-of-storage.md) | #2 | PoR Merkle challenge (continuous + transitory) | Papers 05, 07 |
-| [ADR-003](ADR-003-erasure-coding.md) | #3 | RS erasure coding: s=16, r=40, r0=8, lf=256 KB | Papers 05, 10 |
-| [ADR-004](ADR-004-repair-protocol.md) | #4 | Lazy repair, r0=8, 72 h trigger | Papers 06, 09, 10 |
-| [ADR-005](ADR-005-peer-selection.md) | #5 | Storj 4-subsystem reputation pipeline | Papers 01, 07 |
-| [ADR-006](ADR-006-polling-interval.md) | #6 | Polling: 24 h; departure threshold: 72 h | Papers 06, 08, 09 |
-| [ADR-007](ADR-007-provider-exit-states.md) | #7 | 4 exit states: temp / promised / silent / announced | Papers 08, 09 |
-| [ADR-008](ADR-008-reliability-scoring.md) | #8 | 3-window rolling score: 24 h / 7 d / 30 d | Paper 08 |
-| [ADR-009](ADR-009-background-execution.md) | #11 | Desktop-only V2; ≤5% CPU for background tasks | Paper 09 |
-| [ADR-010](ADR-010-desktop-only-v2.md) | #5 | No mobile providers in V2; deferred to V3 | Papers 05, 06, 08 |
-| [ADR-011](ADR-011-escrow-payments.md) | #13 | Fiat escrow; UPI via Razorpay/Cashfree; India-first | Papers 05, 07 |
-| [ADR-012](ADR-012-payment-basis.md) | #13 | Payment per audit passed, not per GB stored | Papers 05, 07 |
-| [ADR-013](ADR-013-consistency-model.md) | #14 | I-confluence map: 6 coordinated, 14 free | Paper 11 |
-| [ADR-014](ADR-014-adversarial-defences.md) | #19 | 4 defence classes: Geppetto / outsourcing / generation / JIT | Paper 07 |
-| [ADR-015](ADR-015-audit-trail.md) | #2 | Signed receipt exchange + Transparent Merkle Log | Papers 07, 11 |
-| [ADR-016](ADR-016-payment-db-schema.md) | #13 | PN-counter CRDT; paise integer; idempotency key UUID | Paper 11 |
-| [ADR-017](ADR-017-audit-receipt-schema.md) | #2 | 12-field audit receipt with Ed25519 dual signatures | Papers 07, 11 |
-| [ADR-018](ADR-018-hot-cold-storage-bands.md) | #5 | Explicit hot/cold provider bands | — |
-
-## Proposed (TBD — blocked on future research)
-
-| ADR | Topic | Title | Blocked on |
-|---|---|---|---|
-| [ADR-019](ADR-019-client-side-encryption.md) | #9 | Client-side encryption scheme | Szabó 2025 (reading-list Phase 1 #10) |
-| [ADR-020](ADR-020-key-management.md) | #10 | Key management strategy | Phase 3 |
-| [ADR-021](ADR-021-p2p-transfer-protocol.md) | #12 | P2P transfer protocol (libp2p + QUIC candidate) | RFC 9000 + libp2p spec (reading-list Phase 1 #8, #9) |
-| [ADR-022](ADR-022-encryption-erasure-order.md) | #15 | Encrypt-then-code vs code-then-encrypt | Szabó 2025 (reading-list Phase 1 #10) |
-| [ADR-023](ADR-023-provider-storage-engine.md) | #16 | Provider-side storage engine | Phase 2C |
-| [ADR-024](ADR-024-economic-mechanism.md) | #18 | Economic mechanism design | Phase 5 |
+| ADR-001 | #1 Coordination | Accepted | Papers 01–05, 07 |
+| ADR-002 | #2 Proof of Storage | Accepted | Papers 05, 07 |
+| ADR-003 | #3 Erasure Coding | Accepted | Papers 05, 06, 10 |
+| ADR-004 | #4 Repair Protocol | Accepted | Papers 06, 09, 10 |
+| ADR-005 | #5 Peer Selection | Accepted | Papers 01, 07 |
+| ADR-006 | #6 Polling | Accepted | Papers 06, 08, 09 |
+| ADR-007 | #7 Exit States | Accepted | Papers 08, 09 |
+| ADR-008 | #8 Reliability Scoring | Accepted | Paper 08 |
+| ADR-009 | #11 Background Execution | Accepted | Paper 09 |
+| ADR-010 | #5 No Mobile V2 | Accepted | Papers 05, 06, 08 |
+| ADR-011 | #13 Fiat Escrow | Accepted | Papers 05, 07 |
+| ADR-012 | #13 Payment per Audit | Accepted | Papers 05, 07 |
+| ADR-013 | #14 Consistency Model | Accepted | Paper 11 |
+| ADR-014 | #19 Adversarial Defences | Accepted | Paper 07 |
+| ADR-015 | #2 Audit Trail | Accepted | Papers 07, 11 |
+| ADR-016 | #13 Payment DB Schema | Accepted | Paper 11 |
+| ADR-017 | #2 Audit Receipt Schema | Accepted | Papers 07, 11 |
+| ADR-018 | #5 Hot/Cold Bands | Accepted | Own decision |
+| ADR-019 | #9 Client-Side Cipher | **Accepted** — ChaCha20/Poly1305 | Paper 17 |
+| ADR-020 | #10 Key Management | **Accepted** — HKDF + pointer file | Paper 18 |
+| ADR-021 | #12 P2P Transfer | **Accepted** — libp2p + QUIC v1 | Papers 13, 14 |
+| ADR-022 | #15 Encoding Pipeline | **Accepted** — AONT-RS | Papers 15, 16 |
+| ADR-023 | #16 Storage Engine | **Accepted** — WiscKey | Papers 25, 26, 27 |
+| ADR-024 | #18 Economic Mechanism | **Proposed** — blocked on Phase 5 | — |
+| ADR-025 | #1 Microservice Cluster | Accepted — (3,2,2) gossip | Paper 12 |
+| ADR-026 | #17 Repair BW | **Proposed** — Hitchhiker only | — |
