@@ -222,7 +222,8 @@ Provider responds with SHA256(chunk_data || challenge_nonce). |
 
 | ID | Question | Status | Answer / Blocked on |
 |---|---|---|---|
-| Q13-1 | Does libp2p Circuit Relay v2 introduce enough additional round-trip latency to violate the audit response deadline for providers behind symmetric NAT? | open | The audit response deadline is (chunk_size / declared_upload_speed) × 1.5. At 256 KB and 5 Mbps, this is ~614 ms. A relay adds 50–200 ms depending on relay geographic distance. This is likely acceptable for India-first V2 deployment (Vyomanaut-operated relay nodes would be co-located in Indian cloud regions), but it must be measured. Blocked on: network measurement with relay nodes during pre-launch testing. If relay overhead consistently exceeds 300 ms, the deadline multiplier must be increased to 2.0 for relay-only providers, or such providers must be excluded from auditing. |
+| Q13-1 | Does libp2p Circuit Relay v2 introduce enough additional round-trip latency to violate the audit response deadline for providers behind
+symmetric NAT? | answered |Paper 30 (Trautwein et al., DCUtR). DCUtR relay overhead is within the 614 ms audit deadline for India-first deployment. Relay RTT in 90%+ of cases is well below 500 ms in production IPFS measurements. Vyomanaut-operated relay nodes co-located in Indian cloud regions will have consistently <50 ms relay RTT to Indian home providers. The 1.5× deadline multiplier provides sufficient margin. No change to ADR-002 or ADR-021 required. |
 | Q13-2 | Should libp2p GossipSub be used for repair event propagation to surviving chunk holders, or should repair job orchestration remain exclusively in the microservice? | open | GossipSub would allow the surviving fragment holders to self-organise a repair without a central repair scheduler. This reduces microservice load during a burst failure event but introduces a new failure mode: if GossipSub mesh formation fails during the same network partition that caused the chunk loss, repair is silently delayed. The microservice-driven repair model (ADR-004) is deterministic and auditable; GossipSub adds complexity with unclear benefit for V2 scale. Blocked on: repair scheduler implementation in V2; revisit if microservice repair throughput becomes a bottleneck at V3 scale (>10,000 providers). |
 
 ---
@@ -287,7 +288,11 @@ Provider responds with SHA256(chunk_data || challenge_nonce). |
 
 | ID | Question | Status | Blocked on |
 |---|---|---|---|
-| Q20-1 | IPFS shows 45.5% of discovered peers are always unreachable without hole-punching (measured before DCUtR was production-deployed). What fraction of Indian desktop home-router deployments are behind symmetric NAT (Circuit Relay v2 required vs cone NAT / DCUtR)? This determines the relay infrastructure load Vyomanaut must operate. Linked to Q13-1. | open | Network measurement during pre-launch provider onboarding testing. |
+| Q20-1 | IPFS shows 45.5% of discovered peers are always unreachable without hole-punching (measured before DCUtR was production-deployed). What fraction of Indian desktop home-router deployments are behind symmetric NAT (Circuit Relay v2 required vs cone NAT / DCUtR)? This determines the relay infrastructure load Vyomanaut must operate. Linked to Q13-1. | answered | Paper 30 establishes a global 70% DCUtR hole-punch success rate across 
+85k+ networks, providing a lower bound for Vyomanaut's Indian provider population. India-
+specific symmetric NAT prevalence (high due to CGNAT) means the Indian success rate may be 
+closer to 60%. Remaining answer requires V2 launch telemetry on actual provider NAT type 
+distribution.|
 | Q20-2 | IPFS uses a 12h republication interval with a 24h expiry, providing a 12-hour buffer against delayed republication. Our availability service currently republishes every 24h (ADR-001, ADR-006) — zero buffer against delay. Should the republication interval be reduced to 12h, or should record expiry be extended to 48h to restore the buffer? | answered | Reduce availability service republication interval from 24h to 12h. Keep record expiry at 24h. |
 | Q20-3 | IPFS demonstrates an unincentivized churn floor of 87.6% of sessions under 8h. Vyomanaut's escrow model targets MTTF 180–380 days. What held-earnings percentage and minimum vetting period are required to empirically achieve the target MTTF from an operator population that, without incentives, would behave like IPFS peers? Linked to Q05-4. | open | Blocked on: Phase 5 economic mechanism research (ADR-024). The IPFS data provides the unincentivized baseline; the escrow design determines how far above it Vyomanaut can push its providers. |
 
@@ -355,6 +360,15 @@ Q27-2 — WiscKey's vLog stores chunks sequentially by append time, placing chun
 |---|---|---|---|
 | Q29-1 | Filecoin uses a graduated penalty structure: proportional collateral slash per missed proof, then full cancellation at Δfault. Vyomanaut's current model is binary: score decrement per polling cycle, full escrow seizure at 72h. Should ADR-024 introduce a graduated intermediate step — a partial earnings hold or warning at, say, 48h — to reduce false-positive seizures from transient outages that resolve before 72h? What retention impact does binary vs. graduated seizure have on providers near the 72h boundary? | open | ADR-024 design phase; empirical departure pattern data from V2 launch telemetry. |
 | Q29-2 | Filecoin requires clients to specify erasure coding parameters (replication factor, coding scheme) per bid order. Vyomanaut fixes RS(s=16, r=40) system-wide (ADR-003). If Vyomanaut introduces tiered storage (ADR-018 Hot band, V3), should hot-band uploads specify different erasure parameters at upload time? What is the pricing model for a client choosing a lower redundancy factor (lower storage cost, higher loss risk)? | open | ADR-024 pricing design; ADR-018 Hot band V3 implementation; Ihle et al. incentive survey (Phase 5 #3). |
+
+---
+
+## From Paper 30 — Trautwein et al. (DCUtR NAT Traversal, arXiv 2025)
+
+| ID | Question | Status | Blocked on |
+|---|---|---|---|
+| Q30-1 | 30% of providers will permanently rely on Circuit Relay v2. Vyomanaut-operated relay nodes are planned to be co-located in Indian cloud regions (ADR-021). How many relay nodes are required to serve V2's provider base at launch without the relay becoming a latency bottleneck or a single point of failure? The paper confirms relay resources are minimal per connection (Circuit v2 limits reservation count, duration, and data volume), but relay node count for availability guarantees is not specified. | open | V2 infrastructure planning phase. Relay node count is an operational decision driven by expected provider count and relay-dependent fraction (~30%). ADR-025 (N=3 microservice quorum) provides the reliability model; relay nodes should follow the same quorum principle. |
+| Q30-2 | The paper finds 97.6% of successful hole punches succeed on the first attempt, suggesting DCUtR's default 3-retry limit is nearly wasteful. For Vyomanaut's audit challenge path where the relay fallback path is the alternative, should the libp2p DCUtR retry count be reduced to 1 (eliminating two relay round-trips of ~100-400 ms overhead in the hole-punch failure case)? The 2.4% marginal gain from retries 2 and 3 must be weighed against the added latency cost for the 30% relay-dependent providers. | open | Blocked on: empirical audit deadline measurement at V2 beta launch. If p99 audit challenge round-trip time under relay consistently stays below 400 ms, reducing retries to 1 is safe. If not, keep the default. |
 
 ---
 
