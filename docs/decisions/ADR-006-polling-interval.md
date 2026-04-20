@@ -24,6 +24,9 @@ Rationale from Bolosky (Paper 09): the bimodal absence distribution shows:
 
 A 72-hour threshold safely exceeds the weekend peak without triggering repair for routine absences.
 
+**DHT record refresh interval = 12 hours**
+Change noted after paper 20
+
 **Lower bound (emergency repair):**
 A minimum redundancy floor is maintained regardless of t. If available fragments drop to s (reconstruction floor = 16), repair is triggered immediately without waiting for the timeout.
 

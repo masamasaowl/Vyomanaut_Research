@@ -66,7 +66,35 @@ Status values: `open` · `answered` · `deferred-v3` · `rejected`
 | Q05-3 | At what mobile MTTF does the business model break (repair bandwidth costs exceed revenue)? | deferred-v3 | Mobile deferred to V3 by [ADR-010](../decisions/ADR-010-desktop-only-v2.md). The crossover calculation uses Blake & Rodrigues formula. Revisit when mobile is introduced. |
 | Q05-4 | What is the minimum vetting period and held-earnings percentage that deters provider exit while keeping providers economically engaged? | open | Blocked on: escrow research papers + economic modelling. Not answerable without a payment model paper. |
 | Q05-5 | What is the minimum response quorum for a PoR batch audit to be statistically valid? (Originally: minimum k' for Berlekamp-Welch — reframed for PoR since we chose Merkle challenges.) | open | Blocked on: reading-list Phase 1 #10 (Szabó) and Phase 2A #15 (Dimakis). |
-| Q05-6 | Storj v3.1 dropped Kademlia entirely. ADR-001 keeps the hybrid DHT. Can providers still serve data to each other if our coordination microservice has downtime? | open | Critical resilience test of [ADR-001](../decisions/ADR-001-coordination-architecture.md). The P2P data plane must serve stored data via DHT without the microservice. Needs explicit design: which operations require the microservice and which fall back to DHT-only. |
+| Q05-6 | Storj v3.1 dropped Kademlia entirely. ADR-001 keeps the hybrid DHT. Can providers still serve data to each other if our coordination microservice has downtime? | answered | ### Operations Classified by Microservice Dependency
+**Group A — Continue without microservice (DHT + P2P only):**
+| Operation | Fallback Behaviour |
+| --- | --- |
+| Chunk retrieval by data owner | Data owner uses pointer file → dht_keys → DHT FIND_VALUE → provider direct download. Full retrieval works if DHT records haven't expired. |
+| Data owner with pointer file retrieves from known providers | Data owner has provider_ids in pointer file. Connects directly via libp2p. No DHT needed. Works indefinitely regardless of microservice status. |
+| Provider-to-provider chunk transfer (during repair) | Pure P2P. No microservice involvement in the data plane (ADR-021, ADR-001). |
+| DHT peer discovery | Kademlia is autonomous. k-bucket maintenance continues without microservice. |
+| Audit response delivery (provider side) | Provider computes response and queues it locally. Microservice will collect on recovery. Receipt countersignature is delayed but the data is preserved in the Kafka log (ADR-015). |
+**Group B — Degrade gracefully (buffer, resume on recovery):**
+| Operation | Degraded Behaviour | Max Buffer Duration |
+| --- | --- | --- |
+| Audit challenge dispatch | Microservice cannot issue new challenges. Ongoing challenges complete; responses queue at providers. Gap in audit record — acceptable for one outage window. | ≤ outage duration |
+| DHT record republication | Availability service down → records begin expiring at 24h mark. Impact scales with outage length. Data stays accessible via pointer file direct path. | 24h before first expiry |
+| Reliability score updates | Audit pass/fail events queue. Score updates applied in batch on recovery. 3-window rolling score (ADR-008) tolerates gaps — a window with missing audits defaults to last known value. | Indefinite |
+**Group C — Block until microservice recovers:**
+| Operation | Reason for Block |
+| --- | --- |
+| New file upload (chunk assignment) | Non-I-confluent: unique placement requires single coordinator (ADR-013). Queue upload request; retry on recovery. |
+| Provider registration | Requires microservice identity gate. No self-registration. |
+| Payment release / escrow debit | Non-I-confluent (floor≥0). Payment service must be live. Queue internally. |
+| Repair job queuing | Repair trigger detection requires microservice. However, if fragment count hits reconstruction floor (s=16 surviving), data is still recoverable — no data loss, just delayed repair. |
+| Capability token validation | Non-I-confluent (TTL expiry). Retrieval tokens expire. Data owner re-authenticates on recovery. |
+**Operational Guarantee**
+**No data is ever lost during a microservice outage.** The guarantee holds because:
+- All 56 RS shards are on providers with persistent disk storage (ADR-023).
+- Data owners with pointer files can retrieve directly from provider_ids without any infrastructure.
+- The lazy repair threshold (r0=8, ADR-004) provides a 40-fragment buffer above the reconstruction floor.
+**The only user-visible impact of a microservice outage:** New uploads are queued, payments are delayed, and audit gaps appear in the reliability score record. These are operationally acceptable for a service that has MTTF 180–380 days for providers. Microservice downtime should be measured in minutes (ADR-025 (3,2,2) quorum) not hours.|
 | Q05-7 | With n=80 node IDs at 64 bytes each, the pointer per segment is 5+ KB of metadata. At what file size does per-segment metadata overhead become unacceptable, and should small files be inlined? | open | Blocked on: own file size distribution telemetry at launch. A pilot survey of upload patterns is needed before this can be decided. |
 | Q05-8 | Should we adopt per-segment pricing (not just per-byte) to cover metadata overhead, and how does this interact with our fiat escrow model? | open | Blocked on: reading-list Phase 1 Filecoin whitepaper (#11) + economic mechanism research (#18) |
 
@@ -90,7 +118,44 @@ Status values: `open` · `answered` · `deferred-v3` · `rejected`
 | Q07-2 | Does the Honest Geppetto attack have a practical mitigation without centrally watching all nodes? | answered | Placement constraint at write time: no cluster holds >20% of shards for one file — [ADR-014](../decisions/ADR-014-adversarial-defences.md) |
 | Q07-3 | What replaces blockchain as the neutral audit trail both parties trust? | answered | Write-once audit log + signed receipts — [ADR-015](../decisions/ADR-015-audit-trail.md) |
 | Q07-4 | Can correlated failure detection be built into the reliability scorer without a central coordinator seeing all audit results simultaneously? | deferred-v3 | EigenTrust (Paper 24) confirms distributed reputation propagation is possible when pairwise interactions exist. V2 has no pairwise provider interactions — audit signal flows only through the microservice. Correlated failure detection stays centralised (ADR-014 ASN cap). V3 candidate: EigenTrust-style ratings on repair-event provider-to-provider chunk transfers. |
-| Q07-5 | How do we pseudonymise chunk IDs in the DHT to prevent a monitoring node from reconstructing which files a client is accessing, while still allowing Kademlia FIND_VALUE to function? | open | Candidate: derive DHT key as `HMAC(chunk_hash, file_owner_key)` so only the file owner can map DHT key → chunk. Blocked on: reading-list Phase 1 #10 (encryption and key management papers). Lookup overhead unknown. |
+| Q07-5 | How do we pseudonymise chunk IDs in the DHT to prevent a monitoring node from reconstructing which files a client is accessing, while still allowing Kademlia FIND_VALUE to function? | Answered | Every chunk has a DHT lookup key derived as:
+dht_key = HMAC-SHA256(chunk_hash, file_owner_key)
+where:
+  chunk_hash    = SHA256(raw chunk slice content)   — content address
+  file_owner_key = HKDF(master_secret, "vyomanaut-dht-v1", file_id)
+                   — a 32-byte key derived per file from owner's master secret
+dht_key is 32 bytes. It is the only identifier the DHT ever sees. Neither chunk_hash nor file_id appear in any DHT message.
+Phase 1 — Upload (Data Owner → Microservice → Providers → DHT)
+Step 1: Data owner computes dht_key locally for each of the 56 chunks in a segment.
+        dht_key = HMAC-SHA256(chunk_hash[i], file_owner_key)
+        Sends to microservice: {chunk_id[i], dht_key[i], assigned_provider_id[i]}
+Step 2: Microservice stores: {dht_key[i] → provider_id[i]} in its chunk location table.
+        This is a normal I-confluent INSERT (ADR-013).
+Step 3: Microservice instructs each provider: "Store this chunk slice; your dht_key is X."
+        Provider daemon publishes to DHT: STORE(dht_key → provider_peer_id)
+        using standard Kademlia STORE — finds k=16 closest peers to dht_key, deposits record.
+Step 4: Pointer file (ADR-022) stores {chunk_hash[i], dht_key[i], provider_id[i]} per chunk.
+        Data owner keeps pointer file encrypted locally.
+Phase 2 — Retrieval (Data Owner wants a chunk)
+Step 1: Data owner reads pointer file.
+        For each chunk needed: they already have dht_key[i] stored in the pointer file.
+Step 2: Data owner issues DHT FIND_VALUE(dht_key[i]).
+        DHT returns list of provider_peer_ids that hold this chunk.
+Step 3: Data owner connects directly to providers via libp2p + QUIC (ADR-021).
+        Downloads 256 KB slices; RS reconstruction requires k=16 of 56 slices.
+Fast path: If microservice is reachable, data owner can skip DHT entirely and ask
+           microservice for {provider_ids} directly using {dht_key}. DHT is the
+           fallback and the decentralised path.
+Phase 3 — Republication (Availability Service, every 12h)
+Availability service queries its chunk location table for all active files.
+For each (dht_key, provider_id) pair:
+  issues Kademlia STORE(dht_key → provider_id)
+This does not require the file_owner_key — the microservice holds dht_keys as opaque bytes.
+Phase 4 — Audit Challenges (Microservice → Provider)
+Microservice issues challenge to provider: (chunk_id, challenge_nonce)
+chunk_id = SHA256(slice content) — the content address, known to microservice.
+dht_key is NOT used in the audit path. The audit path uses chunk_id only.
+Provider responds with SHA256(chunk_data || challenge_nonce). |
 
 ---
 
@@ -185,7 +250,7 @@ Status values: `open` · `answered` · `deferred-v3` · `rejected`
 
 | ID    | Question | Status | Answer / Blocked on |
 |-------|----------|--------|---------------------|
-| Q16-1 | What is AONT encoding throughput on minimum-spec provider hardware without AES-NI (e.g., dual-core 1.8 GHz)? Does the ≤5% CPU budget (ADR-009) hold for 14 MB segments? | open | Blocked on: benchmark on target hardware before V2 launch. If AES-NI is absent and throughput drops below 10 MB/s, switch to ChaCha20-Poly1305 (RFC 8439). |
+| Q16-1 | What is AONT encoding throughput on minimum-spec provider hardware without AES-NI (e.g., dual-core 1.8 GHz)? Does the ≤5% CPU budget (ADR-009) hold for 14 MB segments? | Answered | See [Benchmarking protocol](./benchmarking-protocol.md) |
 | Q16-2 | If the pointer file is the sole retrieval credential, should the pointer file itself be stored redundantly via a separate AONT-RS encoding (recursive), or via a threshold backup with trusted parties? What is the recovery path if the data owner loses their pointer file? | open | Blocked on: ADR-020 (pointer file management, deferred to Phase 3 after Tahoe-LAFS paper). |
 
 ---
@@ -194,7 +259,7 @@ Status values: `open` · `answered` · `deferred-v3` · `rejected`
 
 | ID    | Question | Status | Blocked on |
 |-------|----------|--------|------------|
-| Q17-1 | What fraction of V2 target providers (Indian home desktop, NAS) lack AES-NI? Is the 3× performance gap real for our specific hardware distribution, or is AES-NI ubiquitous enough that a single AES path is sufficient? | open | Provider telemetry at launch. If >20% of providers lack AES-NI, both paths must be maintained. If <5%, ChaCha20-only simplifies the codebase. |
+| Q17-1 | What fraction of V2 target providers (Indian home desktop, NAS) lack AES-NI? Is the 3× performance gap real for our specific hardware distribution, or is AES-NI ubiquitous enough that a single AES path is sufficient? | Answered | See [Benchmarking protocol](./benchmarking-protocol.md) |
 | Q17-2 | Should the pointer file nonce counter be stored in the daemon's local database or in the pointer file itself (as a version number)? If stored externally, what happens when a provider device is restored from backup with a stale counter? | open | Blocked on: ADR-020 (pointer file management, Phase 3). A stale counter after device restore could cause nonce reuse — the recovery procedure must address this. |
 
 ---
@@ -203,8 +268,8 @@ Status values: `open` · `answered` · `deferred-v3` · `rejected`
 
 | ID    | Question | Status | Blocked on |
 |-------|----------|--------|------------|
-| Q18-1 | What Argon2id parameters (t, m, p) are correct for minimum-spec Indian entry-level hardware (~2 GB RAM, dual-core)? The ADR uses t=3, m=64MB as a starting point — is this achievable within the session-start latency budget? | open | Blocked on: benchmark on target hardware before V2 launch. Target: ≤500ms on minimum-spec device. |
-| Q18-2 | Should the owner's Ed25519 signing key (used to sign pointer files) also be derived from the master secret via HKDF, or generated separately and stored encrypted in the local key store? Deriving it makes recovery simpler; storing it separately allows rotation without re-uploading all pointer files. | open | Blocked on: V2 implementation design. If the signing key is derived, rotating it (after a compromise) requires re-signing all pointer files. If stored separately, the key store becomes a second backup target. |
+| Q18-1 | What Argon2id parameters (t, m, p) are correct for minimum-spec Indian entry-level hardware (~2 GB RAM, dual-core)? The ADR uses t=3, m=64MB as a starting point — is this achievable within the session-start latency budget? | Answered | See [Benchmarking protocol](./benchmarking-protocol.md) |
+| Q18-2 | Should the owner's Ed25519 signing key (used to sign pointer files) also be derived from the master secret via HKDF, or generated separately and stored encrypted in the local key store? Deriving it makes recovery simpler; storing it separately allows rotation without re-uploading all pointer files. | Answered | See [Benchmarking protocol](./benchmarking-protocol.md) |
 
 ---
 
@@ -223,7 +288,7 @@ Status values: `open` · `answered` · `deferred-v3` · `rejected`
 | ID | Question | Status | Blocked on |
 |---|---|---|---|
 | Q20-1 | IPFS shows 45.5% of discovered peers are always unreachable without hole-punching (measured before DCUtR was production-deployed). What fraction of Indian desktop home-router deployments are behind symmetric NAT (Circuit Relay v2 required vs cone NAT / DCUtR)? This determines the relay infrastructure load Vyomanaut must operate. Linked to Q13-1. | open | Network measurement during pre-launch provider onboarding testing. |
-| Q20-2 | IPFS uses a 12h republication interval with a 24h expiry, providing a 12-hour buffer against delayed republication. Our availability service currently republishes every 24h (ADR-001, ADR-006) — zero buffer against delay. Should the republication interval be reduced to 12h, or should record expiry be extended to 48h to restore the buffer? | open | Implementation decision — must be resolved before the availability service is built. Both options are operationally equivalent; 12h republication doubles availability-service DHT write traffic. |
+| Q20-2 | IPFS uses a 12h republication interval with a 24h expiry, providing a 12-hour buffer against delayed republication. Our availability service currently republishes every 24h (ADR-001, ADR-006) — zero buffer against delay. Should the republication interval be reduced to 12h, or should record expiry be extended to 48h to restore the buffer? | answered | Reduce availability service republication interval from 24h to 12h. Keep record expiry at 24h. |
 | Q20-3 | IPFS demonstrates an unincentivized churn floor of 87.6% of sessions under 8h. Vyomanaut's escrow model targets MTTF 180–380 days. What held-earnings percentage and minimum vetting period are required to empirically achieve the target MTTF from an operator population that, without incentives, would behave like IPFS peers? Linked to Q05-4. | open | Blocked on: Phase 5 economic mechanism research (ADR-024). The IPFS data provides the unincentivized baseline; the escrow design determines how far above it Vyomanaut can push its providers. |
 
 ---
@@ -270,5 +335,38 @@ Status values: `open` · `answered` · `deferred-v3` · `rejected`
 | Q26-2 | On modern NVMe SSDs where COSTπ/COSTP approaches 1, the LSM multi-page block batching advantage disappears. What fraction of Indian desktop providers at V2 launch will use SSDs vs HDDs? If SSD penetration exceeds 50%, the LSM index design is unjustified and a simple B-tree (or RocksDB's LSM configured for SSD) is the correct choice. | answered | WiscKey is correct for both SSD and HDD providers at 256 KB values. vLog appends are sequential (HDD-optimal). Single-thread random vLog reads at 256 KB complete in ~1 ms on SSD (Figure 3, 840 EVO) and ~12–15 ms on HDD — both well within the 614 ms audit deadline. SSD/HDD mix does not change the design decision. |
 
 ## From Paper 27 — WiscKey
-Q27-1 — Should the vLog use a fixed entry size (always lf=262212 bytes = 256 KB chunk + headers) or a variable-size entry to accommodate future changes to lf (V3) or metadata-only chunks? Fixed size makes GC deterministic (tail advancement requires no entry parsing, only arithmetic); variable size enables V3 flexibility. Blocked on: V3 architecture planning and whether lf will change between V2 and V3.
+Q27-1 — Should the vLog use a fixed entry size (always lf=262212 bytes = 256 KB chunk + headers) or a variable-size entry to accommodate future changes to lf (V3) or metadata-only chunks? Fixed size makes GC deterministic (tail advancement requires no entry parsing, only arithmetic); variable size enables V3 flexibility. Answered, See [Benchmarking protocol](./benchmarking-protocol.md)
 Q27-2 — WiscKey's vLog stores chunks sequentially by append time, placing chunks from different files adjacent on disk. IRON (Paper 25) identified spatial media failure (one surface scratch corrupting multiple contiguous blocks) as a real failure mode. What is the empirical rate of such correlated within-provider disk failures on consumer desktop hardware, and does it justify adding sparse vLog pre-allocation (via fallocate) to produce non-contiguous chunk placement? Blocked on: provider hardware telemetry at V2 launch. If within-provider burst failure events (multiple chunks failing simultaneously on one provider) show up in repair telemetry, revisit vLog placement design.
+
+---
+
+## Update on remaining open questions
+Will be answered by launch telemetry (not research)
+
+Q08-1: Actual MTTF of financially-incentivised desktop providers
+Q20-3: What held-earnings % empirically achieves MTTF 180–380 days
+Q21-1: What fraction of registered providers pass vetting vs. are downgraded
+Q08-3: At what provider count does 20%/day turnover exceed upload budget
+Q23-1: Whether 256 KB vs 512 KB lf shows >20% write throughput difference in practice
+
+Will be answered by product/UX decisions (not research)
+
+Q05-4: Minimum vetting period and held-earnings % that deters exit — ADR-024 will specify candidate values; empirical validation at launch
+Q18-2: Ed25519 signing key → DECIDED ABOVE (store separately)
+Q20-2: Republication interval → DECIDED ABOVE (12h)
+Q05-6: Microservice fallback → DESIGNED ABOVE
+Q07-5: HMAC chunk ID flow → DESIGNED ABOVE
+
+Genuinely open (deferred to V3)
+
+Q01-4: Geographic proximity as selection criterion (Coral DSHT)
+Q07-4: Distributed correlated failure detection (EigenTrust on repair events)
+Q08-4: Adaptive polling interval based on score history
+Q24-1: EigenTrust-style ratings from repair interactions
+Q24-2: Pre-trusted anchor for V3 decentralisation
+
+Never answerable before launch (empirical only)
+
+Q08-1: Actual MTTF under financial incentives — no paper has measured this regime
+Q14-1: UDP block rate at Indian ISPs — requires network measurement at launch
+Q14-3: QUIC migration vs JIT detector false positives — requires audit telemetry

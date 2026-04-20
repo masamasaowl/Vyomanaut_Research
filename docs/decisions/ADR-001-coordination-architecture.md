@@ -31,7 +31,7 @@ Implementation details:
 - Disjoint lookup paths: d=4,8 — maintains 99% efficiency at 30% adversarial node share
 - Replication parameter: k=8,16 (2×d)
 - Sibling list: s=20, c=2.5 — failure probability ~5×10⁻⁷
-- Key-value pairs refreshed every 24 h by the availability service
+- Key-value pairs refreshed every 12 h by the availability service (Update after reading Paper 20)
 - Caching handled autonomously by nodes
 - Bloom filters used for garbage collection
 
