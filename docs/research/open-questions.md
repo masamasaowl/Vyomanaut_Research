@@ -327,8 +327,21 @@ distribution.|
 
 | ID | Question | Status | Blocked on |
 |---|---|---|---|
-| Q25-1 | Should the provider daemon implement eager proactive scrubbing — periodically re-reading and verifying the SHA256 hash of every stored chunk during idle time — rather than relying solely on lazy detection at audit challenge time? Eager scrubbing allows earlier repair triggering for latent sector errors (discovered before a challenge, not only on challenge), but adds continuous background I/O load on the provider's disk. At 256 KB × 56 chunks per file × N files per provider, what is the per-cycle I/O budget for scrubbing, and does it fit within the ≤5% background budget (ADR-009)? | open | ADR-023 (provider storage engine, Phase 2C). The answer depends on the storage engine's I/O model. Defer to Phase 2C. |
-| Q25-2 | Should the provider storage engine randomise chunk placement on disk (non-sequential, non-contiguous layout) to reduce the risk that a single media scratch or surface failure corrupts multiple chunks simultaneously? Contiguous layout is I/O-efficient; spread placement reduces within-provider burst correlation. What is the measurable impact of random vs. sequential placement on read latency for audit challenges at 256 KB chunk size on typical desktop HDDs and SSDs? | open | ADR-023 (Phase 2C). Required benchmark: measure read latency for sequential vs. randomised 256 KB reads on representative Indian desktop hardware (HDD and SSD). |
+| Q25-1 | Should the provider daemon implement eager proactive scrubbing — periodically re-reading and verifying the SHA256 hash of every stored chunk during idle time — rather than relying solely on lazy detection at audit challenge time? Eager scrubbing allows earlier repair triggering for latent sector errors (discovered before a challenge, not only on challenge), but adds continuous background I/O load on the provider's disk. At 256 KB × 56 chunks per file × N files per provider, what is the per-cycle I/O budget for scrubbing, and does it fit within the ≤5% background budget (ADR-009)? | answered | Paper 32 (Schroeder et al., FAST 2016). Continuous background scrubbing is not 
+justified for providers with no error history. Base UE rate is 2–6 per 1,000 drive days — 
+low enough that 24-hour PoR audit challenges are sufficient detection. Proactive scrubbing 
+should be triggered reactively: a provider that fails one audit has a 30× elevated probability 
+of further failures (Figure 7). The daemon should enter an accelerated re-audit mode (e.g., 
+re-challenge all chunks on that provider within 24h) after any audit FAIL, rather than running 
+continuous background I/O on all providers at all times. |
+| Q25-2 | Should the provider storage engine randomise chunk placement on disk (non-sequential, non-contiguous layout) to reduce the risk that a single media scratch or surface failure corrupts multiple chunks simultaneously? Contiguous layout is I/O-efficient; spread placement reduces within-provider burst correlation. What is the measurable impact of random vs. sequential placement on read latency for audit challenges at 256 KB chunk size on typical desktop HDDs and SSDs? | answered | Paper 32 (Schroeder et al., FAST 2016). Sparse vLog placement is not required 
+for V2. Bad block clustering operates at chip granularity (hundreds of contiguous blocks), 
+producing correlated failures within a vLog region. Since Vyomanaut holds only 1 of 56 
+shards per file per provider, a chip failure corrupting a contiguous vLog region damages 
+shards from many different files, but each file retains 55 other shards across independent 
+providers. The RS(16,56) redundancy absorbs within-provider burst failures of this size. 
+Sequential vLog layout is acceptable. Revisit in V3 if provider telemetry shows multi-chunk 
+burst failures exceeding the RS redundancy budget. |
 
 --- 
 
