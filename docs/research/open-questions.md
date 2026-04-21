@@ -448,6 +448,14 @@ Q27-2 — WiscKey's vLog stores chunks sequentially by append time, placing chun
 
 ---
 
+## From Paper 39 — Silberstein et al. (SYSTOR 2014)
+
+| ID | Question | Status | Blocked on |
+|---|---|---|---|
+| Q39-1 | The paper shows that combining lazy recovery with bandwidth-efficient codes (Xorbas, Azure LRC) achieves roughly 2× additional bandwidth reduction. If Hitchhiker codes are adopted in V3 (ADR-026), what is the combined bandwidth reduction achievable at V3 scale when Hitchhiker's 25–45% reduction is compounded with Vyomanaut's existing lazy repair (r0=8, 72h threshold)? Is the combined saving enough to justify Hitchhiker's implementation complexity at the provider scale where BWavg becomes a binding constraint? | open | V3 scale planning; ADR-026 decision; V2 launch telemetry confirming actual repair bandwidth at production provider MTTF. |
+
+---
+
 ## Update on remaining open questions
 Will be answered by launch telemetry (not research)
 
