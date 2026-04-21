@@ -430,6 +430,24 @@ Q27-2 — WiscKey's vLog stores chunks sequentially by append time, placing chun
 
 ---
 
+## From Paper 37 — Crystal, Goren, Kominers (arXiv 2025)
+
+| ID | Question | Status | Blocked on |
+|---|---|---|---|
+| Q37-1 | Proposition 1 proves that pure off-chain peer audits collapse to universal shirking — the unique Nash equilibrium is full dishonesty. Vyomanaut escapes this by using the microservice as the sole trusted auditor (no peer-to-peer audits). But Proposition 1's collapse relies on the auditor having no external verification mechanism. If the microservice itself were corrupted or captured (e.g., by a coalition of large providers exerting economic pressure), would Vyomanaut's honest equilibrium also collapse? At what provider count and market concentration does microservice capture become a realistic threat, and what is the V3 architectural response (Transparent Merkle Log + public verifiability, ADR-015)? | open | V3 Merkle Log implementation (ADR-015); V2 launch telemetry on provider concentration; formal threat model for microservice capture. |
+| Q37-2 | Theorem 1 Condition (i) requires: tau ≥ ((1 − pau)/pau) × rau + (1/(ε × pau)) × cau, where tau is the slashing penalty, pau is the inspection probability, rau is the audit reward, cau is the audit cost, and ε is the noise probability. In Vyomanaut's architecture, pau ≈ 1 (every audit is verified by the microservice), which makes condition (i) trivially satisfied for any positive tau. But if a future V3 design probabilistically samples audit challenges (to reduce microservice load at scale), what is the minimum pau that keeps the condition satisfied at Vyomanaut's escrow parameters? At what provider count does daily-full-audit become infeasible and probabilistic sampling necessary? | open | V3 scale planning; ADR-024 storage rate finalisation; microservice throughput telemetry at V2 launch. |
+
+---
+
+## From Paper 38 — Nath, Yu, Gibbons, Seshan (USENIX NSDI 2006)
+
+| ID | Question | Status | Blocked on |
+|---|---|---|---|
+| Q38-1 | The paper's bi-exponential model G(α, ρ₁, ρ₂) characterises correlated failure size distributions from PlanetLab, web server, and RON traces. Vyomanaut's provider population is Indian home desktop and NAS devices behind ISPs. What are the parameters (α, ρ₁, ρ₂) of the bi-exponential model for Indian residential ISP failure events, and do they place Vyomanaut's RS(16,56) in the safe region where the 20% ASN cap prevents the reconstruction threshold from being breached by a single correlated event? | open | V2 launch telemetry; provider failure event logging by ISP/ASN from the first 6 months of operation. |
+| Q38-2 | Finding 4 shows that ERASURE(8,16) can be two nines worse than ERASURE(1,4) under real correlated failures, despite being 1.5 nines better under independent failures. Vyomanaut's ERASURE(16,56) has a larger m than any system studied in the paper. At what correlated failure rate and failure size distribution does our configuration become worse than, say, ERASURE(4,56) for the same storage overhead? Does the 20% ASN cap shift the effective failure size distribution enough to keep ERASURE(16,56) in the superior region? | open | Applying the paper's bi-exponential model to Vyomanaut's parameters numerically; V2 provider failure telemetry to fit actual α, ρ₁, ρ₂ values. |
+
+---
+
 ## Update on remaining open questions
 Will be answered by launch telemetry (not research)
 
