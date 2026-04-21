@@ -421,6 +421,15 @@ Q27-2 — WiscKey's vLog stores chunks sequentially by append time, placing chun
 
 ---
 
+## From Paper 36 — Dalle, Giroire, Monteiro, Pérennes (INRIA RR-6771, 2008)
+
+| ID | Question | Status | Blocked on |
+|---|---|---|---|
+| Q36-1 | The paper shows that bandwidth standard deviation at 50,000 peers is still 5× the independent model's prediction. At V3 scale (10,000+ providers), what is the actual peak-to-mean repair bandwidth ratio under the Fluid Model framework, given Vyomanaut's specific parameters (s=16, r=40, n=56, 20% ASN cap)? The Giroire BWavg ≈ 39 Kbps/peer is the mean; the peak provisioning target for V3 infrastructure sizing requires the RFM standard deviation at V3 scale. | open | V3 scale planning; requires applying the Refined Fluid Model numerics to Vyomanaut's parameters. Blocked on: V2 launch telemetry for actual provider count and disk occupancy distribution. |
+| Q36-2 | The paper proposes shuffling (periodic random re-assignment of fragments across disks) as a way to reduce variance by homogenising disk fill ratios. In Vyomanaut, the equivalent mechanism would be periodic chunk rebalancing — moving a fraction of chunks from old providers to new providers to normalise fill ratios. Does the repair bandwidth cost of periodic rebalancing exceed the variance-reduction benefit at V2 scale (hundreds of providers)? At what provider count does rebalancing become worthwhile? | open | V3 repair architecture. At V2 scale (hundreds of providers), the variance is already bounded by the 20% ASN cap. Rebalancing is a V3 consideration if the RFM shows peak bandwidth becoming the binding constraint. |
+
+---
+
 ## Update on remaining open questions
 Will be answered by launch telemetry (not research)
 
