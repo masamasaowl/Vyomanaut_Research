@@ -465,6 +465,15 @@ Q27-2 — WiscKey's vLog stores chunks sequentially by append time, placing chun
 
 ---
 
+## From Paper 41 — Vakilinia et al. (Incentive-Compatible DSN, arXiv 2022)
+
+| ID | Question | Status | Blocked on |
+|---|---|---|---|
+| Q41-1 | The paper identifies the service-denial attack: a provider stores data, passes all PoR audits, but refuses retrieval requests from the data owner over the libp2p P2P layer. Vyomanaut's structural mitigation is RS(16,56) — an effective attack requires > 40 providers to refuse simultaneously, which the 20% ASN cap bounds to ~11 correlated providers. But for individual providers, no monitoring of retrieval willingness currently exists in the reliability scorer (ADR-008). Should the microservice or data owner report retrieval failures back to the reliability scorer, and if so, what evidence format prevents a malicious data owner from false-reporting a retrieval failure to punish a provider? | open | ADR-008 scoring model extension; retrieval path design in ADR-021; V2 beta launch telemetry on actual retrieval failure rates. |
+| Q41-2 | The paper's challenge cost X (equation 4, C3 > C1) deters clients from issuing spurious challenges. In Vyomanaut, challenges are microservice-issued, so data-owner-driven spurious challenges are not possible. However, the microservice itself could be the source of excessive challenge load during burst repair events. At V3 scale (10,000+ providers), does the microservice's per-provider daily audit challenge rate remain sustainable, or does it become the throughput bottleneck that makes probabilistic sampling (pau < 1) necessary? At what provider count does full daily auditing become infeasible? | open | V2 launch throughput telemetry on microservice audit dispatch rate; ADR-037 Q37-2 (which asks the same question from the SHELBY perspective). |
+
+---
+
 ## Update on remaining open questions
 Will be answered by launch telemetry (not research)
 
