@@ -456,6 +456,15 @@ Q27-2 — WiscKey's vLog stores chunks sequentially by append time, placing chun
 
 ---
 
+## From Paper 40 — Buragohain et al. (Game Theoretic Framework for P2P Incentives, IEEE P2P 2003)
+
+| ID | Question | Status | Blocked on |
+|---|---|---|---|
+| Q40-1 | The paper proves that P2P system robustness increases with N because each new provider raises the per-peer benefit b(N−1). At Vyomanaut's V2 launch (hundreds of providers), the stable Nash equilibrium contribution d*_hi is already robust against 2/3 of providers departing when bav/bc − 1 = 2.0. At what provider count N does Vyomanaut's per-audit payout structure achieve bav/bc − 1 ≥ 2.0 given the target storage rate (paise/GB/month)? Does this threshold fall within the V2 launch target provider count, or does the system start near the critical benefit level and only become robustly stable at V3 scale? | open | ADR-024 storage rate finalisation; V2 beta provider count telemetry. |
+| Q40-2 | The paper models all peers as having the same cost parameter ci. In Vyomanaut, marginal storage cost varies significantly across providers: a provider with spare NAS capacity has near-zero marginal cost, while one dedicating a new external HDD has a real cost. If ci heterogeneity is high (bi/ci spans a large range), the fraction of providers below bc grows. What is the empirical distribution of marginal storage cost among Indian home desktop providers at V2 launch, and does it place a meaningful fraction of providers below bc at the planned storage rate? | open | V2 beta provider survey; ADR-024 storage rate finalisation. |
+
+---
+
 ## Update on remaining open questions
 Will be answered by launch telemetry (not research)
 
