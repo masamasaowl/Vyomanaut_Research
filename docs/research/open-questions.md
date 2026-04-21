@@ -1,506 +1,210 @@
 # Open Questions
 
-Live tracker. Every question lives here once. Add new questions here; reference this file from paper summaries.
+Genuinely open questions only. Every entry states why it is open and how to close it.
 
-Status values: `open` · `answered` · `deferred-v3` · `rejected`
+Three tiers:
 
-> **How to use this file:**
-> Before adding a question from a new paper, search here first. If it already exists, update the blocked-on reference. If a paper answers a question, update the status and add the answer.
+**Tier 1 — Build blockers** require a decision or design before the relevant module can be implemented.
+**Tier 2 — Telemetry** can only be answered by observing the live V2 system.
+**Tier 3 — V3 scope** are valid questions explicitly deferred to the next major version.
 
----
-
-## From Paper 01 — BitTorrent
-
-| ID | Question | Status | Answer / Blocked on |
-|---|---|---|---|
-| Q01-1 | How to avoid the tracker — it is efficient but vulnerable? | answered | Kademlia (Paper 02) |
-| Q01-2 | Should requests be kept lined up so TCP is always loaded? | answered | Yes — pipelining improves throughput; confirmed in #12 research |
-| Q01-3a | What criteria decide the reliability of a peer? | answered | Storj 4-subsystem pipeline (Paper 07) — [ADR-005](../decisions/ADR-005-peer-selection.md) |
-| Q01-3b | How to decide the initial reliability of a new peer? | answered | Random optimistic assignment — confirmed Paper 07 |
-| Q01-3c | How to re-rank peers based on reliability over time? | answered | 3-window rolling score (Paper 08) — [ADR-008](../decisions/ADR-008-reliability-scoring.md) |
-| Q01-4 | Is geographic proximity a viable assignment parameter? | open | Phase 2A — Coral DSHT (reading-list Phase 2A #11) |
-| Q01-5 | Does reliability-proportional storage assignment create Matthew effect (runaway concentration)? | open | Prototype telemetry after V2 launch |
-| Q01-6 | Should providers with higher speed, uptime, and storage be proportionally rewarded by the escrow model? | open | Phase 5 — Economic mechanism design (#18) |
+Answered questions have been moved to `answered-questions.md`.
+Dropped questions (resolved by existing ADRs or no longer relevant) are recorded in `dropped-questions.md`.
 
 ---
 
-## From Paper 02 — Kademlia
+## Tier 1 — Build Blockers
 
-| ID | Question | Status | Answer / Blocked on |
-|---|---|---|---|
-| Q02-1 | Edge cases where lookup doesn't converge — how to handle? | answered | S/Kademlia sibling nodes fix it (Paper 03) |
-| Q02-2 | How to decide replication parameter k? | answered | S/Kademlia sets k=8,16 (Paper 03) |
-| Q02-3 | How to set branching factor b (accelerated lookups)? | answered | libp2p Kademlia: k=20 bucket size (configure to k=16 per ADR-001), alpha=3 parallel queries. Binary XOR tree has branching factor 2; alpha=3 concurrency gives O(log n / 3) round trips in practice. |
-
-| Q02-4 | Should the data owner also be part of the DHT as a node with no stored value? | answered | No — tracker handles data owner; DHT handles provider swarm only |
-| Q02-5 | How to implement republication of key-value pairs in k-buckets efficiently? | answered | One node republishes per hour; availability service uses same logic |
+These must be resolved before implementing the module they govern.
 
 ---
 
-## From Paper 03 — S/Kademlia
+**Q10-5** — *Repair protocol* — **Uneven repair burden at launch**
+When the network is small (D << N² × lf), block distribution across providers is uneven. Which providers absorb the excess repair load, and how does this affect their BWavg relative to the Giroire prediction?
+Blocked on: repair assignment algorithm design in ADR-004 implementation.
+How to close: specify whether the repair scheduler assigns replacement chunks to the provider with the most free capacity, or distributes load proportionally to reliability score.
 
-| ID | Question | Status | Answer / Blocked on |
-|---|---|---|---|
-| Q03-1 | Should node IDs be hashed from a public key, or is registration gating sufficient? | answered | Registration gating chosen — [ADR-001](../decisions/ADR-001-coordination-architecture.md) |
-| Q03-2 | Is pure P2P sibling broadcast feasible at low peer counts? | answered | No — doesn't work below ~100 peers; hybrid required |
-| Q03-3 | Has a better P2P coordination method emerged since Kademlia (2003) / S/Kademlia (2007)? | answered | libp2p is the current standard in large P2P networks |
+**Q12-2** — *Microservice cluster* — **Hinted handoff for the metadata store**
+The (3,2,2) quorum (ADR-025) survives one replica failure without hinted handoff. Should hinted handoff be implemented anyway to preserve write availability during rolling restarts?
+Blocked on: staging environment failure testing.
+How to close: measure whether writes fail visibly during planned replica restarts in staging; if yes, implement hinted handoff; if no, the quorum alone is sufficient.
 
----
+**Q14-2** — *P2P transfer* — **0-RTT vs 1-RTT latency penalty on audit reconnects**
+ADR-021 disables 0-RTT for all audit interactions to prevent replay attacks (RFC 9000 §8.1). What is the actual p99 latency cost of forcing 1-RTT on every provider reconnect after a nightly absence?
+Blocked on: prototype measurement against providers with realistic inter-challenge gaps.
+How to close: benchmark 1-RTT reconnect latency from three Indian cloud regions to a simulated desktop provider; confirm it stays within the audit deadline margin.
 
-## From Paper 04 — IPFS
+**Q28-1** — *Availability service* — **Per-provider RTO formula — bootstrapping value**
+ADR-006 specifies the timeout formula `RTO = AVG + 4×VAR` (TCP-style, Rhea et al.). What is the initial (bootstrapped) RTO for a new provider with no response-time history?
+Blocked on: implementation of the availability service.
+How to close: use the 30th-percentile RTT of the vetted provider pool as the initial estimate; store `(avg_rtt_ms, var_rtt_ms)` per provider in the reliability scoring DB; initialise new providers to pool median.
 
-| ID | Question | Status | Answer / Blocked on |
-|---|---|---|---|
-| Q04-1 | Which P2P replication protocol: BitSwap, libp2p, QUIC, or alternative? | answered | Framework = libp2p. Transport = QUIC v1 (RFC 9000) primary; TCP + Noise + yamux fallback. BitSwap is not used — direct escrow-motivated transfer replaces it. NAT traversal: AutoNAT → DCUtR → Circuit Relay v2. ADR-021 accepted. |
-| Q04-2 | Can the Merkle DAG links array store chunk-to-provider mappings for redundant siblings? | answered | No — Kademlia handles provider lookup; mixing use-cases creates confusion |
-| Q04-3 | How to use IPNS for file routing if the data owner is not part of the network? | answered | Microservice proxy signatures can resolve DHT republication (needs implementation design) |
+**Q28-2** — *DHT routing* — **Global sampling for proximity optimisation**
+Paper 28 (Rhea) shows periodic global sampling — DHT lookups for random target prefixes, selecting the closest responder — gives a 24% lookup latency reduction at virtually no bandwidth cost. With all V2 providers in India, geographic proximity in the DHT is meaningful. Should libp2p Kademlia be configured to run this?
+Blocked on: V2 launch inter-provider latency data.
+How to close: measure median inter-provider DHT hop latency in the first 30 days of V2 operation; if median > 80 ms, enable global sampling in the libp2p kad-dht configuration.
 
----
+**Q30-1** — *Infrastructure planning* — **Relay node count at V2 launch**
+30% of providers will permanently require Circuit Relay v2 (Paper 30). How many Vyomanaut-operated relay nodes are required to serve V2's provider base without relay becoming a latency bottleneck or single point of failure?
+Blocked on: expected V2 provider count at launch.
+How to close: relay node count = ceil(0.30 × expected_providers × peak_concurrent_audits / relay_connection_limit). Follow the same (3,2,2) availability model as the microservice cluster (ADR-025) — minimum 3 relay nodes, 2 required for availability.
 
-## From Paper 05 — Storj
+**Q35-1** — *Payment implementation* — **Razorpay Route `on_hold_until` timestamp for first-3-business-days release**
+ADR-024 says "release within first 3 business days of each month." Route releases on the *next business day* after the `on_hold_until` timestamp. The correct timestamp must account for Indian bank holidays.
+Blocked on: access to the RBI holiday calendar API or static holiday list.
+How to close: integrate the RBI holiday calendar (available from RBI's website as a machine-readable list); set `on_hold_until` to midnight on the last working day of each month so the next business day falls within the first 3 days of the following month.
 
-| ID | Question | Status | Answer / Blocked on |
-|---|---|---|---|
-| Q05-1 | What challenges or drawbacks does a central Satellite pose? Can all its tasks be decentralised? | open | SoK (Paper 07) partially answers; full answer requires prototype |
-| Q05-2 | At what MTTF does the model become viable, given repair bandwidth as the biggest constraint? | answered | MTTF ≥ 3 months for 100 Kbps background budget — Blake & Rodrigues formula (Paper 06) |
-| Q05-3 | At what mobile MTTF does the business model break (repair bandwidth costs exceed revenue)? | deferred-v3 | Mobile deferred to V3 by [ADR-010](../decisions/ADR-010-desktop-only-v2.md). The crossover calculation uses Blake & Rodrigues formula. Revisit when mobile is introduced. |
-| Q05-4 | What is the minimum vetting period and held-earnings percentage that deters provider exit while keeping providers economically engaged? | open | Blocked on: escrow research papers + economic modelling. Not answerable without a payment model paper. |
-| Q05-5 | What is the minimum response quorum for a PoR batch audit to be statistically valid? (Originally: minimum k' for Berlekamp-Welch — reframed for PoR since we chose Merkle challenges.) | open | Blocked on: reading-list Phase 1 #10 (Szabó) and Phase 2A #15 (Dimakis). |
-| Q05-6 | Storj v3.1 dropped Kademlia entirely. ADR-001 keeps the hybrid DHT. Can providers still serve data to each other if our coordination microservice has downtime? | answered | ### Operations Classified by Microservice Dependency
-**Group A — Continue without microservice (DHT + P2P only):**
-| Operation | Fallback Behaviour |
-| --- | --- |
-| Chunk retrieval by data owner | Data owner uses pointer file → dht_keys → DHT FIND_VALUE → provider direct download. Full retrieval works if DHT records haven't expired. |
-| Data owner with pointer file retrieves from known providers | Data owner has provider_ids in pointer file. Connects directly via libp2p. No DHT needed. Works indefinitely regardless of microservice status. |
-| Provider-to-provider chunk transfer (during repair) | Pure P2P. No microservice involvement in the data plane (ADR-021, ADR-001). |
-| DHT peer discovery | Kademlia is autonomous. k-bucket maintenance continues without microservice. |
-| Audit response delivery (provider side) | Provider computes response and queues it locally. Microservice will collect on recovery. Receipt countersignature is delayed but the data is preserved in the Kafka log (ADR-015). |
-**Group B — Degrade gracefully (buffer, resume on recovery):**
-| Operation | Degraded Behaviour | Max Buffer Duration |
-| --- | --- | --- |
-| Audit challenge dispatch | Microservice cannot issue new challenges. Ongoing challenges complete; responses queue at providers. Gap in audit record — acceptable for one outage window. | ≤ outage duration |
-| DHT record republication | Availability service down → records begin expiring at 24h mark. Impact scales with outage length. Data stays accessible via pointer file direct path. | 24h before first expiry |
-| Reliability score updates | Audit pass/fail events queue. Score updates applied in batch on recovery. 3-window rolling score (ADR-008) tolerates gaps — a window with missing audits defaults to last known value. | Indefinite |
-**Group C — Block until microservice recovers:**
-| Operation | Reason for Block |
-| --- | --- |
-| New file upload (chunk assignment) | Non-I-confluent: unique placement requires single coordinator (ADR-013). Queue upload request; retry on recovery. |
-| Provider registration | Requires microservice identity gate. No self-registration. |
-| Payment release / escrow debit | Non-I-confluent (floor≥0). Payment service must be live. Queue internally. |
-| Repair job queuing | Repair trigger detection requires microservice. However, if fragment count hits reconstruction floor (s=16 surviving), data is still recoverable — no data loss, just delayed repair. |
-| Capability token validation | Non-I-confluent (TTL expiry). Retrieval tokens expire. Data owner re-authenticates on recovery. |
-**Operational Guarantee**
-**No data is ever lost during a microservice outage.** The guarantee holds because:
-- All 56 RS shards are on providers with persistent disk storage (ADR-023).
-- Data owners with pointer files can retrieve directly from provider_ids without any infrastructure.
-- The lazy repair threshold (r0=8, ADR-004) provides a 40-fragment buffer above the reconstruction floor.
-**The only user-visible impact of a microservice outage:** New uploads are queued, payments are delayed, and audit gaps appear in the reliability score record. These are operationally acceptable for a service that has MTTF 180–380 days for providers. Microservice downtime should be measured in minutes (ADR-025 (3,2,2) quorum) not hours.|
-| Q05-7 | With n=80 node IDs at 64 bytes each, the pointer per segment is 5+ KB of metadata. At what file size does per-segment metadata overhead become unacceptable, and should small files be inlined? | open | Blocked on: own file size distribution telemetry at launch. A pilot survey of upload patterns is needed before this can be decided. |
-| Q05-8 | Should we adopt per-segment pricing (not just per-byte) to cover metadata overhead, and how does this interact with our fiat escrow model? | open | Blocked on: reading-list Phase 1 Filecoin whitepaper (#11) + economic mechanism research (#18) |
+**Q36-1** — *V3 infrastructure sizing* — **Peak-to-mean repair bandwidth ratio under correlated failures**
+Paper 36 (Dalle et al.) shows the real repair bandwidth standard deviation is 22× the independent model's prediction. The Giroire BWavg ≈ 39 Kbps/peer is the mean only. At V3 scale (10,000+ providers), what is the actual peak provisioning target?
+Blocked on: V2 launch provider failure telemetry to fit the bi-exponential model parameters.
+How to close: after 6 months of V2 operation, fit the Refined Fluid Model (G(α, ρ₁, ρ₂)) to observed provider failure events grouped by ASN; use the resulting standard deviation to set V3 bandwidth headroom.
 
----
+**Q38-2** — *Erasure coding safety margin* — **At what correlated failure rate does RS(16,56) become worse than a simpler scheme?**
+Paper 38 (Nath) proves that at high correlated failure rates, large-m erasure schemes can be worse than smaller-m schemes. Our (m=16, n=56) is the widest stripe in any studied system. Does the 20% ASN cap keep us safely in the superior region?
+Blocked on: applying Nath's bi-exponential model numerics to our specific parameters and cap.
+How to close: compute the availability curves for RS(16,56) and RS(4,56) under the bi-exponential failure model from Paper 38 using our cap-bounded maximum correlated failure size (20% × 56 = 11 shards); confirm RS(16,56) remains superior at this truncated failure size.
 
-## From Paper 06 — Blake & Rodrigues
+**Q39-1** — *V3 repair bandwidth* — **Combined Hitchhiker + lazy repair reduction**
+Paper 39 (Silberstein) shows lazy recovery and bandwidth-efficient codes are orthogonal and combinable — Xorbas+LAZY achieves ~2× additional reduction beyond either alone. At V3 scale, combining Hitchhiker's 25–45% reduction with ADR-004's lazy repair should compound. Does the combined saving justify Hitchhiker's implementation complexity?
+Blocked on: V2 launch telemetry confirming actual repair bandwidth at production provider MTTF, and ADR-026 candidate decision.
+How to close: after 6 months of V2 data, compute observed BWavg vs Giroire prediction; if actual > predicted by > 20%, evaluate Hitchhiker implementation for V3.
 
-| ID | Question | Status | Answer / Blocked on |
-|---|---|---|---|
-| Q06-1 | At what provider MTTF does repair bandwidth exceed 30% of total system bandwidth? | answered | MTTF=1mo → 310 KB/s; MTTF=3mo → 103 KB/s; MTTF=6mo → 52 KB/s (see paper-06 for formula) |
-| Q06-2 | What is the minimum provider MTTF the escrow model must enforce to remain economically viable? | answered | Repair cost per churn event must not exceed provider revenue; low-MTTF provider entry is unprofitable for existing nodes |
-| Q06-3 | What value of polling timeout t should the system use? | open | 8–24 h range established; finalise after prototype — [ADR-006](../decisions/ADR-006-polling-interval.md) |
+**Q41-1** — *Adversarial defences (ADR-014 gap)* — **Service-denial monitoring design**
+Paper 41 (Vakilinia) formally identifies service-denial as a fifth adversarial class: a provider stores data, passes all audits, but refuses client retrieval. ADR-014 does not enumerate this. The structural mitigation (RS(16,56) requires > 40 simultaneous refusals for an effective denial) is sound, but retrieval failures are not currently surfaced to the reliability scorer.
+Should retrieval failures be reported to the scorer? If yes, what evidence format prevents a malicious data owner from false-reporting a failure to punish a provider?
+Blocked on: retrieval path design in ADR-021 and the audit receipt schema (ADR-017).
+How to close: (1) add an optional `retrieval_failure_report` to the signed audit receipt, (2) require the report to include a provider-signed denial response (proves the provider refused, rather than a network failure), (3) weight repeated retrieval failures in the 24h scoring window.
+
+**Q41-2** — *Audit scalability* — **At what provider count does daily full-audit become infeasible?**
+At V2 scale, the microservice challenges every chunk on every provider daily. At V3 scale (10,000+ providers × thousands of chunks each), this may exceed microservice throughput.
+Blocked on: microservice audit dispatch throughput telemetry at V2 launch.
+How to close: measure audit challenge dispatch rate at V2 beta; extrapolate to V3 scale; set the threshold at which probabilistic sampling (pau < 1) becomes necessary; verify the SHELBY Theorem 1 Condition (i) still holds at the reduced pau.
 
 ---
 
-## From Paper 07 — SoK: DSN
+## Tier 2 — Telemetry
 
-| ID | Question | Status | Answer / Blocked on |
-|---|---|---|---|
-| Q07-1 | What is the lightest proof-of-storage that resists just-in-time retrieval on a 5 Mbps mobile provider? | answered | Response deadline = (chunk_size / declared_upload_speed) × 1.5; randomise challenge timing — [ADR-002](../decisions/ADR-002-proof-of-storage.md) |
-| Q07-2 | Does the Honest Geppetto attack have a practical mitigation without centrally watching all nodes? | answered | Placement constraint at write time: no cluster holds >20% of shards for one file — [ADR-014](../decisions/ADR-014-adversarial-defences.md) |
-| Q07-3 | What replaces blockchain as the neutral audit trail both parties trust? | answered | Write-once audit log + signed receipts — [ADR-015](../decisions/ADR-015-audit-trail.md) |
-| Q07-4 | Can correlated failure detection be built into the reliability scorer without a central coordinator seeing all audit results simultaneously? | deferred-v3 | EigenTrust (Paper 24) confirms distributed reputation propagation is possible when pairwise interactions exist. V2 has no pairwise provider interactions — audit signal flows only through the microservice. Correlated failure detection stays centralised (ADR-014 ASN cap). V3 candidate: EigenTrust-style ratings on repair-event provider-to-provider chunk transfers. |
-| Q07-5 | How do we pseudonymise chunk IDs in the DHT to prevent a monitoring node from reconstructing which files a client is accessing, while still allowing Kademlia FIND_VALUE to function? | Answered | Every chunk has a DHT lookup key derived as:
-dht_key = HMAC-SHA256(chunk_hash, file_owner_key)
-where:
-  chunk_hash    = SHA256(raw chunk slice content)   — content address
-  file_owner_key = HKDF(master_secret, "vyomanaut-dht-v1", file_id)
-                   — a 32-byte key derived per file from owner's master secret
-dht_key is 32 bytes. It is the only identifier the DHT ever sees. Neither chunk_hash nor file_id appear in any DHT message.
-Phase 1 — Upload (Data Owner → Microservice → Providers → DHT)
-Step 1: Data owner computes dht_key locally for each of the 56 chunks in a segment.
-        dht_key = HMAC-SHA256(chunk_hash[i], file_owner_key)
-        Sends to microservice: {chunk_id[i], dht_key[i], assigned_provider_id[i]}
-Step 2: Microservice stores: {dht_key[i] → provider_id[i]} in its chunk location table.
-        This is a normal I-confluent INSERT (ADR-013).
-Step 3: Microservice instructs each provider: "Store this chunk slice; your dht_key is X."
-        Provider daemon publishes to DHT: STORE(dht_key → provider_peer_id)
-        using standard Kademlia STORE — finds k=16 closest peers to dht_key, deposits record.
-Step 4: Pointer file (ADR-022) stores {chunk_hash[i], dht_key[i], provider_id[i]} per chunk.
-        Data owner keeps pointer file encrypted locally.
-Phase 2 — Retrieval (Data Owner wants a chunk)
-Step 1: Data owner reads pointer file.
-        For each chunk needed: they already have dht_key[i] stored in the pointer file.
-Step 2: Data owner issues DHT FIND_VALUE(dht_key[i]).
-        DHT returns list of provider_peer_ids that hold this chunk.
-Step 3: Data owner connects directly to providers via libp2p + QUIC (ADR-021).
-        Downloads 256 KB slices; RS reconstruction requires k=16 of 56 slices.
-Fast path: If microservice is reachable, data owner can skip DHT entirely and ask
-           microservice for {provider_ids} directly using {dht_key}. DHT is the
-           fallback and the decentralised path.
-Phase 3 — Republication (Availability Service, every 12h)
-Availability service queries its chunk location table for all active files.
-For each (dht_key, provider_id) pair:
-  issues Kademlia STORE(dht_key → provider_id)
-This does not require the file_owner_key — the microservice holds dht_keys as opaque bytes.
-Phase 4 — Audit Challenges (Microservice → Provider)
-Microservice issues challenge to provider: (chunk_id, challenge_nonce)
-chunk_id = SHA256(slice content) — the content address, known to microservice.
-dht_key is NOT used in the audit path. The audit path uses chunk_id only.
-Provider responds with SHA256(chunk_data || challenge_nonce). |
+These cannot be answered by research. They require observing the live V2 system.
 
 ---
 
-## From Paper 08 — Bhagwan (Availability)
+**Q01-5** — *Peer selection* — Does reliability-proportional assignment create a runaway Matthew effect where the top 5% of providers receive > 50% of new chunk assignments?
+Measure: track cumulative chunk assignment distribution vs reliability score percentile over the first 90 days. Trigger: if the top decile holds > 40% of assignments, add a concentration cap analogous to the ASN cap.
 
-| ID | Question | Status | Answer / Blocked on |
-|---|---|---|---|
-| Q08-1 | What is the actual MTTF of a financially-incentivised desktop storage provider? | open | Own provider telemetry — must be measured empirically at launch. No paper answers this. |
-| Q08-2 | What polling interval t separates a sleeping provider from a dead one? | answered | t sweet spot: 12–24 h; start at 24 h — confirmed by Blake & Rodrigues |
-| Q08-3 | At what provider count does a ~20%/day turnover rate produce more repair bandwidth than the network's idle upload capacity can absorb? | open | Partially computable with Blake & Rodrigues formula: inputs are turnover rate × repair BW per event (chunk_size × parity_count). Blocked on: stable ADR-003 parameters and first network size estimates. |
-| Q08-4 | Should polling interval t be adaptive — shorter for providers with a history of short absences, longer for reliably long sessions? | open | Blocked on: reading-list Phase 2B #17 (Reliability Scoring). Adaptive t would reduce repair bandwidth for predictably-absent providers without compromising departure detection for true exits. |
-| Q08-5 | Can the reliability scorer distinguish a diurnally-absent provider from a permanently-departed one before t expires, without polling more frequently? | open | Core tension between bandwidth savings (long t) and early departure detection. Blocked on: #8 reliability scoring model research. Bhagwan's two-component model (daily churn + permanent departure) is the theoretical basis. |
+**Q05-1** — *Coordination* — What practical challenges does the central microservice pose at launch scale, and which satellite functions can be decentralised in V3?
+Measure: microservice latency percentiles, failure incidents, and operational overhead over the first 6 months.
 
----
+**Q05-4** — *Economic calibration* — What held-earnings percentage and vetting period length empirically achieve the target MTTF (180–380 days)?
+Starting values in ADR-024: 30-day rolling hold, 50% release cap during vetting. Measure: provider survival curves by cohort; adjust multipliers if median provider tenure < 6 months.
 
-## From Paper 09 — Bolosky (Feasibility)
+**Q05-7** — *Storage overhead* — At what file size does per-segment pointer file metadata overhead become user-visible, and should small files be inlined?
+Measure: track upload distribution at launch; compute metadata-to-data ratio by file size decile; set an inline threshold if the smallest decile shows > 5% metadata overhead.
 
-| ID | Question | Status | Answer / Blocked on |
-|---|---|---|---|
-| Q09-1 | What is the correct repair trigger threshold for desktop vs mobile providers? | answered | Desktop: 72 h (Bolosky bimodal); mobile deferred to V3 — [ADR-006](../decisions/ADR-006-polling-interval.md) |
-| Q09-2 | How does the provider tier model change the erasure coding parameters inherited from Storj? | answered | Desktop-only V2 collapses the tier model; uniform parameters apply — [ADR-010](../decisions/ADR-010-desktop-only-v2.md) |
-| Q09-3 | Can convergent encryption be safely used for deduplication in a zero-knowledge system? | answered | Not needed — deduplication is not a requirement; data owner pays for all their content |
-| Q09-4 | What is the actual free-space fraction on modern Indian smartphones in 2024, given photo/video storage dominance? | deferred-v3 | Mobile deferred to V3. Bolosky's 50% figure is from year-2000 corporate desktops. A pilot survey of 100 target-market phones is needed before mobile launch. |
-| Q09-5 | Should the 72-hour departure threshold be mobile-tier-specific, given that mobile absence patterns don't include 64-hour weekend stretches? | deferred-v3 | Mobile deferred to V3. Mobile absence is driven more by OS background execution limits than by human behaviour. Revisit when reading-list Phase 1 #11 (Background OS Execution) is studied. |
-| Q09-6 | What is the maximum safe lazy-update window for a mobile tier at 1-month MTTF? | deferred-v3 | Mobile deferred to V3. Window must be shorter than the expected time to propagate k copies across k independent mobile providers. Blocked on: #3 and #4 research at mobile-tier parameters. |
+**Q06-3** — *Polling interval* — Does t=24h need production tuning?
+Measure: false-positive departure declarations (providers declared departed who return within 72h) over the first 3 months. Adjust if false-positive rate > 5%.
 
----
+**Q08-1** — *Provider MTTF* — What is the actual MTTF of a financially-incentivised Indian desktop provider?
+Measure: survival analysis on the first provider cohort; compare to Bhagwan's unincentivised floor (median session ~1–2h) and Bolosky's corporate desktop ceiling (MTTF 290–380 days).
 
-## From Paper 10 — Giroire (Lazy Repair)
+**Q08-3** — *Repair budget* — At what provider count does a 20%/day turnover rate produce more repair bandwidth than the network's idle upload capacity can absorb?
+Compute: `turnover_rate × repair_BW_per_event (chunk_size × parity_count)` vs `N × 100 KB/s`. Inputs are unknown until actual turnover rate is observed.
 
-| ID | Question | Status | Answer / Blocked on |
-|---|---|---|---|
-| Q10-1 | What is repair bandwidth spike Qpeek when a provider fails? | answered | For N=1000, s=16, r=40, r0=8: Qpeek=793 GB/peer; at 100 Kbps takes 8 h < 12 h window |
-| Q10-2 | What is the optimal lazy repair strategy for a mixed-tier network — single or per-tier r0? | answered | V2 uses single r0=8 (desktop-only, uniform tier); per-tier approach deferred to V3 |
-| Q10-3 | Desktop-only BWavg at current parameters? | answered | BWavg ≈ 13.7 KB/s per peer at MTTF=300 days (α=1/7200 per hour, Giroire Eq. 2) — well within 100 KB/s background budget |
-| Q10-4 | How does the optimal r change when provider temporary absence (diurnal churn) is separated from permanent departure? ... | open → **partially resolved** | Saroiu (Paper 21) provides the unincentivized α_temporary floor (median session ~60 min in zero-incentive systems). In Vyomanaut's incentivized model, α_temporary is orders of magnitude lower, meaning the conservative assumption in Giroire (treating all departures as permanent) safely overestimates repair bandwidth. The optimal r=40 is therefore robust to the α split. Formally proving the split-α formula still requires Dimakis (Phase 2A #4). |
-| Q10-5 | At launch (D << N² × lf), repair load is unevenly distributed. Which providers bear the excess repair burden, and how does this affect their BWavg? | open | Blocked on: [ADR-005](../decisions/ADR-005-peer-selection.md) and the repair assignment algorithm. Uneven block distribution at launch concentrates repair on a small set of high-reliability providers. |
+**Q14-1** — *NAT traversal* — What fraction of Indian home ISPs block UDP, forcing all QUIC connections to the TCP fallback?
+Measure: log transport type per provider connection at registration; report UDP-block rate at 30 days.
 
----
+**Q14-3** — *Audit receipt* — What is the false-positive rate of the JIT detector (`response_latency_ms`) during QUIC connection migration events?
+Measure: correlate QUIC migration signals in the libp2p layer with audit response latency spikes over the first month; if false-positive rate > 1%, add a migration flag to the audit receipt schema.
 
-## From Paper 11 — Bailis (Coordination Avoidance)
+**Q19-3** — *Erasure parameter validation* — Does the > 98% single-chunk failure rate (Facebook warehouse) hold in a P2P consumer desktop network with correlated failures?
+Measure: log failure event sizes (how many chunks fail simultaneously per provider departure) over the first 6 months; if multi-chunk bursts > 2% of events, re-evaluate whether MSR repair bandwidth optimisation targets the right case.
 
-| ID | Question | Status | Answer / Blocked on |
-|---|---|---|---|
-| Q11-1 | How to implement the PN-counter CRDT for escrow balance without losing auditability? | answered | Append-only escrow_events table with idempotency key — [ADR-016](../decisions/ADR-016-payment-db-schema.md) |
-| Q11-2 | What is the exact DB schema for the audit receipt table satisfying all I-confluence requirements? | answered | 12-field schema with Ed25519 dual signatures — [ADR-017](../decisions/ADR-017-audit-receipt-schema.md) |
-| Q11-3 | How to apply I-confluence analysis to a new operation before adding it to the codebase? | answered | 5-step process: state invariant → ask merge question → check Table 2 → scope coordination → document in PR |
-| Q11-4 | Under concurrent payment releases, does Postgres serialisable isolation on the payment service become a throughput bottleneck? | answered | No. Peak throughput at 10,000 providers ≈ 3 releases/sec. Paper 11 shows single-server coordination cost is 0.19% of cycles. Not a bottleneck in V2. |
-| Q11-5 | At what provider count does the chunk assignment service (the one non-I-confluent write) become a bottleneck? | answered | At 1,000 uploads/day the assignment service handles ~0.01 ops/sec. Not a bottleneck until V3+ scale. |
-| Q11-6 | Can capability token validation be made I-confluent by pre-computing all valid tokens at upload time? | answered | No. Token expiry is a time-based recency guarantee (Sec 5.3). Removing expiry defeats the security purpose. Accept the coordination cost. |
+**Q20-1** — *NAT geography* — What fraction of Indian desktop home-router deployments are behind symmetric NAT and require Circuit Relay v2 permanently?
+Measure: log AutoNAT classification per provider at registration; report symmetric-NAT fraction at 30 days (global baseline from Paper 30 is ~30%; India-specific may be higher due to CGNAT prevalence).
 
----
+**Q20-3** — *Economic mechanism* — What held-earnings percentage empirically achieves MTTF 180–380 days from an initially unincentivised provider population?
+Measure: survival curves for the first provider cohort; compare against Trautwein's unincentivised floor (87.6% of sessions under 8h).
 
-## From Paper 12 — Dynamo
+**Q21-1** — *Vetting effectiveness* — What fraction of registered providers pass the 4–6 month vetting period vs are rejected or downgraded?
+Measure: cohort analysis at 6 months; if reject rate > 40%, investigate whether registration gate or vetting criteria need adjustment.
 
-| ID | Question | Status | Answer / Blocked on |
-|---|---|---|---|
-| Q12-1 | At what microservice cluster size does hand-rolled gossip membership (ADR-025) become harder to operate than managed consensus (etcd/Consul)? | open | Dynamo Section 6.6 notes that full-membership gossip works for hundreds of nodes but does not scale to tens of thousands. Our cluster is 3–5 replicas so gossip is appropriate in V2. The threshold to revisit is: if the cluster ever grows beyond ~10 replicas, evaluate etcd. Blocked on: production telemetry post-launch. |
-| Q12-2 | Should hinted handoff be implemented for the coordination microservice metadata store when one replica is temporarily unavailable during a write? | open | Dynamo uses hinted handoff to preserve write availability during single-node outages — the write is sent to a substitute replica with a hint, then replayed to the intended replica on recovery. Our (3,2,2) quorum survives one failure without hinted handoff, so it is not strictly necessary in V2. Whether the added complexity is worth the durability improvement during rolling restarts is an operational decision. Blocked on: implementation phase and observed failure patterns in staging. |
+**Q23-1** — *Fragment size* — Is the ~10–15% write throughput penalty at lf=256 KB vs lf=512 KB observable on Indian desktop hardware?
+Measure: benchmark vLog append throughput at 256 KB and 512 KB on a minimum-spec desktop; if gap > 20%, re-evaluate lf (requires coordinated change to ADR-003, ADR-004).
 
----
+**Q27-2** — *Disk reliability* — What is the empirical rate of within-provider burst failures (multiple chunks failing simultaneously)?
+Measure: log the number of chunks simultaneously invalidated per provider departure/failure event; if multi-chunk bursts appear at > 1% of events, evaluate sparse vLog pre-allocation.
 
-## From Paper 13 — libp2p
+**Q29-1** — *Economic calibration* — Does graduated penalty (warn at 48h, partial hold at 60h) retain more providers near the 72h boundary than binary seizure?
+Measure: survival curves for providers in the 48–72h absence zone; compare pre-ADR-024-update cohort (if any) with post-update cohort.
 
-| ID | Question | Status | Answer / Blocked on |
-|---|---|---|---|
-| Q13-1 | Does libp2p Circuit Relay v2 introduce enough additional round-trip latency to violate the audit response deadline for providers behind
-symmetric NAT? | answered |Paper 30 (Trautwein et al., DCUtR). DCUtR relay overhead is within the 614 ms audit deadline for India-first deployment. Relay RTT in 90%+ of cases is well below 500 ms in production IPFS measurements. Vyomanaut-operated relay nodes co-located in Indian cloud regions will have consistently <50 ms relay RTT to Indian home providers. The 1.5× deadline multiplier provides sufficient margin. No change to ADR-002 or ADR-021 required. |
-| Q13-2 | Should libp2p GossipSub be used for repair event propagation to surviving chunk holders, or should repair job orchestration remain exclusively in the microservice? | open | GossipSub would allow the surviving fragment holders to self-organise a repair without a central repair scheduler. This reduces microservice load during a burst failure event but introduces a new failure mode: if GossipSub mesh formation fails during the same network partition that caused the chunk loss, repair is silently delayed. The microservice-driven repair model (ADR-004) is deterministic and auditable; GossipSub adds complexity with unclear benefit for V2 scale. Blocked on: repair scheduler implementation in V2; revisit if microservice repair throughput becomes a bottleneck at V3 scale (>10,000 providers). |
+**Q30-2** — *DCUtR retry count* — Should the libp2p DCUtR retry count be reduced from 3 to 1?
+Paper 30 provides the theoretical basis (97.6% first-attempt success) but the right answer for Vyomanaut's specific audit deadline needs measurement.
+Measure: audit challenge p99 latency under relay, with 1-retry vs 3-retry DCUtR; if p99 stays below 400 ms with 1-retry, apply the change.
 
----
+**Q31-1** — *Scoring calibration* — What threshold drop in the 7d vs 30d score should trigger the partial escrow hold?
+ADR-024 starting value: 0.20 drop. Measure: examine provider score trajectories before silent departures in V2 beta; the threshold should catch > 80% of departing providers before the 72h boundary.
 
-## From Paper 14 — RFC 9000 (QUIC)
+**Q33-1** — *Economic calibration* — What holding percentage and holding period maximise provider retention while maintaining deterrence?
+ADR-024 starting values: 30-day rolling hold, 50% cap during vetting. Measure: cohort analysis comparing providers at different holding percentages if A/B testing is feasible.
 
-| ID | Question | Status | Answer / Blocked on |
-|---|---|---|---|
-| Q14-1 | What is the fallback when UDP is blocked at a provider's ISP or home router? Does libp2p handle TCP/WebTransport fallback transparently, and what fraction of Indian home ISPs block UDP in practice? | answered | libp2p automatically falls back to TCP + Noise XX + yamux when UDP is unreachable (Paper 13). The fallback is transparent — multiaddr dialling selects the best reachable transport. The UDP-block rate at Indian ISPs is unknown and must be measured at launch, but the fallback path is architecturally in place. |
-| Q14-2 | Should 0-RTT be disabled for all chunk transfer connections to eliminate replay risk, and what is the p99 latency penalty for forcing 1-RTT on every reconnect from a returning provider? | open | Blocked on: prototype measurement. RFC 9000 Section 8.1 allows servers to reject 0-RTT data selectively. The latency cost depends on round-trip time to the microservice and the frequency of provider reconnects relative to audit interval. |
-| Q14-3 | During a QUIC connection migration mid-audit-challenge, response_latency_ms in the audit receipt will spike due to path validation (PATH_CHALLENGE / PATH_RESPONSE). How do we distinguish a migration event from a JIT retrieval attempt? Should the audit receipt schema (ADR-017) include an optional migration_event flag, and if so, what proves the flag is honest? | open | Blocked on: libp2p spec (migration signalling) and empirical data from provider telemetry at launch. Migration events from stable desktop providers with static IPs should be rare enough that false-positive JIT detections are negligible in V2. Revisit if migration-flag abuse emerges. |
+**Q34-2** — *Repair budget* — What fraction of a provider's declared upload bandwidth is consumed by repair events in steady state?
+Measure: log per-provider repair transfer volume over the first 3 months; compare to Giroire BWavg prediction.
+
+**Q35-2** — *Razorpay fees* — Is the per-transaction payout fee model sustainable at V2 scale?
+Measure: aggregate payout fee expense at 1,000 providers, 3,000 providers, and 10,000 providers; confirm with Razorpay account manager that fee schedules are stable.
+
+**Q38-1** — *Failure correlation* — What are the bi-exponential model parameters (α, ρ₁, ρ₂) for Indian ISP failure events?
+Measure: after 6 months of V2 operation, fit the bi-exponential distribution to observed provider failure events grouped by ASN; use to validate that the 20% ASN cap keeps RS(16,56) in the superior region.
+
+**Q40-1** — *Nash equilibrium* — At what provider count N does bav/bc − 1 ≥ 2.0, placing the network in the robustly stable regime?
+Computable once the storage rate (paise/GB/month) is set in ADR-024. Formula: `(monthly_earnings / marginal_storage_cost) × (N−1) > 4`. At any positive storage rate and N > 1 this is trivially satisfied; the question is about the specific N at which the stability margin becomes comfortable.
+
+**Q40-2** — *Economic heterogeneity* — What is the empirical distribution of marginal storage cost among Indian home desktop providers?
+Measure: provider survey at V2 beta registration; estimate marginal cost from declared free disk space and hardware tier.
 
 ---
 
-## From Paper 15 — Szabó et al. (Encrypt-Erasure Separation)
+## Tier 3 — V3 Scope
 
-| ID | Question | Status | Answer / Blocked on |
-|---|---|---|---|
-| Q15-1 | If mobile providers are introduced in V3 and operator partnerships are unavailable, can client-side RS erasure coding on a mobile device fit within battery and CPU budgets at our parameters (s=16, r=40, lf=256 KB)? | open | Blocked on: mobile MTTF research (V3) and Phase 1 #11 (Background OS Execution). The paper shows proxy-based offloading reduces this cost by ~20% but requires ISP cooperation. |
-| Q15-2 | The paper confirms encrypt-then-code preserves zero-knowledge. Does code-then-encrypt offer any meaningful additional security guarantee that would justify its higher key management cost (56 keys per file vs 1)? | answered | Code-then-encrypt with per-chunk keys offers no meaningful additional security over AONT-RS for our threat model. AONT-RS achieves computational security of 2^256 with zero external key management, at storage overhead ≈ Rabin. The threshold alone is sufficient. |
+Valid questions explicitly deferred. Each entry notes what V3 milestone they feed.
 
 ---
 
-## From Paper 16 — AONT-RS
+**Q01-4** — *Peer selection* — Geographic proximity as a viable assignment criterion. Feeds: Coral DSHT implementation.
 
-| ID    | Question | Status | Answer / Blocked on |
-|-------|----------|--------|---------------------|
-| Q16-1 | What is AONT encoding throughput on minimum-spec provider hardware without AES-NI (e.g., dual-core 1.8 GHz)? Does the ≤5% CPU budget (ADR-009) hold for 14 MB segments? | Answered | See [Benchmarking protocol](./benchmarking-protocol.md) |
-| Q16-2 | If the pointer file is the sole retrieval credential, should the pointer file itself be stored redundantly via a separate AONT-RS encoding (recursive), or via a threshold backup with trusted parties? What is the recovery path if the data owner loses their pointer file? | open | Blocked on: ADR-020 (pointer file management, deferred to Phase 3 after Tahoe-LAFS paper). |
+**Q05-3** — *Mobile providers* — At what mobile MTTF does the business model break? Feeds: V3 mobile provider tier design.
 
----
+**Q07-4** — *Reputation* — Can correlated failure detection be distributed using EigenTrust on repair-event interactions? Feeds: V3 distributed reputation.
 
-## From Paper 17 — RFC 8439 (ChaCha20-Poly1305)
+**Q08-4** — *Polling* — Should polling interval t be adaptive based on score history? Feeds: V3 reliability scoring model.
 
-| ID    | Question | Status | Blocked on |
-|-------|----------|--------|------------|
-| Q17-1 | What fraction of V2 target providers (Indian home desktop, NAS) lack AES-NI? Is the 3× performance gap real for our specific hardware distribution, or is AES-NI ubiquitous enough that a single AES path is sufficient? | Answered | See [Benchmarking protocol](./benchmarking-protocol.md) |
-| Q17-2 | Should the pointer file nonce counter be stored in the daemon's local database or in the pointer file itself (as a version number)? If stored externally, what happens when a provider device is restored from backup with a stale counter? | open | Blocked on: ADR-020 (pointer file management, Phase 3). A stale counter after device restore could cause nonce reuse — the recovery procedure must address this. |
+**Q08-5** — *Scoring* — Can the scorer distinguish a diurnally-absent provider from a permanently-departed one before t expires? Feeds: V3 reliability scoring model.
 
----
+**Q09-4** — *Mobile* — Actual free-space fraction on modern Indian smartphones. Feeds: V3 mobile provider tier.
 
-## From Paper 18 — Tahoe-LAFS
+**Q09-5** — *Mobile* — Mobile-specific 72h departure threshold. Feeds: V3 mobile provider tier.
 
-| ID    | Question | Status | Blocked on |
-|-------|----------|--------|------------|
-| Q18-1 | What Argon2id parameters (t, m, p) are correct for minimum-spec Indian entry-level hardware (~2 GB RAM, dual-core)? The ADR uses t=3, m=64MB as a starting point — is this achievable within the session-start latency budget? | Answered | See [Benchmarking protocol](./benchmarking-protocol.md) |
-| Q18-2 | Should the owner's Ed25519 signing key (used to sign pointer files) also be derived from the master secret via HKDF, or generated separately and stored encrypted in the local key store? Deriving it makes recovery simpler; storing it separately allows rotation without re-uploading all pointer files. | Answered | See [Benchmarking protocol](./benchmarking-protocol.md) |
+**Q09-6** — *Mobile* — Maximum safe lazy-update window at mobile MTTF ~30 days. Feeds: V3 erasure parameters for mobile.
 
----
+**Q13-2** — *Repair* — Should GossipSub be used for repair event propagation to surviving fragment holders? Feeds: V3 repair scheduler if microservice throughput becomes a bottleneck.
 
-## From Paper 19 — EC Survey (Shen et al., ACM ToS 2025)
+**Q15-1** — *Mobile encryption* — Can client-side RS erasure coding on a mobile device fit within battery and CPU budgets? Feeds: V3 mobile encoding pipeline.
 
-| ID | Question | Status | Blocked on |
-|---|---|---|---|
-| Q19-1 | Our n=56 puts us in wide-stripe territory (Section 3.3). ECWide's combined locality assumes rack-based topology for local repair groups. Is there any equivalent locality structure in a P2P consumer network that could give a local repair benefit, or does wide-stripe RS without locality remain the only viable option? | open | Phase 2A #5 (Erasure Codes for Cold Data) and network topology telemetry at V2 launch. |
-| Q19-2 | Clay codes support general (n, k) and are access-optimal MSR codes. What is the sub-packetisation level β for our (n=56, k=16, d=55) configuration... | **answered** | Goparaju et al. (Paper 22) Construction 2 formula: α = ρ^(k·C(r,ρ)). For our parameters at d=n-1: ρ=40, C(40,40)=1, α = 40^16 ≈ 10^25 sub-chunks per 256 KB fragment — computationally intractable. MSR/Clay codes are not feasible at (n=56, k=16) for any d. Only Hitchhiker codes (α=2, two sub-stripes) remain viable for V3. |
-| Q19-3 | The survey cites a Facebook warehouse cluster measurement showing >98% of per-stripe failure events are single-chunk failures — the case MSR codes optimise for. Does this hold in a P2P consumer desktop network with correlated failures (power outages, ISP events, OS updates)? If multi-chunk events are common, MSR's single-failure optimisation is less well-targeted. | open | Blocked on: Phase 2A #2 (Trautwein et al., IPFS production measurements) and own provider telemetry at launch. |
+**Q19-1** — *Erasure coding* — ECWide locality in a P2P network with no rack topology. Feeds: V3 wide-stripe optimisation.
 
----
+**Q24-1** — *Reputation* — Minimum repair interactions per provider pair before EigenTrust PSM score is statistically meaningful. Feeds: V3 distributed reputation.
 
-## From Paper 20 — Trautwein et al. (IPFS, SIGCOMM 2022)
+**Q24-2** — *Decentralisation* — What replaces the microservice pre-trusted anchor in V3? Feeds: V3 decentralised coordination.
 
-| ID | Question | Status | Blocked on |
-|---|---|---|---|
-| Q20-1 | IPFS shows 45.5% of discovered peers are always unreachable without hole-punching (measured before DCUtR was production-deployed). What fraction of Indian desktop home-router deployments are behind symmetric NAT (Circuit Relay v2 required vs cone NAT / DCUtR)? This determines the relay infrastructure load Vyomanaut must operate. Linked to Q13-1. | answered | Paper 30 establishes a global 70% DCUtR hole-punch success rate across 
-85k+ networks, providing a lower bound for Vyomanaut's Indian provider population. India-
-specific symmetric NAT prevalence (high due to CGNAT) means the Indian success rate may be 
-closer to 60%. Remaining answer requires V2 launch telemetry on actual provider NAT type 
-distribution.|
-| Q20-2 | IPFS uses a 12h republication interval with a 24h expiry, providing a 12-hour buffer against delayed republication. Our availability service currently republishes every 24h (ADR-001, ADR-006) — zero buffer against delay. Should the republication interval be reduced to 12h, or should record expiry be extended to 48h to restore the buffer? | answered | Reduce availability service republication interval from 24h to 12h. Keep record expiry at 24h. |
-| Q20-3 | IPFS demonstrates an unincentivized churn floor of 87.6% of sessions under 8h. Vyomanaut's escrow model targets MTTF 180–380 days. What held-earnings percentage and minimum vetting period are required to empirically achieve the target MTTF from an operator population that, without incentives, would behave like IPFS peers? Linked to Q05-4. | open | Blocked on: Phase 5 economic mechanism research (ADR-024). The IPFS data provides the unincentivized baseline; the escrow design determines how far above it Vyomanaut can push its providers. |
+**Q29-2** — *Erasure + pricing* — Should hot-band uploads specify different erasure parameters at upload time? Feeds: V3 hot band (ADR-018) pricing and ADR-026 multi-tier design.
 
----
+**Q31-2** — *Reputation* — PSM ratings from repair interactions at V3 scale. Feeds: V3 distributed reputation.
 
-## From Paper 21 — Saroiu et al. (Gnutella/Napster Measurement, MMCN 2002)
+**Q33-2** — *Economic mechanism* — Multi-task incentive weight function for V3 hot band. Feeds: V3 hot band economic design.
 
-| ID | Question | Status | Blocked on |
-|---|---|---|---|
-| Q21-1 | The paper shows that only the top 20% of unincentivized P2P peers have IP-level uptime ≥93%. In Vyomanaut's vetting subsystem (ADR-005), the 4–6 month vetting period is designed to select from this reliable tail. What fraction of registered providers in V2 will be rejected or downgraded during vetting, and does the vetting period length need to be calibrated to the actual uptime distribution of Indian desktop users rather than the Storj NAS assumption? | open | Own provider telemetry at V2 launch. The paper's 20%/93% figure is from unincentivized 2001 broadband users; the Indian desktop provider population under financial incentives in 2025 will differ. |
+**Q34-1** — *Storage engine* — Within-vLog hot/cold tiering for frequently-accessed vs archival chunks. Feeds: V3 provider daemon storage tiering.
 
----
+**Q36-2** — *Repair* — Periodic chunk rebalancing to homogenise provider disk fill ratios. Feeds: V3 repair scheduler + Dalle variance reduction.
 
-## From Paper 23 — Yin et al. (Cold Data Erasure Codes, Applied Sciences 2023)
+**Q37-1** — *Trust model* — At what provider concentration does microservice capture become a realistic threat? V3 Transparent Merkle Log (ADR-015) is the architectural response.
 
-| ID | Question | Status | Blocked on |
-|---|---|---|---|
-| Q23-1 | The paper's write throughput crossover (EC = replication) is at ~512 KB block sizes. Vyomanaut's fragment size is 256 KB, just below the crossover. At upload time, the provider encodes and stores 56 fragments of 256 KB each. Is the ~10–15% write throughput penalty at 256 KB vs 512 KB observable in practice on Indian desktop hardware, and does it warrant increasing lf to 512 KB? The metadata overhead per segment scales with n=56 fragments regardless of lf; only the upload I/O pattern changes. | open | Benchmark on target hardware at V2 launch. If write time per segment at lf=256 KB vs lf=512 KB shows >20% difference, revisit lf. This requires changing ADR-003, which has downstream effects on ADR-004 (Qpeek formula) and ADR-006 (departure threshold). |
-
----
-
- ## From Paper 24 — EigenTrust
-
-| ID | Question | Status | Blocked on |
-|---|---|---|---|
-| Q24-1 | In V3, repair events create direct provider-to-provider chunk transfers (provider i fetches from provider j to reconstruct a lost segment). Can these repair interactions serve as EigenTrust-style pairwise rating events — provider i rates provider j's reliability based on whether the chunk was available and valid? If so, what is the minimum number of repair interactions per provider pair before a score is statistically meaningful? | open | V3 repair architecture; Phase 2B #3 (IRON file systems, adversarial provider simulation) for the attack surface this creates. |
-| Q24-2 | EigenTrust requires pre-trusted peers as seeds for convergence and collective-breaking. In Vyomanaut, the microservice plays this role structurally. If the microservice is ever decentralised (V3+), what replaces the pre-trusted anchor — registered provider certificates, or a multi-party threshold of long-tenured providers? | open | V3 decentralisation research; blocked on V2 launch telemetry to understand actual provider distribution. |
-
----
-
-## From Paper 25 — IRON File Systems
-
-| ID | Question | Status | Blocked on |
-|---|---|---|---|
-| Q25-1 | Should the provider daemon implement eager proactive scrubbing — periodically re-reading and verifying the SHA256 hash of every stored chunk during idle time — rather than relying solely on lazy detection at audit challenge time? Eager scrubbing allows earlier repair triggering for latent sector errors (discovered before a challenge, not only on challenge), but adds continuous background I/O load on the provider's disk. At 256 KB × 56 chunks per file × N files per provider, what is the per-cycle I/O budget for scrubbing, and does it fit within the ≤5% background budget (ADR-009)? | answered | Paper 32 (Schroeder et al., FAST 2016). Continuous background scrubbing is not 
-justified for providers with no error history. Base UE rate is 2–6 per 1,000 drive days — 
-low enough that 24-hour PoR audit challenges are sufficient detection. Proactive scrubbing 
-should be triggered reactively: a provider that fails one audit has a 30× elevated probability 
-of further failures (Figure 7). The daemon should enter an accelerated re-audit mode (e.g., 
-re-challenge all chunks on that provider within 24h) after any audit FAIL, rather than running 
-continuous background I/O on all providers at all times. |
-| Q25-2 | Should the provider storage engine randomise chunk placement on disk (non-sequential, non-contiguous layout) to reduce the risk that a single media scratch or surface failure corrupts multiple chunks simultaneously? Contiguous layout is I/O-efficient; spread placement reduces within-provider burst correlation. What is the measurable impact of random vs. sequential placement on read latency for audit challenges at 256 KB chunk size on typical desktop HDDs and SSDs? | answered | Paper 32 (Schroeder et al., FAST 2016). Sparse vLog placement is not required 
-for V2. Bad block clustering operates at chip granularity (hundreds of contiguous blocks), 
-producing correlated failures within a vLog region. Since Vyomanaut holds only 1 of 56 
-shards per file per provider, a chip failure corrupting a contiguous vLog region damages 
-shards from many different files, but each file retains 55 other shards across independent 
-providers. The RS(16,56) redundancy absorbs within-provider burst failures of this size. 
-Sequential vLog layout is acceptable. Revisit in V3 if provider telemetry shows multi-chunk 
-burst failures exceeding the RS redundancy budget. |
-
---- 
-
-## From Paper 26 — LSM-Tree (O'Neil et al., 1996)
-
-| ID | Question | Status | Blocked on/Answered |
-|---|---|---|---|
-| Q26-1 | For the chunk index specifically (chunk_id → disk offset, ~32-byte entries), what are the realistic values of M (batch parameter) and the resulting insert cost ratio COSTLSM-ins / COSTB-ins on a provider storing 10,000 chunks? The Five Minute Rule test: a provider receiving new chunks at an average rate of 1 chunk per minute has an index insert rate of ~32 bytes/sec. Does this insert rate put the chunk index in the cold, warm, or hot data regime? If cold, B-tree is already cost-optimal and LSM adds unnecessary complexity. | answered | At 256 KB values, WiscKey write amplification ≈ 1.0 (Figure 10, FAST 2016). The Five Minute Rule regime question is irrelevant at our value size: compaction overhead is dominated by value movement, and WiscKey eliminates value movement from compaction entirely. The 44-byte index entries have negligible amplification regardless of access regime. |
-| Q26-2 | On modern NVMe SSDs where COSTπ/COSTP approaches 1, the LSM multi-page block batching advantage disappears. What fraction of Indian desktop providers at V2 launch will use SSDs vs HDDs? If SSD penetration exceeds 50%, the LSM index design is unjustified and a simple B-tree (or RocksDB's LSM configured for SSD) is the correct choice. | answered | WiscKey is correct for both SSD and HDD providers at 256 KB values. vLog appends are sequential (HDD-optimal). Single-thread random vLog reads at 256 KB complete in ~1 ms on SSD (Figure 3, 840 EVO) and ~12–15 ms on HDD — both well within the 614 ms audit deadline. SSD/HDD mix does not change the design decision. |
-
-## From Paper 27 — WiscKey
-Q27-1 — Should the vLog use a fixed entry size (always lf=262212 bytes = 256 KB chunk + headers) or a variable-size entry to accommodate future changes to lf (V3) or metadata-only chunks? Fixed size makes GC deterministic (tail advancement requires no entry parsing, only arithmetic); variable size enables V3 flexibility. Answered, See [Benchmarking protocol](./benchmarking-protocol.md)
-Q27-2 — WiscKey's vLog stores chunks sequentially by append time, placing chunks from different files adjacent on disk. IRON (Paper 25) identified spatial media failure (one surface scratch corrupting multiple contiguous blocks) as a real failure mode. What is the empirical rate of such correlated within-provider disk failures on consumer desktop hardware, and does it justify adding sparse vLog pre-allocation (via fallocate) to produce non-contiguous chunk placement? Blocked on: provider hardware telemetry at V2 launch. If within-provider burst failure events (multiple chunks failing simultaneously on one provider) show up in repair telemetry, revisit vLog placement design.
-
----
-
-## From Paper 28 — Rhea et al. (DHT Churn, USENIX ATC 2004)
-
-| ID | Question | Status | Blocked on |
-|---|---|---|---|
-| Q28-1 | The paper shows that fixed timeouts roughly double mean failure-detection latency vs TCP-style per-neighbour RTO (AVG + 4×VAR). Should the availability service implement per-provider RTO tracking for audit challenge timeouts, storing per-provider (avg_rtt_ms, var_rtt_ms) in the reliability scoring DB? If so, how is RTO bootstrapped for a new provider with no RTT history — use the 30th-percentile RTT of the vetted provider pool as the initial estimate? | open | ADR-006 implementation phase. The formula is specified; the bootstrapping value and storage schema need to be decided before the availability service is built. |
-| Q28-2 | libp2p's Kademlia (ADR-021) uses the default bucket-filling algorithm. The paper shows global sampling (performing DHT lookups for random target prefixes, selecting the closest responder) gives a 24% latency reduction for virtually no bandwidth increase. Should Vyomanaut's libp2p DHT be configured to run periodic global sampling for routing table proximity optimisation? Given that all V2 providers are in India, geographic proximity in the DHT may materially reduce lookup latency. | open | Phase 4-1 (Balduf NAT traversal paper) and V2 launch telemetry on actual inter-provider latency distribution. |
-
----
-
-## From Paper 29 — Filecoin Whitepaper
-
-| ID | Question | Status | Blocked on |
-|---|---|---|---|
-| Q29-1 | Filecoin uses a graduated penalty structure: proportional collateral slash per missed proof, then full cancellation at Δfault. Vyomanaut's current model is binary: score decrement per polling cycle, full escrow seizure at 72h. Should ADR-024 introduce a graduated intermediate step — a partial earnings hold or warning at, say, 48h — to reduce false-positive seizures from transient outages that resolve before 72h? What retention impact does binary vs. graduated seizure have on providers near the 72h boundary? | open | ADR-024 design phase; empirical departure pattern data from V2 launch telemetry. |
-| Q29-2 | Filecoin requires clients to specify erasure coding parameters (replication factor, coding scheme) per bid order. Vyomanaut fixes RS(s=16, r=40) system-wide (ADR-003). If Vyomanaut introduces tiered storage (ADR-018 Hot band, V3), should hot-band uploads specify different erasure parameters at upload time? What is the pricing model for a client choosing a lower redundancy factor (lower storage cost, higher loss risk)? | open | ADR-024 pricing design; ADR-018 Hot band V3 implementation; Ihle et al. incentive survey (Phase 5 #3). |
-
----
-
-## From Paper 30 — Trautwein et al. (DCUtR NAT Traversal, arXiv 2025)
-
-| ID | Question | Status | Blocked on |
-|---|---|---|---|
-| Q30-1 | 30% of providers will permanently rely on Circuit Relay v2. Vyomanaut-operated relay nodes are planned to be co-located in Indian cloud regions (ADR-021). How many relay nodes are required to serve V2's provider base at launch without the relay becoming a latency bottleneck or a single point of failure? The paper confirms relay resources are minimal per connection (Circuit v2 limits reservation count, duration, and data volume), but relay node count for availability guarantees is not specified. | open | V2 infrastructure planning phase. Relay node count is an operational decision driven by expected provider count and relay-dependent fraction (~30%). ADR-025 (N=3 microservice quorum) provides the reliability model; relay nodes should follow the same quorum principle. |
-| Q30-2 | The paper finds 97.6% of successful hole punches succeed on the first attempt, suggesting DCUtR's default 3-retry limit is nearly wasteful. For Vyomanaut's audit challenge path where the relay fallback path is the alternative, should the libp2p DCUtR retry count be reduced to 1 (eliminating two relay round-trips of ~100-400 ms overhead in the hole-punch failure case)? The 2.4% marginal gain from retries 2 and 3 must be weighed against the added latency cost for the 30% relay-dependent providers. | open | Blocked on: empirical audit deadline measurement at V2 beta launch. If p99 audit challenge round-trip time under relay consistently stays below 400 ms, reducing retries to 1 is safe. If not, keep the default. |
-
----
-
-## From Paper 31 — PeerTrust (Xiong & Liu, IEEE TKDE 2004)
-
-| ID | Question | Status | Blocked on |
-|---|---|---|---|
-| Q31-1 | PeerTrust's adaptive time-window mechanism (dual-window scoring) maps to a graduated escrow penalty structure for Vyomanaut: compute a rolling score over 30d and over 7d; if the 7d score drops below the 30d score by a threshold, apply a partial earnings hold immediately. What threshold drop and what partial hold percentage are correct? The threshold must be large enough to avoid false positives from transient outages but small enough to detect genuine deterioration before the 72h departure threshold triggers full seizure. | open | ADR-024 design phase; V2 beta provider telemetry to calibrate the threshold empirically. |
-| Q31-2 | PeerTrust's PSM metric requires shared interaction history between any evaluating node and the raters it weights. In V3, if repair events create provider-to-provider chunk transfers, those interactions could serve as PeerTrust-style transaction events — provider i fetches from provider j, rates j's availability and data integrity. What minimum number of such repair interactions per provider pair would be needed before a PSM-derived score is statistically meaningful, given that repair events are rare at MTTF=300 days? | open | V3 repair architecture; Phase 2B #4 (PeerTrust V3 application); repair event telemetry from V2 launch. |
-
----
-
-## From Paper 33 — Ihle et al. (ACM Computing Surveys 2023)
-
-| ID | Question | Status | Blocked on |
-|---|---|---|---|
-| Q33-1 | The survey's decision tree recommends a non-transferable accumulated incentive (reputation or hybrid monetary-reputation) for Vyomanaut's use case. ADR-024 must specify: what fraction of a provider's earned escrow is held at any given time? Gramaglia et al. hold 100% of earnings as delayed cheques. Storj held 6 months of earnings. What holding percentage and holding period are correct for Indian home desktop providers, balancing deterrence to exit against friction for legitimate providers who may need access to earned funds? | open | ADR-024 design phase; empirical provider telemetry at V2 beta to calibrate the minimum holding percentage that observably reduces exit rates. |
-| Q33-2 | The survey classifies Vyomanaut's single-task incentive (audit pass = earning) as covering only one of the three relevant resource types: storage capacity is measured implicitly by chunk count, but upload bandwidth and latency are not separately incentivised. For the V3 hot band (ADR-018), a multi-task incentive that separately rewards storage, bandwidth tier, and audit response latency would be appropriate. What weight function correctly combines these three into a single payout multiplier, and how does the weight function avoid creating incentives that favour high-bandwidth providers at the expense of high-availability providers? | open | ADR-018 Hot band V3 implementation; economic mechanism research. |
-
---- 
-
-## From Paper 34 — ELECT (USENIX FAST 2024)
-
-| ID | Question | Status | Blocked on |
-|---|---|---|---|
-| Q34-1 | ELECT shows that the last LSM-tree level holds ~56% of data but only ~10% of accesses in a Zipf-distributed workload. In Vyomanaut's provider, audit challenges are microservice-issued at near-uniform frequency (ADR-014). Does this mean all chunks in the vLog age equally, making hotness-aware tiering within the provider vLog useless? Or do some files receive more owner retrievals (separate from audits), creating a de-facto access skew that a within-vLog hot/cold split could exploit in V3? | open | V3 provider daemon telemetry; requires tracking per-chunk access count beyond audit challenges. |
-| Q34-2 | ELECT's recovery time is 93.3% network-bound for (n=6, k=4) RS at 3 Gbps intra-cluster bandwidth. Vyomanaut's home providers have 100 Mbps uplinks (~30× less bandwidth). At V2 scale (N=1000, MTTF=300 days), what fraction of a provider's declared upload bandwidth is consumed by repair events in steady state, and does this affect the provider's ability to serve audit challenges on schedule? The Giroire BWavg formula (ADR-003) gives ~39 Kbps steady-state, but ELECT's recovery model suggests burst events may transiently dominate. | open | V2 launch telemetry; production repair event frequency at actual provider MTTF. |
-
----
-
-## From Paper 35 — Razorpay API Documentation and UPI Technical Reference
-
-| ID | Question | Status | Blocked on |
-|---|---|---|---|
-| Q35-1 | Route settlement hold releases on the "next business day" after the on_hold_until timestamp, not on the exact timestamp date. The release window in ADR-024 says "first of each month." What is the correct on_hold_until timestamp to set so that releases land within the first 3 business days of each month across all months and all Indian bank holiday calendars? Should the microservice pre-fetch the RBI bank holiday calendar and set on_hold_until to the last working day of the month? | open | Implementation phase; RBI bank holiday API or calendar integration needed. |
-| Q35-2 | Razorpay charges a per-transaction payout fee (approximately ₹2.5–₹5 for IMPS, variable for UPI) on top of the zero-fee UPI rail. For a provider with 1,000 chunks receiving a monthly payout, this fee is one transaction per month — trivial. For a network with 10,000 providers, monthly payout costs could reach ₹25,000–₹50,000/month in fees. Is the fee model sustainable at V2 scale, and should the storage rate (paise/GB/month) be set to include a fee buffer? | open | Product pricing decision; confirmed at V2 beta with actual Razorpay fee schedule from account manager. |
-
----
-
-## From Paper 36 — Dalle, Giroire, Monteiro, Pérennes (INRIA RR-6771, 2008)
-
-| ID | Question | Status | Blocked on |
-|---|---|---|---|
-| Q36-1 | The paper shows that bandwidth standard deviation at 50,000 peers is still 5× the independent model's prediction. At V3 scale (10,000+ providers), what is the actual peak-to-mean repair bandwidth ratio under the Fluid Model framework, given Vyomanaut's specific parameters (s=16, r=40, n=56, 20% ASN cap)? The Giroire BWavg ≈ 39 Kbps/peer is the mean; the peak provisioning target for V3 infrastructure sizing requires the RFM standard deviation at V3 scale. | open | V3 scale planning; requires applying the Refined Fluid Model numerics to Vyomanaut's parameters. Blocked on: V2 launch telemetry for actual provider count and disk occupancy distribution. |
-| Q36-2 | The paper proposes shuffling (periodic random re-assignment of fragments across disks) as a way to reduce variance by homogenising disk fill ratios. In Vyomanaut, the equivalent mechanism would be periodic chunk rebalancing — moving a fraction of chunks from old providers to new providers to normalise fill ratios. Does the repair bandwidth cost of periodic rebalancing exceed the variance-reduction benefit at V2 scale (hundreds of providers)? At what provider count does rebalancing become worthwhile? | open | V3 repair architecture. At V2 scale (hundreds of providers), the variance is already bounded by the 20% ASN cap. Rebalancing is a V3 consideration if the RFM shows peak bandwidth becoming the binding constraint. |
-
----
-
-## From Paper 37 — Crystal, Goren, Kominers (arXiv 2025)
-
-| ID | Question | Status | Blocked on |
-|---|---|---|---|
-| Q37-1 | Proposition 1 proves that pure off-chain peer audits collapse to universal shirking — the unique Nash equilibrium is full dishonesty. Vyomanaut escapes this by using the microservice as the sole trusted auditor (no peer-to-peer audits). But Proposition 1's collapse relies on the auditor having no external verification mechanism. If the microservice itself were corrupted or captured (e.g., by a coalition of large providers exerting economic pressure), would Vyomanaut's honest equilibrium also collapse? At what provider count and market concentration does microservice capture become a realistic threat, and what is the V3 architectural response (Transparent Merkle Log + public verifiability, ADR-015)? | open | V3 Merkle Log implementation (ADR-015); V2 launch telemetry on provider concentration; formal threat model for microservice capture. |
-| Q37-2 | Theorem 1 Condition (i) requires: tau ≥ ((1 − pau)/pau) × rau + (1/(ε × pau)) × cau, where tau is the slashing penalty, pau is the inspection probability, rau is the audit reward, cau is the audit cost, and ε is the noise probability. In Vyomanaut's architecture, pau ≈ 1 (every audit is verified by the microservice), which makes condition (i) trivially satisfied for any positive tau. But if a future V3 design probabilistically samples audit challenges (to reduce microservice load at scale), what is the minimum pau that keeps the condition satisfied at Vyomanaut's escrow parameters? At what provider count does daily-full-audit become infeasible and probabilistic sampling necessary? | open | V3 scale planning; ADR-024 storage rate finalisation; microservice throughput telemetry at V2 launch. |
-
----
-
-## From Paper 38 — Nath, Yu, Gibbons, Seshan (USENIX NSDI 2006)
-
-| ID | Question | Status | Blocked on |
-|---|---|---|---|
-| Q38-1 | The paper's bi-exponential model G(α, ρ₁, ρ₂) characterises correlated failure size distributions from PlanetLab, web server, and RON traces. Vyomanaut's provider population is Indian home desktop and NAS devices behind ISPs. What are the parameters (α, ρ₁, ρ₂) of the bi-exponential model for Indian residential ISP failure events, and do they place Vyomanaut's RS(16,56) in the safe region where the 20% ASN cap prevents the reconstruction threshold from being breached by a single correlated event? | open | V2 launch telemetry; provider failure event logging by ISP/ASN from the first 6 months of operation. |
-| Q38-2 | Finding 4 shows that ERASURE(8,16) can be two nines worse than ERASURE(1,4) under real correlated failures, despite being 1.5 nines better under independent failures. Vyomanaut's ERASURE(16,56) has a larger m than any system studied in the paper. At what correlated failure rate and failure size distribution does our configuration become worse than, say, ERASURE(4,56) for the same storage overhead? Does the 20% ASN cap shift the effective failure size distribution enough to keep ERASURE(16,56) in the superior region? | open | Applying the paper's bi-exponential model to Vyomanaut's parameters numerically; V2 provider failure telemetry to fit actual α, ρ₁, ρ₂ values. |
-
----
-
-## From Paper 39 — Silberstein et al. (SYSTOR 2014)
-
-| ID | Question | Status | Blocked on |
-|---|---|---|---|
-| Q39-1 | The paper shows that combining lazy recovery with bandwidth-efficient codes (Xorbas, Azure LRC) achieves roughly 2× additional bandwidth reduction. If Hitchhiker codes are adopted in V3 (ADR-026), what is the combined bandwidth reduction achievable at V3 scale when Hitchhiker's 25–45% reduction is compounded with Vyomanaut's existing lazy repair (r0=8, 72h threshold)? Is the combined saving enough to justify Hitchhiker's implementation complexity at the provider scale where BWavg becomes a binding constraint? | open | V3 scale planning; ADR-026 decision; V2 launch telemetry confirming actual repair bandwidth at production provider MTTF. |
-
----
-
-## From Paper 40 — Buragohain et al. (Game Theoretic Framework for P2P Incentives, IEEE P2P 2003)
-
-| ID | Question | Status | Blocked on |
-|---|---|---|---|
-| Q40-1 | The paper proves that P2P system robustness increases with N because each new provider raises the per-peer benefit b(N−1). At Vyomanaut's V2 launch (hundreds of providers), the stable Nash equilibrium contribution d*_hi is already robust against 2/3 of providers departing when bav/bc − 1 = 2.0. At what provider count N does Vyomanaut's per-audit payout structure achieve bav/bc − 1 ≥ 2.0 given the target storage rate (paise/GB/month)? Does this threshold fall within the V2 launch target provider count, or does the system start near the critical benefit level and only become robustly stable at V3 scale? | open | ADR-024 storage rate finalisation; V2 beta provider count telemetry. |
-| Q40-2 | The paper models all peers as having the same cost parameter ci. In Vyomanaut, marginal storage cost varies significantly across providers: a provider with spare NAS capacity has near-zero marginal cost, while one dedicating a new external HDD has a real cost. If ci heterogeneity is high (bi/ci spans a large range), the fraction of providers below bc grows. What is the empirical distribution of marginal storage cost among Indian home desktop providers at V2 launch, and does it place a meaningful fraction of providers below bc at the planned storage rate? | open | V2 beta provider survey; ADR-024 storage rate finalisation. |
-
----
-
-## From Paper 41 — Vakilinia et al. (Incentive-Compatible DSN, arXiv 2022)
-
-| ID | Question | Status | Blocked on |
-|---|---|---|---|
-| Q41-1 | The paper identifies the service-denial attack: a provider stores data, passes all PoR audits, but refuses retrieval requests from the data owner over the libp2p P2P layer. Vyomanaut's structural mitigation is RS(16,56) — an effective attack requires > 40 providers to refuse simultaneously, which the 20% ASN cap bounds to ~11 correlated providers. But for individual providers, no monitoring of retrieval willingness currently exists in the reliability scorer (ADR-008). Should the microservice or data owner report retrieval failures back to the reliability scorer, and if so, what evidence format prevents a malicious data owner from false-reporting a retrieval failure to punish a provider? | open | ADR-008 scoring model extension; retrieval path design in ADR-021; V2 beta launch telemetry on actual retrieval failure rates. |
-| Q41-2 | The paper's challenge cost X (equation 4, C3 > C1) deters clients from issuing spurious challenges. In Vyomanaut, challenges are microservice-issued, so data-owner-driven spurious challenges are not possible. However, the microservice itself could be the source of excessive challenge load during burst repair events. At V3 scale (10,000+ providers), does the microservice's per-provider daily audit challenge rate remain sustainable, or does it become the throughput bottleneck that makes probabilistic sampling (pau < 1) necessary? At what provider count does full daily auditing become infeasible? | open | V2 launch throughput telemetry on microservice audit dispatch rate; ADR-037 Q37-2 (which asks the same question from the SHELBY perspective). |
-
----
-
-## Update on remaining open questions
-Will be answered by launch telemetry (not research)
-
-Q08-1: Actual MTTF of financially-incentivised desktop providers
-Q20-3: What held-earnings % empirically achieves MTTF 180–380 days
-Q21-1: What fraction of registered providers pass vetting vs. are downgraded
-Q08-3: At what provider count does 20%/day turnover exceed upload budget
-Q23-1: Whether 256 KB vs 512 KB lf shows >20% write throughput difference in practice
-
-Will be answered by product/UX decisions (not research)
-
-Q05-4: Minimum vetting period and held-earnings % that deters exit — ADR-024 will specify candidate values; empirical validation at launch
-Q18-2: Ed25519 signing key → DECIDED ABOVE (store separately)
-Q20-2: Republication interval → DECIDED ABOVE (12h)
-Q05-6: Microservice fallback → DESIGNED ABOVE
-Q07-5: HMAC chunk ID flow → DESIGNED ABOVE
-
-Genuinely open (deferred to V3)
-
-Q01-4: Geographic proximity as selection criterion (Coral DSHT)
-Q07-4: Distributed correlated failure detection (EigenTrust on repair events)
-Q08-4: Adaptive polling interval based on score history
-Q24-1: EigenTrust-style ratings from repair interactions
-Q24-2: Pre-trusted anchor for V3 decentralisation
-
-Never answerable before launch (empirical only)
-
-Q08-1: Actual MTTF under financial incentives — no paper has measured this regime
-Q14-1: UDP block rate at Indian ISPs — requires network measurement at launch
-Q14-3: QUIC migration vs JIT detector false positives — requires audit telemetry
+**Q37-2** — *Audit scalability* — Minimum pau for probabilistic audit sampling while maintaining SHELBY Theorem 1 Condition (i). Feeds: V3 audit scheduler design.
