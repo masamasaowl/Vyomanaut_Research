@@ -394,6 +394,15 @@ Q27-2 — WiscKey's vLog stores chunks sequentially by append time, placing chun
 
 ---
 
+## From Paper 33 — Ihle et al. (ACM Computing Surveys 2023)
+
+| ID | Question | Status | Blocked on |
+|---|---|---|---|
+| Q33-1 | The survey's decision tree recommends a non-transferable accumulated incentive (reputation or hybrid monetary-reputation) for Vyomanaut's use case. ADR-024 must specify: what fraction of a provider's earned escrow is held at any given time? Gramaglia et al. hold 100% of earnings as delayed cheques. Storj held 6 months of earnings. What holding percentage and holding period are correct for Indian home desktop providers, balancing deterrence to exit against friction for legitimate providers who may need access to earned funds? | open | ADR-024 design phase; empirical provider telemetry at V2 beta to calibrate the minimum holding percentage that observably reduces exit rates. |
+| Q33-2 | The survey classifies Vyomanaut's single-task incentive (audit pass = earning) as covering only one of the three relevant resource types: storage capacity is measured implicitly by chunk count, but upload bandwidth and latency are not separately incentivised. For the V3 hot band (ADR-018), a multi-task incentive that separately rewards storage, bandwidth tier, and audit response latency would be appropriate. What weight function correctly combines these three into a single payout multiplier, and how does the weight function avoid creating incentives that favour high-bandwidth providers at the expense of high-availability providers? | open | ADR-018 Hot band V3 implementation; economic mechanism research. |
+
+--- 
+
 ## Update on remaining open questions
 Will be answered by launch telemetry (not research)
 
