@@ -103,16 +103,15 @@ After reading Phase 5, ADR-024 can be written and the pricing model finalised.
 
 ---
 
+## Phase 6 — Strengthening the Architecture 
 
-## Remaining read:
-1. Filecoin Whitepaper — Protocol Labs, 2017 
-2. "Challenging Tribal Knowledge: Large-Scale
-Measurement Campaign on Decentralized NAT Traversal" — arXiv 2025
-3. "Handling Churn in a DHT" — Rhea, Geels, Roscoe, Kubiatowicz (USENIX ATC 2004)
-4. "Flash Reliability in Production: The Expected and the Unexpected" — Schroeder et al. (FAST 2016)
-5. "ELECT: Enabling Erasure Coding Tiering for LSM-tree-based Storage" — FAST 2024
-6. Razorpay Escrow API Documentation + UPI Split Payment technical reference
-7. "Incentive Mechanisms in Peer-to-Peer Networks — A Systematic Literature Review" — Ihle et al. 
-8. PeerTrust: Supporting Reputation-Based Trust for Peer-to-Peer Electronic Communities
-9. DCUtR measurement 
-10. Ihle P2P incentives survey
+| **Paper** | **Priority** | **ADR risk** | **Reasoning** |
+| --- | --- | --- | --- |
+| **New — not on provided list** |  |  |  |
+| **Dalle et al. — "Analysis of Failure Correlation in P2P Storage" (IEEE P2P 2009)** | **Read first** | ADR-003 ADR-004 | Same Giroire group as Paper 10. Proves the independent-failure formula gives correct BWavg average but misses burst variance when a provider departs and simultaneously drops all its chunks. Our n=56 wide stripe makes burst amplitude large. The safety margin of r=40 is unvalidated against this regime. Could require increasing r0 or adding a burst headroom multiplier. |
+| **Shelby — "Proving Incentive Compatibility in DSN" (arXiv:2510.11866, Oct 2025)** | **Read first** | ADR-002 ADR-024 | Formally proves P2P provider auditing has mutual full dishonesty as the unique Nash equilibrium. Vyomanaut's microservice-as-sole-auditor design is the game-theoretic escape. Validates ADR-002 and ADR-024 with a proof that was unavailable when those ADRs were written. No ADR changes needed — this strengthens them. |
+| **Erasure coding + repair group** |  |  |  |
+| **Nath et al. — "Subtleties in Tolerating Correlated Failures" (NSDI 2006)** | **Before building** | ADR-003 ADR-014 | Shows larger-m erasure systems suffer stronger diminishing returns under correlated failures. ERASURE(8,16) is hurt much more than ERASURE(1,4) as correlation rises. Our ERASURE(16,56) has m=40 parity chunks — the widest stripe in any studied system. Combined with Dalle et al., this establishes that our 20% ASN cap must be the primary correlated-failure defense, not the erasure parameters alone. No ADR change likely, but the quantitative safety argument must be updated. |
+| **Silberstein et al. — "Lazy Means Smart" (SYSTOR 2014)** | **Before building** | ADR-004 ADR-026 | Claims simple threshold-based lazy repair (Giroire's r0 approach) is "not effective in large-scale DSS." Proposes priority-based repair scheduling. At Vyomanaut's P2P scale (hundreds of providers), the simple threshold likely holds, but the priority ordering insight matters for the repair scheduler implementation. Feeds ADR-026 (Hitchhiker, V3). No ADR change needed but adds one implementation constraint to ADR-004. |
+| **Game Theoretic Framework for P2P Incentives** | **Before building** | ADR-024 | Nash equilibrium conditions for honest storage. ADR-024 is now Accepted but was designed without formal game-theoretic validation. This paper checks whether our per-audit-passed payment satisfies the Nash conditions. The Shelby paper (above) provides a partial answer, but this paper addresses the general P2P game independently. Should be read to confirm ADR-024 is not accidentally incentive-incompatible at the parameter level. |
+| **Incentive-Compatible Mechanism for DSN (IEEE 2022)** | **Before building** | ADR-002 ADR-024 | Finds that continuous PoS verification imposes extra cost and that DSN PoS is vulnerable to service-denial attacks where a provider passes proofs but blocks retrieval. ADR-014 (adversarial defences) already addresses false audit responses, but service-denial (pass the proof, refuse the download) is a distinct attack class not explicitly in ADR-014. Requires checking whether this creates a new defence gap. |
