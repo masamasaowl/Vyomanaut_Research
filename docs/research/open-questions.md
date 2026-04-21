@@ -403,6 +403,15 @@ Q27-2 — WiscKey's vLog stores chunks sequentially by append time, placing chun
 
 --- 
 
+## From Paper 34 — ELECT (USENIX FAST 2024)
+
+| ID | Question | Status | Blocked on |
+|---|---|---|---|
+| Q34-1 | ELECT shows that the last LSM-tree level holds ~56% of data but only ~10% of accesses in a Zipf-distributed workload. In Vyomanaut's provider, audit challenges are microservice-issued at near-uniform frequency (ADR-014). Does this mean all chunks in the vLog age equally, making hotness-aware tiering within the provider vLog useless? Or do some files receive more owner retrievals (separate from audits), creating a de-facto access skew that a within-vLog hot/cold split could exploit in V3? | open | V3 provider daemon telemetry; requires tracking per-chunk access count beyond audit challenges. |
+| Q34-2 | ELECT's recovery time is 93.3% network-bound for (n=6, k=4) RS at 3 Gbps intra-cluster bandwidth. Vyomanaut's home providers have 100 Mbps uplinks (~30× less bandwidth). At V2 scale (N=1000, MTTF=300 days), what fraction of a provider's declared upload bandwidth is consumed by repair events in steady state, and does this affect the provider's ability to serve audit challenges on schedule? The Giroire BWavg formula (ADR-003) gives ~39 Kbps steady-state, but ELECT's recovery model suggests burst events may transiently dominate. | open | V2 launch telemetry; production repair event frequency at actual provider MTTF. |
+
+---
+
 ## Update on remaining open questions
 Will be answered by launch telemetry (not research)
 
