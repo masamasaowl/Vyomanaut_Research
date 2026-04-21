@@ -412,6 +412,15 @@ Q27-2 — WiscKey's vLog stores chunks sequentially by append time, placing chun
 
 ---
 
+## From Paper 35 — Razorpay API Documentation and UPI Technical Reference
+
+| ID | Question | Status | Blocked on |
+|---|---|---|---|
+| Q35-1 | Route settlement hold releases on the "next business day" after the on_hold_until timestamp, not on the exact timestamp date. The release window in ADR-024 says "first of each month." What is the correct on_hold_until timestamp to set so that releases land within the first 3 business days of each month across all months and all Indian bank holiday calendars? Should the microservice pre-fetch the RBI bank holiday calendar and set on_hold_until to the last working day of the month? | open | Implementation phase; RBI bank holiday API or calendar integration needed. |
+| Q35-2 | Razorpay charges a per-transaction payout fee (approximately ₹2.5–₹5 for IMPS, variable for UPI) on top of the zero-fee UPI rail. For a provider with 1,000 chunks receiving a monthly payout, this fee is one transaction per month — trivial. For a network with 10,000 providers, monthly payout costs could reach ₹25,000–₹50,000/month in fees. Is the fee model sustainable at V2 scale, and should the storage rate (paise/GB/month) be set to include a fee buffer? | open | Product pricing decision; confirmed at V2 beta with actual Razorpay fee schedule from account manager. |
+
+---
+
 ## Update on remaining open questions
 Will be answered by launch telemetry (not research)
 
