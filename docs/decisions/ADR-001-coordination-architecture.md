@@ -36,16 +36,19 @@ Hybrid architecture:
 			 - replication candidate selection     (FIND_NODE)
 
 Implementation details:
+
 From [paper-03](../research/paper-03-skademlia.md)
 - Node IDs: derived from registered account UUID (registration acts as certificate authority, replacing cryptographic ID generation from S/Kademlia)
 - Disjoint lookup paths: d=4,8 — maintains 99% efficiency at 30% adversarial node share 
 - Replication parameter: k=8,16 (2×d)
 - Sibling list: s=20, c=2.5 — failure probability ~5×10⁻⁷
+
 From [paper-07](../research/paper-07-sok-dsn.md)
 - To prevent DoS on the central microservice: quorum read mechanism for consistency (latency trade-off accepted). 
 - During DHT lookups, content addressing must not reveal file identity (zero-knowledge requirement).
+
 From [paper-04](../research/paper-04-ipfs.md)
-- To store a chunk, pin it to the node; to remove or delete, unpin the object ()
+- To store a chunk, pin it to the node; to remove or delete, unpin the object
 - Use Coral (deferred to V3)
 
 - Caching handled autonomously by nodes ([paper-02](../research/paper-02-kademlia.md))
@@ -68,9 +71,11 @@ From [paper-04](../research/paper-04-ipfs.md)
 **Open constraints:**
 - Microservice must be operated by Vyomanaut; if it goes down, orchestration stops (data plane P2P still functions)
 - This decision holds only while registration gating remains effective
+- DHT privacy: HMAC(chunk_hash, file_owner_key) as the DHT lookup key closes the DHT privacy leakage challenge identified as unsolved across the entire DSN field (Paper 07, Section IX-B). Only the file owner can reverse-map a DHT key to its chunk. This is an active design requirement, not just a recommendation.
 
 ## References
 
 - [Paper 20 — IPFS Measurement](../research/paper-20-trautwein-ipfs.md): production confirmation of k=16 and alpha=3; DHT server mode requirement for all providers; AS concentration empirically validates 20% ASN cap; IPFS post-v0.5 uses it.
 - [Paper 28 — Handling Churn in a DHT](../research/paper-28-rhea-dht-churn.md): validates preference of long-lived-nodes; periodic k-bucket refresh confirmed as the correct churn-handling strategy
+- [Paper 07 — SoK DSN](../research/paper-07-sok-dsn.md): hybrid microservice + DHT architecture; HMAC-pseudonymised DHT keys close the field-wide DHT privacy challenge; the three blockchain functions Vyomanaut must replicate without on-chain writes
 
