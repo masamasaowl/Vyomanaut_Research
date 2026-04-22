@@ -4,7 +4,7 @@
 **Topic:** #1 Coordination Architecture
 **Supersedes:** —
 **Superseded by:** —
-**Research source:** Papers 01, 02, 03, 04, 05, 07
+**Research source:** Papers 01, 02, 03, 04, 05, 07, 20 , 28
 
 ---
 
@@ -24,20 +24,34 @@ Pure decentralisation (DHT for everything) does not work below ~100 peers and cr
 
 ## Decision
 
-Hybrid architecture: hardened microservices handle orchestration (registration, audit scheduling, payment, repair triggering, reputation scoring). Kademlia DHT handles all data-plane lookups: provider discovery, chunk location (FIND_VALUE), and replication candidate selection (FIND_NODE).
+Hybrid architecture: 
+1. Hardened microservices handle orchestration:
+		   - registration audit
+		   - scheduling, payment
+		   - repair triggering
+		   - reputation scoring
+2. Kademlia DHT handles all data-plane lookups ([paper-02](../research/paper-02-kademlia.md)):
+			 - provider discovery 
+			 - chunk location (FIND_VALUE) and 
+			 - replication candidate selection     (FIND_NODE)
 
 Implementation details:
+From [paper-03](../research/paper-03-skademlia.md)
 - Node IDs: derived from registered account UUID (registration acts as certificate authority, replacing cryptographic ID generation from S/Kademlia)
-- Disjoint lookup paths: d=4,8 — maintains 99% efficiency at 30% adversarial node share
+- Disjoint lookup paths: d=4,8 — maintains 99% efficiency at 30% adversarial node share 
 - Replication parameter: k=8,16 (2×d)
 - Sibling list: s=20, c=2.5 — failure probability ~5×10⁻⁷
+From [paper-07](../research/paper-07-sok-dsn.md)
+- To prevent DoS on the central microservice: quorum read mechanism for consistency (latency trade-off accepted). 
+- During DHT lookups, content addressing must not reveal file identity (zero-knowledge requirement).
+From [paper-04](../research/paper-04-ipfs.md)
+- To store a chunk, pin it to the node; to remove or delete, unpin the object ()
+- Use Coral (deferred to V3)
+
+- Caching handled autonomously by nodes ([paper-02](../research/paper-02-kademlia.md))
+- Bloom filters used for garbage collection ([paper-05](../research/paper-05-storj.md))
 - Key-value pairs refreshed every 12 h by the availability service (Update after reading [Paper 20](../research/paper-20-trautwein-ipfs.md))
-- Caching handled autonomously by nodes
-- Bloom filters used for garbage collection
 
-To prevent DoS on the central microservice: quorum read mechanism for consistency (latency trade-off accepted).
-
-During DHT lookups, content addressing must not reveal file identity (zero-knowledge requirement).
 
 ## Consequences
 
@@ -54,3 +68,9 @@ During DHT lookups, content addressing must not reveal file identity (zero-knowl
 **Open constraints:**
 - Microservice must be operated by Vyomanaut; if it goes down, orchestration stops (data plane P2P still functions)
 - This decision holds only while registration gating remains effective
+
+## References
+
+- [Paper 20 — IPFS Measurement](../research/paper-20-trautwein-ipfs.md): production confirmation of k=16 and alpha=3; DHT server mode requirement for all providers; AS concentration empirically validates 20% ASN cap; IPFS post-v0.5 uses it.
+- [Paper 28 — Handling Churn in a DHT](../research/paper-28-rhea-dht-churn.md): validates preference of long-lived-nodes; periodic k-bucket refresh confirmed as the correct churn-handling strategy
+
