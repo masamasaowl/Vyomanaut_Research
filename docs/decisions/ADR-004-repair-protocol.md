@@ -47,7 +47,7 @@ At 100 Kbps per peer, repair completes in ≈ 8 h — within the 12-hour reconst
 ## Consequences
 
 **Positive:**
-- ~3× bandwidth savings over eager repair
+- 38× bandwidth savings over eager repair
 - 72-hour threshold eliminates false-positive repair triggers from nightly and weekend absences
 - Repair window (8 h) fits within the 12-hour safety budget
 
