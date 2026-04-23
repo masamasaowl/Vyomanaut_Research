@@ -4,7 +4,7 @@
 **Topic:** #19 Adversarial Provider Behaviour
 **Supersedes:** —
 **Superseded by:** —
-**Research source:** Paper 07
+**Research source:** Paper 07, 20, 37, 38, 41
 
 ---
 
@@ -31,11 +31,20 @@ Challenge timing is randomised — providers cannot predict when the next challe
 **Defence 4 — False audit responses (provider sends a plausible-looking response without having the chunk):**
 The response must be `SHA256(chunk_data || challenge_nonce)`. Without the chunk, the provider cannot compute a valid response. Verified by the microservice which independently has the expected hash.
 
+**Defence 5 — Service-denial attack (provider stores data, passes audits, refuses retrieval):**
+A provider can submit valid SHA256(chunk_data || challenge_nonce) responses indefinitely — proving data is stored — while refusing libp2p retrieval connections from the data owner. PoR audits cannot detect this.
+
+- Structural mitigation: RS(16,56) requires > 40 of 56 providers to refuse simultaneously before retrieval is impossible. The 20% ASN cap limits any single correlated group to ≤ 11 providers — well below the 40-provider denial threshold.
+- Monitoring path: retrieval failures should be surfaced to the reliability scorer (Q41-1). A provider with repeated retrieval failures against multiple data owners should be downgraded and their chunks re-assigned.
+- Source: [Paper 41](../research/paper-41-vakilinia-incentive-compatible-dsn.md) (Vakilinia et al., arXiv 2022)
+
 ## Consequences
 
 **Positive:**
 - Each attack class is independently mitigated without dependencies between defences
 - JIT detection is built into every audit receipt as a measurable signal
+- The 20% ASN cap serves dual purpose: adversarial (Honest Geppetto attack) and reliability (Paper 38 proves RS(16,56) requires the cap to maintain its durability guarantee under real-world correlated failures). The cap is required for both the security and availability properties of the system.
+- Field-wide challenge coverage: [Paper 07](../research/paper-07-sok-dsn.md) (SoK DSN) enumerates seven unsolved challenges across the entire DSN field. Vyomanaut's four defence classes directly close three of them: Challenge 3 (DHT privacy leakage — closed by HMAC-pseudonymised keys, [ADR-001](./ADR-001-coordination-architecture.md)); Challenge 6 (Honest Geppetto — closed by Defence 1, 20% ASN cap); Challenge 7 (bandwidth optimisation — addressed by lazy repair in [ADR-004](./ADR-004-repair-protocol.md) and V3 Hitchhiker in [ADR-026](./ADR-026-repair-bw-optimisation.md)). Challenge 2 (DoS on coordination entity) is mitigated by the (3,2,2) quorum in [ADR-025](./ADR-025-microservice-quorum-gossip_1.md).
 
 **Negative / trade-offs:**
 - ASN diversity cap adds complexity to the assignment service
@@ -46,6 +55,10 @@ The response must be `SHA256(chunk_data || challenge_nonce)`. Without the chunk,
 
 ## References
 
-- [Paper 07 — SoK](../research/paper-07-sok-dsn.md): Honest Geppetto attack; outsourcing attack; JIT retrieval
+- [Paper 07 — SoK DSN](../research/paper-07-sok-dsn.md): Honest Geppetto attack named and sourced; seven unsolved DSN challenges enumerated; Vyomanaut closes challenges 3, 6, and 7
 - [ADR-002](ADR-002-proof-of-storage.md): PoR challenge design
 - [ADR-017](ADR-017-audit-receipt-schema.md): response_latency_ms field
+- [Paper 41 — Vakilinia et al.](../research/paper-41-vakilinia-incentive-compatible-dsn.md): service-denial identified as a fifth adversarial class; RS(16,56) structural mitigation and ASN cap bound the attack
+- [Paper 20 — IPFS Measurement](../research/paper-20-trautwein-ipfs.md): Table 2 measures AS concentration in production; top 10 ASes = 64.9% of all IPs; validates the threat the 20% cap addresses
+- [Paper 37 — SHELBY](../research/paper-37-shelby-incentive-compatibility.md): Observation 1 formally proves outsourcing attack is deterred when audit frequency × reconstruction cost > storage cost; Vyomanaut's deadline is the timing-domain equivalent
+- [Paper 38 — Nath et al.](../research/paper-38-nath-correlated-failures.md): elevates 20% ASN cap from adversarial mitigation to reliability requirement; without cap, RS(16,56) can be worse than simpler schemes under correlated failures

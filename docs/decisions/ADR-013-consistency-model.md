@@ -10,7 +10,7 @@
 
 ## Context
 
-The system has ~20 core database operations. Without a principled method for deciding which ones need coordination, engineers will either over-coordinate (killing throughput) or under-coordinate (causing silent data corruption). Bailis et al. (Paper 11) provides the formal test: invariant confluence (I-confluence).
+The system has ~20 core database operations. Without a principled method for deciding which ones need coordination, engineers will either over-coordinate (killing throughput) or under-coordinate (causing silent data corruption). Bailis et al. ([Paper 11](../research/paper-11-bailis-coordination.md)) provides the formal test: invariant confluence (I-confluence).
 
 ## Decision
 
