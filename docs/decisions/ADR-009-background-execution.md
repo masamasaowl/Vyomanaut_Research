@@ -18,10 +18,10 @@ V2 is desktop-only. No mobile providers in V2. Mobile is deferred to V3 after st
 
 For the desktop daemon:
 - CPU budget: ≤ 5–10% of CPU for background audits and transfers
-- Disk I/O budget: operate within normal desktop I/O load (Bolosky median: 1–2% CPU, 1–2% disk load)
+- Disk I/O budget: operate within normal desktop I/O load (Bolosky median ([paper-09](../research/paper-09-bolosky-feasibility.md)): 1–2% CPU, 1–2% disk load)
 - The daemon must not degrade user experience; it runs at below-normal process priority
 
-The 100 KB/s background upload bandwidth assumption (Blake & Rodrigues) is consistent with modern Indian ISP promises of 100 Mbps symmetrical at ₹600/month.
+The 100 KB/s background upload bandwidth assumption (Blake & Rodrigues ([paper-06](../research/paper-06-blake-rodrigues.md))) is consistent with modern Indian ISP promises of 100 Mbps symmetrical at ₹600/month.
 
 ## Consequences
 
