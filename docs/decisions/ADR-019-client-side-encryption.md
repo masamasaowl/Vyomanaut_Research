@@ -4,13 +4,13 @@
 **Topic:** #9 Client-Side Encryption
 **Supersedes:** —
 **Superseded by:** —
-**Research source:** Paper 17 (RFC 8439), Paper 16 (AONT-RS)
+**Research source:** Papers 16, 17, 18
 
 ---
 
 ## Context
 
-The AONT-RS encoding pipeline (ADR-022) requires a stream cipher for the AONT transform and
+The AONT-RS (All Or Nothing Transform - Reed Solomon) encoding pipeline ([ADR-022](./ADR-022-encryption-erasure-order.md)) requires a stream cipher for the AONT transform and
 a hash for the integrity commitment. The pointer file (the data owner's sole retrieval
 credential after ADR-022 eliminated external AES keys) requires authenticated encryption.
 Two cipher choices must be made:
@@ -22,7 +22,7 @@ Two cipher choices must be made:
 The central constraint is provider hardware: Indian desktop and NAS providers at the low
 MTTF bound may not have AES-NI acceleration. On that hardware, AES in software is 24–42
 MB/s; ChaCha20 in software is 75–131 MB/s — a 3× improvement that changes whether a 14 MB
-segment can be encoded within the ≤5% CPU background budget (ADR-009).
+segment can be encoded within the ≤5% CPU background budget ([ADR-009](./ADR-009-background-execution.md)).
 
 ## Options Considered
 
@@ -103,7 +103,7 @@ implementation derived from D.J. Bernstein's poly1305-donna).
 
 ---
 
-### AONT hash — unchanged from ADR-022
+### AONT hash — unchanged from [ADR-022](./ADR-022-encryption-erasure-order.md)
 
 The SHA-256 hash `h = SHA-256(c_0 || c_1 || ... || c_s)` inside the AONT is NOT replaced
 by Poly1305. The AONT hash is a commitment, not a MAC — it does not use a secret key and
@@ -117,7 +117,7 @@ Poly1305 is a one-time MAC and its one-time-key constraint makes it unsuitable h
 | Use | Algorithm | Key | Nonce | Notes |
 |---|---|---|---|---|
 | AONT word encryption (no AES-NI) | ChaCha20-256 | K (random, per segment) | 0 | K uniqueness makes nonce=0 safe |
-| AONT word encryption (AES-NI) | AES-256-CTR | K (random, per segment) | counter=i+1 | Matches AONT-RS spec (Paper 16) |
+| AONT word encryption (AES-NI) | AES-256-CTR | K (random, per segment) | counter=i+1 | Matches AONT-RS spec ([Paper 16](../research/paper-16-aont-rs-dispersal.md)) |
 | AONT integrity hash | SHA-256 | none (commitment) | n/a | Unchanged from ADR-022 |
 | Pointer file encryption | AEAD_CHACHA20_POLY1305 | HKDF(master, file_id) | 96-bit counter | 16-byte tag, constant-time verify |
 
@@ -142,7 +142,7 @@ Poly1305 is a one-time MAC and its one-time-key constraint makes it unsuitable h
 
 **Open constraints:**
 - Master secret derivation and rotation for the pointer file key are not specified here —
-  covered by ADR-020 (pointer file and key management, deferred to Phase 3 / Tahoe-LAFS
+  covered by [ADR-020](./ADR-020-key-management.md) (pointer file and key management, deferred to Phase 3 / Tahoe-LAFS
   reading)
 - Multi-sender nonce partitioning (RFC 8439 §2.3 note) is not needed in V2: each data owner
   has one daemon, no concurrent senders sharing a key
@@ -154,3 +154,4 @@ Poly1305 is a one-time MAC and its one-time-key constraint makes it unsuitable h
 - [ADR-022](ADR-022-encryption-erasure-order.md): AONT-RS encoding pipeline; SHA-256 hash (unchanged); pointer file as the sole retrieval credential
 - [ADR-009](ADR-009-background-execution.md): ≤5% CPU budget; 186 ms per segment is within budget
 - [ADR-020](ADR-020-key-management.md): pointer file backup and master secret management (Phase 3)
+- [Paper 18 — Tahoe-LAFS](../research/paper-18-tahoe-lafs.md): client-side encryption confirmed as correct architecture; zero-knowledge property holds across single-operator and federated topologies
