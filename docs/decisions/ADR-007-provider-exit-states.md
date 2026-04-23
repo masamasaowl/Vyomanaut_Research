@@ -4,7 +4,7 @@
 **Topic:** #7 Provider Exit State Mechanism
 **Supersedes:** —
 **Superseded by:** —
-**Research source:** Papers 06, 08, 09
+**Research source:** Papers 06, 08, 09, 12, 29
 
 ---
 
@@ -34,7 +34,7 @@ Regardless of which state applies, if available fragments for any chunk drop to 
 **Positive:**
 - Promised downtime and announced departure give the repair system advance notice, allowing it to pre-select replacement providers before the gap materialises
 - Escrow seizure on silent departure creates a financial deterrent against vanishing
-- Four-state model matches Bhagwan's two-component availability model (daily churn + permanent departure)
+- Four-state model matches Bhagwan's ([paper-08](../research/paper-08-bhagwan-availability.md)) two-component availability model (daily churn + permanent departure)
 
 **Negative / trade-offs:**
 - Promise enforcement requires the payment microservice to be operational at all times (coordination dependency)
@@ -48,3 +48,5 @@ Regardless of which state applies, if available fragments for any chunk drop to 
 - [Paper 06 — Blake & Rodrigues](../research/paper-06-blake-rodrigues.md): promised exit saves bandwidth
 - [Paper 08 — Bhagwan](../research/paper-08-bhagwan-availability.md): two-component model motivates the state machine
 - [Paper 09 — Bolosky](../research/paper-09-bolosky-feasibility.md): 72 h threshold from bimodal distribution
+- [Paper 12 — Dynamo](../research/paper-12-dynamo_1.md): Section 4.8.1 independently confirms that transient outages must not trigger rebalancing; permanent departure requires an explicit announcement mechanism
+- [Paper 29 — Filecoin](../research/paper-29-filecoin-whitepaper.md): Manage.RepairOrders three-case escalation structure maps to the four exit states; independent validation from the only deployed graduated-penalty DSN
