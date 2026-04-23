@@ -14,6 +14,18 @@ Blockchain was the trust anchor in all surveyed DSNs. It provided: (1) an immuta
 
 ## Decision
 
+Blockchain performs three separable functions in all surveyed DSNs ([Paper 07](../research/paper-07-sok-dsn.md), Section VI):
+
+1. Immutable audit log — provides tamper-evident proof that audit events occurred;
+
+Function 1 → append-only INSERT-only Postgres audit_receipts table (V2)
+2. Automatic payment trigger on verified proof — ties payment release to proof verification without trusting an operator;
+
+Function 2 → microservice countersignature gates escrow release (V2, [ADR-012](./ADR-012-payment-basis.md))
+3. Public dispute resolution — allows any party to independently verify the audit history. [ADR-015](./ADR-015-audit-trail.md) is structured to replicate each function explicitly.
+
+Function 3 → deferred to V3 Transparent Merkle Log.
+
 **V2: Signed Receipt Exchange**
 
 Every audit event produces two signed artefacts:
@@ -62,5 +74,5 @@ Note: Merkle Log may not immediately convince NAS providers who expect blockchai
 
 ## References
 
-- [Paper 07 — SoK](../research/paper-07-sok-dsn.md): three functions of blockchain that we must replicate
+- [Paper 07 — SoK DSN](../research/paper-07-sok-dsn.md): three blockchain functions that ADR-015 must replicate; framing for the V2 signed receipt + V3 Merkle Log two-phase design
 - [Paper 11 — Bailis](../research/paper-11-bailis-coordination.md): audit receipt INSERT is I-confluent; append-only log design
