@@ -4,7 +4,7 @@
 **Topic:** #5 Peer Selection (scope decision)
 **Supersedes:** —
 **Superseded by:** —
-**Research source:** Papers 05, 06, 08, 20
+**Research source:** Papers 05, 06, 08, 10, 20
 
 ---
 
