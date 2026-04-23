@@ -4,7 +4,7 @@
 **Topic:** #13 Escrow & Payment Basis (schema)
 **Supersedes:** —
 **Superseded by:** —
-**Research source:** Paper 11
+**Research source:** Paper 11, 35
 
 ---
 
@@ -66,3 +66,4 @@ At 10,000 providers with monthly payouts: peak ≈ 3 releases/sec. Single-server
 ## References
 
 - [Paper 11 — Bailis](../research/paper-11-bailis-coordination.md): CRDT PN-counter; I-confluence analysis; DECREMENT is non-I-confluent (requires single payment service)
+- [Paper 35 — Razorpay API Docs](../research/paper-35-razorpay-upi-docs.md): append-only internal ledger is correct — Razorpay provides no native partial-hold query API; amount_paise BIGINT confirmed; idempotency_key serves double duty as X-Payout-Idempotency header

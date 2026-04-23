@@ -4,7 +4,7 @@
 **Topic:** #2 Proof of Storage (receipt schema)
 **Supersedes:** —
 **Superseded by:** —
-**Research source:** Papers 07, 11
+**Research source:** Papers 07, 11, 18
 
 ---
 
@@ -68,3 +68,4 @@ audit_receipts (
 - [Paper 11 — Bailis](../research/paper-11-bailis-coordination.md): INSERT audit receipt is I-confluent; schema design
 - [ADR-014](ADR-014-adversarial-defences.md): adversarial attack classes this schema defends against
 - [ADR-015](ADR-015-audit-trail.md): signed receipt exchange flow
+- [Paper 18 — Tahoe-LAFS](../research/paper-18-tahoe-lafs.md): domain-separated hashing — every hash use must prepend a purpose-specific tag; challenge nonce HMAC construction already follows this principle

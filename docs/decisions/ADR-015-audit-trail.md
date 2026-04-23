@@ -19,9 +19,11 @@ Blockchain performs three separable functions in all surveyed DSNs ([Paper 07](.
 1. Immutable audit log — provides tamper-evident proof that audit events occurred;
 
 Function 1 → append-only INSERT-only Postgres audit_receipts table (V2)
+
 2. Automatic payment trigger on verified proof — ties payment release to proof verification without trusting an operator;
 
 Function 2 → microservice countersignature gates escrow release (V2, [ADR-012](./ADR-012-payment-basis.md))
+
 3. Public dispute resolution — allows any party to independently verify the audit history. [ADR-015](./ADR-015-audit-trail.md) is structured to replicate each function explicitly.
 
 Function 3 → deferred to V3 Transparent Merkle Log.
