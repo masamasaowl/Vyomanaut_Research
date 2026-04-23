@@ -1,27 +1,27 @@
-# ADR-021 — P2P Transfer Protocol
+# ADR-021 — P2P Transfer Protocol: libp2p + QUIC v1
 
 **Status:** Accepted
 **Topic:** #12 P2P Transfer Protocol
 **Supersedes:** —
 **Superseded by:** —
-**Research source:** Paper 14 (RFC 9000), Paper 13 (libp2p spec)
+**Research source:** Paper 14 (RFC 9000), Paper 13 (libp2p spec), Paper 30 
 
 ---
 
 ## Context
 
 All data movement between providers, and between providers and data owners, is pure P2P. The
-transfer protocol must handle NAT traversal (most desktop providers are behind home routers),
+transfer protocol must handle NAT (Network Address Translation) traversal (most desktop providers are behind home routers),
 connection migration (providers have dynamic IPs), multiplexed parallel chunk streams, and
-cryptographic peer identity. S/Kademlia (Paper 03) suggested gRPC or QUIC. Paper 13 (libp2p)
-and Paper 14 (RFC 9000) together answer all open questions.
+cryptographic peer identity. S/Kademlia ([Paper 03](../research/paper-03-skademlia.md)) suggested gRPC or QUIC. [Paper 13](../research/paper-13-libp2p.md) (libp2p)
+and [Paper 14](../research/paper-14-quic-rfc9000.md) (RFC 9000) together answer all open questions.
 
 ## Options Considered
 
 | Option | Pros | Cons |
 |---|---|---|
-| Raw QUIC + custom peer discovery | Minimal stack; full control | NAT traversal, hole-punching, relay, and identity must all be built from scratch |
-| gRPC over HTTP/2 over TCP | Mature; familiar tooling | No connection migration; HOL-blocking on TCP; no built-in NAT traversal |
+| Raw QUIC (Quick UDP Internet Connections) + custom peer discovery | Minimal stack; full control | NAT traversal, hole-punching, relay, and identity must all be built from scratch |
+| gRPC (Remote Procedure Call) over HTTP/2 over TCP | Mature; familiar tooling | No connection migration; HOL-blocking on TCP; no built-in NAT traversal |
 | **libp2p + QUIC v1 (RFC 9000)** | Production-proven in IPFS, Filecoin, Ethereum devp2p; full NAT traversal stack; Kademlia DHT included; stream multiplexing built in | Additional dependency; requires custom DHT key validator and CID rotation configuration |
 
 ## Decision
@@ -46,7 +46,7 @@ provides stream-level independence on TCP connections, matching QUIC stream sema
 | Tier | Protocol | Applies to | Cost |
 |---|---|---|---|
 | 1 | AutoNAT | All providers on connect | Classifies: public / cone-NAT / symmetric-NAT |
-| 2 | DCUtR hole-punching | Cone-NAT (common on Indian home routers) | One relay round-trip + simultaneous dial |
+| 2 | DCUtR (Direct Connection Upgrade through Relay) hole-punching | Cone-NAT (common on Indian home routers) | One relay round-trip + simultaneous dial |
 | 3 | Circuit Relay v2 | Symmetric-NAT only | All traffic proxied; adds 50–200 ms per message |
 
 Relay nodes are Vyomanaut-operated and co-located in Indian cloud regions to bound relay overhead.
@@ -56,7 +56,7 @@ providers (Q13-1).
 **Peer identity:**
 Each provider daemon generates an Ed25519 key pair at installation. The public key is registered
 with the coordination microservice at join time. The libp2p Peer ID is `multihash(public_key)`,
-consistent with S/Kademlia's cryptographic node ID principle (Paper 03) and satisfying ADR-001's
+consistent with S/Kademlia's cryptographic node ID principle ([Paper 03](../research/paper-03-skademlia.md)) and satisfying ADR-001's
 registration-gated admission model. The key pair is the node's cryptographic identity; the
 registration microservice is the admission gate.
 
@@ -69,6 +69,8 @@ registration microservice is the admission gate.
 | DHT mode | Server (all V2 desktop providers) | Full participant: stores and routes |
 | Key namespace | Custom HMAC validator | `HMAC(chunk_hash, file_owner_key)` — disables default CID namespace |
 | Republication | Driven by availability microservice | libp2p internal republication disabled |
+
+DCUtR retry count: set max_hole_punch_retries = 1 (not the libp2p default of 3). Paper 30 (Trautwein et al.) measured 4.4 million traversal attempts and found 97.6% of successful connections succeed on the first attempt. Retries 2 and 3 consume 100–400 ms each with only 2.4% marginal gain. For the audit challenge path with a 614 ms deadline, this is the correct setting.
 
 The custom key validator replaces libp2p's default CID-based namespace. Only the file owner
 can map a DHT lookup key back to the underlying chunk (Q07-5). This must not be overridden by
@@ -110,6 +112,7 @@ Vyomanaut's own binary chunk transfer protocol. HTTP/3 framing overhead is not a
   version upgrades
 - 0-RTT disabled for audit interactions adds one round trip per reconnect on every
   post-absence audit challenge
+- DCUtR retry count of 3 adds 200–800 ms to hole-punch setup on every successful connection attempt, for only 2.4% additional gain. Reduce to 1 retry.
 
 **Open constraints:**
 - Relay overhead vs audit response deadline: measure before accepting symmetric-NAT providers
@@ -129,3 +132,4 @@ Vyomanaut's own binary chunk transfer protocol. HTTP/3 framing overhead is not a
 - [ADR-005](ADR-005-peer-selection.md): Identify protocol feeds the vetting subsystem
 - [ADR-014](ADR-014-adversarial-defences.md): response_latency_ms JIT detector; migration false-positive risk
 - [ADR-017](ADR-017-audit-receipt-schema.md): response_latency_ms field definition
+- [Paper 30 — Trautwein et al.](../research/paper-30-trautwein-dcutr-nat.md): 70% DCUtR success across 4.4M attempts; TCP = QUIC at ~70% success (protocol-agnostic); relay position independent of success; 97.6% first-attempt success → set max_hole_punch_retries = 1; Q13-1 answered

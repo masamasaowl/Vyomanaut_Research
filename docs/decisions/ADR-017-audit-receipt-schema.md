@@ -53,8 +53,9 @@ audit_receipts (
 ## Consequences
 
 **Positive:**
+
 - Schema is append-only — tamper-evident at the DB level
-- Dual Ed25519 signatures make the receipt verifiable by both parties independently
+- Dual Ed25519 signatures (Edwards-curve Digital Signature Algorithm (EdDSA)) make the receipt verifiable by both parties independently
 - `response_latency_ms` doubles as a JIT retrieval detector without extra infrastructure
 - `schema_version` field allows backward-compatible migration when the schema must evolve
 

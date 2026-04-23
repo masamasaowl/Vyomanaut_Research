@@ -10,7 +10,7 @@
 
 ## Context
 
-ADR-022 eliminated external AES key storage by embedding the AONT key K inside the coded
+[ADR-022](./ADR-022-encryption-erasure-order.md) eliminated external AES key storage by embedding the AONT key K inside the coded
 data — K is recoverable only when k=16 slices are assembled. This shifted the key management
 problem from "how do we store an AES key" to "how do we store and recover the pointer file",
 which is now the data owner's sole retrieval credential.
@@ -31,7 +31,7 @@ Two questions must be answered:
 |---|---|---|
 | Flat per-file keys (one random AES key per file, stored in a local database) | Simple implementation | Loss of local database = loss of all files; no recovery path without full backup |
 | Server-held key escrow (microservice stores encrypted versions of all file keys) | Recovery via microservice authentication | Microservice becomes a key management dependency; violates zero-knowledge property if microservice is compromised |
-| **HKDF hierarchy with master secret (Tahoe model)** | One master secret recovers all pointer file keys; no key server needed; zero-knowledge preserved | Master secret loss = permanent loss of all files; master secret must be backed up by the data owner |
+| **HKDF (HMAC-based Extract-and-Expand Key Derivation Function) hierarchy with master secret (Tahoe model)** | One master secret recovers all pointer file keys; no key server needed; zero-knowledge preserved | Master secret loss = permanent loss of all files; master secret must be backed up by the data owner |
 
 ## Decision
 
@@ -59,7 +59,7 @@ output serves as the passphrase input to Argon2id.
 **Loss scenario:** If the owner forgets their passphrase and has no backup, all files are
 permanently unrecoverable. The owner must be clearly informed of this at account creation.
 
-**Backup path:** The owner may optionally generate a 24-word BIP-39 mnemonic from the
+**Backup path:** The owner may optionally generate a 24-word BIP-39 (Bitcoin Improvement Proposal 39) mnemonic from the
 master secret and store it offline (paper, safe deposit box). This is the recovery path for
 device loss.
 
@@ -95,7 +95,7 @@ design: K is a per-upload ephemeral, not a persistent credential.
 ### Pointer File Schema
 
 The pointer file is the read-cap equivalent. It is encrypted with AEAD_CHACHA20_POLY1305
-(ADR-019) using a key derived from the master secret:
+([ADR-019](./ADR-019-client-side-encryption.md)) using a key derived from the master secret:
 
 ```
 pointer_file_encryption_key = HKDF-SHA256(

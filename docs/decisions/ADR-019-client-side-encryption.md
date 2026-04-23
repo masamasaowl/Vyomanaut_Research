@@ -12,15 +12,15 @@
 
 The AONT-RS (All Or Nothing Transform - Reed Solomon) encoding pipeline ([ADR-022](./ADR-022-encryption-erasure-order.md)) requires a stream cipher for the AONT transform and
 a hash for the integrity commitment. The pointer file (the data owner's sole retrieval
-credential after ADR-022 eliminated external AES keys) requires authenticated encryption.
+credential after [ADR-022](./ADR-022-encryption-erasure-order.md) eliminated external AES keys) requires authenticated encryption.
 Two cipher choices must be made:
 
 1. The AONT internal cipher — used to encrypt each word of a segment during the AONT pass.
 2. The pointer file cipher — used to protect the pointer file before backup or off-device
    storage.
 
-The central constraint is provider hardware: Indian desktop and NAS providers at the low
-MTTF bound may not have AES-NI acceleration. On that hardware, AES in software is 24–42
+The central constraint is provider hardware: Indian desktop and NAS (Network-Attached Storage) providers at the low
+MTTF bound may not have AES-NI (Advanced Encryption Standard New Instructions) acceleration. On that hardware, AES in software is 24–42
 MB/s; ChaCha20 in software is 75–131 MB/s — a 3× improvement that changes whether a 14 MB
 segment can be encoded within the ≤5% CPU background budget ([ADR-009](./ADR-009-background-execution.md)).
 
