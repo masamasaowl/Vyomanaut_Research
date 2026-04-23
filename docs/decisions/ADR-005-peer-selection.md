@@ -17,7 +17,7 @@ New providers must be admitted, monitored, and ranked without opening the networ
 | Option | Pros | Cons |
 |---|---|---|
 | Pure random assignment | Simple; no bias | Assigns data to untested nodes; no quality signal |
-| EigenTrust global reputation | Distributed; converges to honest consensus | Requires gossip infrastructure; bootstrapping problem for new nodes |
+| EigenTrust global reputation ([paper-24](../research/paper-24-eigentrust.md))| Distributed; converges to honest consensus | Requires gossip infrastructure; bootstrapping problem for new nodes |
 | **Storj 4-subsystem pipeline** | Combines identity gating + vetting + filtering + preference; proven in production | Centralised scoring creates a choke point; vetting period creates onboarding friction |
 
 ## Decision
