@@ -47,7 +47,15 @@ Desktop-only V2 uses a single parameter set — no per-tier differentiation (see
 - 2.5× storage overhead vs 3× for simple replication
 
 **Negative / trade-offs:**
-- CRITICAL CO-REQUISITE: The LossRate < 10⁻¹⁵ per year guarantee is derived under the independent-failure Markov assumption. [Paper 38](../research/paper-38-nath-correlated-failures.md) proves that for wide-stripe erasure systems (ERASURE(16,56) in their notation), correlated failures can reverse the superiority ordering entirely. This guarantee only holds jointly with the 20% ASN cap in [ADR-014](./ADR-014-adversarial-defences.md). The erasure parameters alone are insufficient. An engineer deploying ADR-003 without ADR-014 does not achieve the stated durability.
+
+- CRITICAL — Co-requisite: The LossRate < 10⁻¹⁵ per year guarantee holds only
+jointly with the 20% ASN cap in [ADR-014](./ADR-014-adversarial-defences.md). The independent-failure Markov formula
+correctly predicts the mean; [Paper 38](../research/paper-38-nath-correlated-failures.md) (Nath et al.) proves that large-m erasure
+schemes can have their superiority ordering reversed under real-world correlated
+failures. With the 20% ASN cap, the maximum correlated failure event is bounded at
+12 shards (ceil(0.20 × 56)). Surviving shards after the worst case: 44 — which is
+28 above the s=16 reconstruction floor. This makes the reversal condition from
+[Paper 38](../research/paper-38-nath-correlated-failures.md) categorically impossible at our parameters. An engineer deploying ADR-003 without ADR-014 does not achieve the stated LossRate guarantee.
 - Full reconstruction requires contacting all 16 surviving fragments — not bandwidth-optimal
 - MSR codes would reduce repair bandwidth further but require more research
 
@@ -55,7 +63,10 @@ Desktop-only V2 uses a single parameter set — no per-tier differentiation (see
 - Parameters calibrated for desktop-tier MTTF (180–380 days). If mobile is introduced, these values must change.
 - Encryption-erasure interaction order (encrypt-then-code vs code-then-encrypt) is still TBD — see [ADR-022](ADR-022-encryption-erasure-order.md)
 - BWavg ≈ 39 Kbps/peer is a mean under the independent-failure assumption. [Paper 36](../research/paper-36-dalle-failure-correlation.md) proves the real standard deviation is 22× higher due to correlated burst failures. The peak bandwidth during an ASN-level outage significantly exceeds this mean. The 20% ASN cap (ADR-014) bounds the worst-case burst size.
-- Upload optimality threshold (deferred): Storj uses a fourth parameter o — once o pieces confirm, the slowest n-o uploads are cancelled (Paper 05, Section 4.7). This reduces P99 upload latency but requires the microservice to issue cancel signals. Not specified for V2; add as a V3 enhancement.
+- Upload optimality threshold (deferred): Storj uses a fourth parameter o — once o pieces confirm, the slowest n-o uploads are cancelled ([Paper 05](../research/paper-05-storj.md), Section 4.7). This reduces P99 upload latency but requires the microservice to issue cancel signals. Not specified for V2; add as a V3 enhancement.
+- Correlated failure validation (Q38-2 — closed): The 20% ASN cap provably keeps
+RS(16,56) in the superiority region. See [ADR-014](./ADR-014-adversarial-defences.md) for the co-requisite statement and
+the numerical proof.
 
 ## References
 

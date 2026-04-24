@@ -38,7 +38,9 @@ Based on Bolosky's bimodal distribution ([paper-09](../research/paper-09-bolosky
 - Permanent silent departure: after **72 h** without contact → trigger repair, seize escrow
 - Announced departure: trigger repair immediately on announcement
 
-The 72-hour threshold safely exceeds the weekend absence peak (99.7% of weekend absences resolve within 70 h per Bolosky) without waiting for a true departure.
+The 72-hour threshold safely exceeds the weekend absence peak (99.7% of weekend absences resolve within 70 h per [Bolosky](../research/paper-09-bolosky-feasibility.md)) without waiting for a true departure.
+
+Repair chunk assignment: Replacement chunk assignment during repair uses the identical Power of Two Choices algorithm from [ADR-005](./ADR-005-peer-selection.md), weighted by provider reliability score and free capacity. No special-case assignment logic is required for repair vs upload. [Giroire](../research/paper-10-giroire-lazy.md) BWavg = 39 Kbps/peer is far enough below the 100Kbps budget that 3× launch-phase variance remains safe.
 
 **Peak bandwidth (Qpeek) per failure event:**
 For N=1000, s=16, r=40, r0=8, lf=256 KB: Qpeek ≈ 793 GB total.
