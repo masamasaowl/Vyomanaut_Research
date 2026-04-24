@@ -4,14 +4,14 @@
 **Topic:** #17 Repair Bandwidth Optimisation
 **Supersedes:** —
 **Superseded by:** —
-**Research source:** Paper 19 (EC Survey, Shen et al., ACM ToS 2025), Paper 10 (Giroire)
+**Research source:** Papers 10, 19, 22, 36, 39
 
 ---
 
 ## Context
 
-ADR-003 chose Reed-Solomon RS(s=16, r=40) with lazy repair triggered at r0=8. The Giroire
-formulas (Paper 10) show that reconstructing a lost chunk requires contacting k=16 surviving
+[ADR-003](./ADR-003-erasure-coding.md) chose Reed-Solomon RS(s=16, r=40) with lazy repair triggered at r0=8. The Giroire
+formulas ([Paper 10](../research/paper-10-giroire-lazy.md)) show that reconstructing a lost chunk requires contacting k=16 surviving
 fragment holders — this is not bandwidth-optimal. For a single-chunk failure, RS must download
 k entire chunks to reconstruct one. Information theory guarantees that this can be done with
 less data (the regenerating code bound, Dimakis et al. 2010).
@@ -21,9 +21,11 @@ BWavg ≈ 39 Kbps/peer is well within the 100 Kbps background budget. Repair BW 
 therefore a V3 concern, not a V2 blocker. However, the design space must be understood now so
 that V3 provider daemon and chunk layout decisions do not foreclose the upgrade path.
 
-Paper 19 (EC Survey) provides the landscape. It identifies two candidate code families:
+[Paper 19](../research/paper-19-ec-survey.md) (EC Survey) provides the landscape. It identifies two candidate code families:
 regenerating codes (specifically Clay codes as the general-parameter MSR implementation) and
 piggybacking codes (Hitchhiker), with quantified tradeoffs from Figure 8.
+
+An additional consideration at V3 scale: [Paper 36](../research/paper-36-dalle-failure-correlation.md) (Dalle et al.) proves the real repair bandwidth standard deviation is 22× higher than the independent model predicts at any practical deployment size. The BWavg ≈ 39 Kbps/peer that makes Hitchhiker's 25–45% reduction appear marginal is a mean. At V3 scale, the burst demand during an ASN-level outage is the binding constraint, not the mean. Hitchhiker's reduction may be more economically necessary than the mean calculation suggests.
 
 ## Options Considered
 
@@ -82,6 +84,8 @@ Specific questions that must be answered before this ADR can be accepted:
 **Not yet made.** Candidates are Clay codes and Hitchhiker codes as identified by Paper 19.
 Fill this ADR after Phase 2A #4 (Dimakis) is read.
 
+Combination with lazy repair ([ADR-004](./ADR-004-repair-protocol.md)): [Paper 39](../research/paper-39-silberstein-lazy-recovery.md) (Silberstein) confirms lazy recovery and bandwidth-efficient codes are orthogonal. Figure 7 shows Xorbas+LAZY outperforms either alone by more than 2×. Hitchhiker combined with [ADR-004's](./ADR-004-repair-protocol.md) lazy repair should achieve additive savings — the total V3 bandwidth reduction could significantly exceed Hitchhiker's standalone 25–45%.
+
 **Update** After reading Phase 2A #4 (Dimakis) Clay codes removed as candidate Hitchhiker codes as the sole remaining V3 candidate pending Phase 2A #5.
 
 ## Consequences
@@ -110,6 +114,9 @@ Fill this ADR after Phase 2A #4 (Dimakis) is read.
 
 - [Paper 19 — EC Survey](../research/paper-19-ec-survey.md): RS dominance; Clay codes general (n,k); Hitchhiker 25–45% reduction; LRC topology dependency; Figure 8 tradeoff analysis
 - [Paper 10 — Giroire](../research/paper-10-giroire-lazy.md): Qpeek formula; BWavg calculation; r0=8 parameter derivation
+- [Paper 22 — Goparaju et al.](../research/paper-22-goparaju-msr-codes.md): sub-packetisation formula applied to (n=56, k=16) yields α ≥ 40^16; Clay codes computationally intractable; Q19-2 definitively answered
+- [Paper 36 — Dalle et al.](../research/paper-36-dalle-failure-correlation.md): BWavg is mean only; real σ is 22× higher at any practical scale; burst demand may make Hitchhiker's 25–45% reduction more necessary at V3 than mean calculation implies
+- [Paper 39 — Silberstein et al.](../research/paper-39-silberstein-lazy-recovery.md): lazy recovery and bandwidth-efficient codes are orthogonal; combining Hitchhiker with ADR-004 lazy repair yields additive savings greater than either alone
 - [ADR-003](ADR-003-erasure-coding.md): RS parameters (s=16, r=40, r0=8, lf=256 KB) — unchanged by this ADR
 - [ADR-004](ADR-004-repair-protocol.md): Lazy repair, 72 h trigger — unchanged by this ADR
 - [ADR-014](ADR-014-adversarial-defences.md): 20% ASN cap — must hold under any new code construction
