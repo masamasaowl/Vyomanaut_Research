@@ -10,7 +10,7 @@
 
 ## Context
 
-ADR-001 adopted a hybrid microservice + Kademlia DHT architecture and specified that the coordination microservice uses a "quorum read mechanism for consistency." That ADR left the quorum parameters and the membership/failure detection mechanism unspecified. Without concrete parameters, engineers cannot implement the microservice cluster. The cluster must tolerate the failure of one of its replicas without losing availability, and must detect failed replicas without a centralised registry.
+[ADR-001](./ADR-001-coordination-architecture.md) adopted a hybrid microservice + Kademlia DHT architecture and specified that the coordination microservice uses a "quorum read mechanism for consistency." That ADR left the quorum parameters and the membership/failure detection mechanism unspecified. Without concrete parameters, engineers cannot implement the microservice cluster. The cluster must tolerate the failure of one of its replicas without losing availability, and must detect failed replicas without a centralised registry.
 
 ## Options Considered
 
@@ -18,7 +18,7 @@ ADR-001 adopted a hybrid microservice + Kademlia DHT architecture and specified 
 |---|---|---|
 | Managed consensus service (etcd / Consul) | Battle-tested; strong consistency; automatic leader election | Introduces an external operational dependency; adds latency for every coordinated write; overkill for a cluster of 3–5 nodes |
 | Single-node microservice | Simple to implement | Single point of failure; violates the availability requirement stated in ADR-001 |
-| **N=3 quorum + gossip membership (Dynamo model)** | Proven at Amazon scale; no external dependency; tolerates one replica failure; gossip is self-healing | Eventual membership consistency (up to ~10 s stale); requires seed node configuration at deploy time |
+| **N=3 quorum + gossip membership (Dynamo model, storng + eventual consistency)** | Proven at Amazon scale; no external dependency; tolerates one replica failure; gossip is self-healing | Eventual membership consistency (up to ~10 s stale); requires seed node configuration at deploy time |
 
 ## Decision
 
@@ -33,7 +33,7 @@ The coordination microservice is deployed as a cluster of **N=3 replicas**.
 | W | 2 | Minimum replicas that must acknowledge a write |
 | R + W | 4 > N | Quorum overlap guaranteed; stale reads impossible when all nodes are healthy |
 
-R=2, W=2 means the cluster tolerates the failure of one replica for both reads and writes. This matches the constraint from Paper 11 (Bailis): the 6 non-I-confluent operations (escrow debit, score floor, chunk placement, token validation, physical delete prohibition, escrow seizure) are handled by the single authoritative payment/assignment service, not by quorum vote. The quorum applies to metadata reads and the I-confluent append operations.
+R=2, W=2 means the cluster tolerates the failure of one replica for both reads and writes. This matches the constraint from [Paper 11](../research/paper-11-bailis-coordination.md) (Bailis): the 6 non-I-confluent operations (escrow debit, score floor, chunk placement, token validation, physical delete prohibition, escrow seizure) are handled by the single authoritative payment/assignment service, not by quorum vote. The quorum applies to metadata reads and the I-confluent append operations.
 
 **Membership and failure detection:**
 
@@ -53,9 +53,9 @@ Background tasks (Merkle log compaction, materialised view refresh, repair job q
 
 **What this ADR does NOT cover:**
 
-- Horizontal database sharding (not needed in V2 — peak ~3 payment releases/sec, confirmed by ADR-016)
-- Provider-facing gossip (providers are managed by polling, ADR-006)
-- P2P data-plane routing (Kademlia, ADR-001)
+- Horizontal database sharding (not needed in V2 — peak ~3 payment releases/sec, confirmed by [ADR-016](./ADR-016-payment-db-schema.md))
+- Provider-facing gossip (providers are managed by polling, [ADR-006](./ADR-006-polling-interval.md))
+- P2P data-plane routing (Kademlia, [ADR-001](./ADR-001-coordination-architecture.md))
 
 ## Consequences
 
