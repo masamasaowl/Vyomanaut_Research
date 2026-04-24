@@ -4,29 +4,30 @@
 **Topic:** #18 Economic Mechanism Design
 **Supersedes:** —
 **Superseded by:** —
-**Research source:** Paper 29 (Filecoin), Paper 31 (PeerTrust), Paper 33 (Ihle et al. P2P Incentive Survey)
+**Research source:** Papers 5, 29, 31, 33, 35, 37, 40, 41
 
 ---
 
 ## Context
 
-ADR-011 fixed the payment instrument (Razorpay/UPI fiat escrow) and ADR-012 fixed the payment
+[ADR-011](./ADR-011-escrow-payments.md) fixed the payment instrument (Razorpay/UPI fiat escrow) and [ADR-012](./ADR-012-payment-basis.md) fixed the payment
 unit (per audit passed). Both left open the economic mechanism parameters: how much is held in
 escrow at any time, how long earnings are withheld, what graduated penalties apply before full
 seizure, and how per-audit pricing is set. Without these parameters, the escrow service cannot
 be implemented, providers cannot compute their expected earnings, and the microservice cannot
 enforce SLA violations.
 
-Three papers now bound the design space completely:
-- Filecoin (Paper 29) provides the graduated penalty template: score decrement per missed proof,
-  partial penalty at Δfault/2, full cancellation at Δfault.
-- PeerTrust (Paper 31) provides the adaptive dual-window scoring pattern: reputation is hard to
-  build, easy to lose; the cost of rebuilding must exceed the gain from milking.
-- Ihle et al. (Paper 33) provides the decision tree validation: deterministic pricing + non-
-  transferable accumulated earnings = the correct incentive type for contracted cold storage.
+Four papers now bound the design space completely:
 
-The 72-hour departure threshold (ADR-006, ADR-007) and the three-window reliability score
-(ADR-008) are fixed inputs. This ADR specifies everything layered on top of them.
+- Storj ([Paper 05](../research/paper-05-storj.md) ) provides the closest production precedent to Vyomanaut's held-earnings model: earnings held for nine months, reclaimed on premature departure to cover repair costs (Section 4.16). Filecoin uses pre-committed collateral (stake before earning); Storj holds accumulated earnings. Vyomanaut follows the Storj model — held-earnings, not pre-committed stake — because it matches the India-first provider demographic where pre-commitment creates an unacceptable capital barrier.
+- Filecoin ([Paper 29](../research/paper-29-filecoin-whitepaper.md)) provides the graduated penalty template: score decrement per missed proof,
+  partial penalty at Δfault/2, full cancellation at Δfault.
+- PeerTrust ([Paper 31](../research/paper-31-peertrust.md)) provides the adaptive dual-window scoring pattern: reputation is hard to
+  build, easy to lose; the cost of rebuilding must exceed the gain from milking.
+- Ihle et al. ([Paper 33](../research/paper-33-ihle-incentive-mechanisms.md)) provides the decision tree validation: deterministic pricing + non-transferable accumulated earnings = the correct incentive type for contracted cold storage.
+
+The 72-hour departure threshold ([ADR-006](./ADR-006-polling-interval.md), [ADR-007](./ADR-007-provider-exit-states.md)) and the three-window reliability score
+([ADR-008](./ADR-008-reliability-scoring.md)) are fixed inputs. This ADR specifies everything layered on top of them.
 
 ---
 
@@ -57,10 +58,10 @@ Where:
 
 The storage rate is **deterministic and fixed at contract creation**. It does not fluctuate with
 network demand. Data owners and providers both know their exact expected costs and earnings
-before any data is transferred. This is the deterministic pricing pattern validated by Paper 33.
+before any data is transferred. This is the deterministic pricing pattern validated by [Paper 33](../research/paper-33-ihle-incentive-mechanisms.md).
 
 Per-segment pricing (Q05-8) is not adopted in V2. Metadata overhead (~44 bytes per chunk in
-the WiscKey index, ADR-023) is negligible at the chunk sizes and volumes anticipated at launch.
+the WiscKey index, [ADR-023](./ADR-023-provider-storage-engine.md)) is negligible at the chunk sizes and volumes anticipated at launch.
 Revisit if segment count grows to the point where metadata cost is measurable.
 
 ### 2. Escrow hold structure
@@ -69,6 +70,8 @@ At any given time, a provider's earned-but-not-yet-released escrow balance is bo
 **rolling hold window of 30 days**. Earnings older than 30 days are released automatically on
 the first of each month, provided the provider's 30-day reliability score is above the release
 threshold (see §4).
+
+Storj [Paper-05](../research/paper-05-storj.md) precedent: Storj holds earnings for nine months (Section 4.16). Vyomanaut's 30-day rolling window is shorter, calibrated to provider cash-flow expectations for Indian home desktop providers. The seizure mechanism (all held earnings reclaimed on silent departure to fund repair) is identical in principle.
 
 ```
 escrow_held_at_time_T = sum of audit-pass earnings in [T-30d, T]
@@ -79,6 +82,8 @@ escrow_releasable    = sum of audit-pass earnings in [T-60d, T-30d]
 The maximum amount a provider has at risk at any time is approximately 30 days of earnings.
 For a provider storing 1,000 chunks at the minimum viable storage rate, this is a predictable,
 bounded figure disclosed at onboarding — not a pre-committed stake.
+
+Razorpay Route's on_hold_until releases on the next business day after the timestamp, not on the timestamp date itself. The release window should read "within the first 3 business days of each month" rather than "on the first of each month." The microservice must set on_hold_until to midnight on the last working day of the current month (accounting for RBI bank holidays) so the release lands within the correct window.
 
 **Non-transferability constraint:** The escrow balance is identity-bound to the registered
 provider_id. Transfer of escrow balance to another provider_id is refused by the payment
@@ -105,7 +110,9 @@ month's escrow window. It is only seized if the provider subsequently exits sile
 The thresholds (0.95, 0.80, 0.65) are starting values. They must be tuned empirically after
 V2 launch using provider telemetry. The principle — that the release multiplier makes it costly
 to degrade below a reliability threshold without fully penalising transient hardware failures —
-is the PeerTrust adaptive window pattern (Paper 31, Section 4.3) applied to payment release.
+is the PeerTrust adaptive window pattern ([Paper 31](../research/paper-31-peertrust.md), Section 4.3) applied to payment release.
+
+Implementation note: Route does not support percentage-based transfers. The microservice must compute escrow_held × release_multiplier as an integer paise amount and pass that to the Transfer API. All arithmetic must use integer paise (consistent with [ADR-016's](./ADR-016-payment-db-schema.md) amount_paise BIGINT column).
 
 ### 4. Graduated penalty timeline
 
@@ -113,10 +120,10 @@ Filecoin's Manage.RepairOrders three-case structure maps to Vyomanaut as follows
 
 | Time since last contact | State | Action |
 |---|---|---|
-| 0–24 h | Temporary absence | Score decrement per polling cycle (ADR-008); no payment action |
+| 0–24 h | Temporary absence | Score decrement per polling cycle ([ADR-008](./ADR-008-reliability-scoring.md)); no payment action |
 | 24–48 h | Degraded | Score continues to fall; release multiplier may drop; partial hold begins on next release date |
 | 48–72 h | Warning zone | If 48 h threshold is reached and provider has not responded, queue a repair pre-assessment: identify candidate replacement providers but do not initiate data transfer yet |
-| ≥ 72 h | Silent departure | Trigger repair (ADR-004); seize all held escrow (the rolling 30-day window); mark provider as departed; sign provider out of network (ADR-007) |
+| ≥ 72 h | Silent departure | Trigger repair ([ADR-004](./ADR-004-repair-protocol.md)); seize all held escrow (the rolling 30-day window); mark provider as departed; sign provider out of network ([ADR-007](./ADR-007-provider-exit-states.md)) |
 | Any time | Announced departure | Trigger repair immediately; release held escrow proportional to completion of the current 30-day window; sign provider out of network |
 
 **Partial hold trigger:** If the 7-day reliability score drops more than 0.20 below the 30-day
@@ -138,17 +145,17 @@ On silent departure (t ≥ 72 h with no contact):
 2. All earnings in the 30-day rolling window are seized (transferred to the repair reserve fund).
 3. The repair reserve fund is used to subsidise the cost of onboarding replacement providers
    for the departed provider's chunks.
-4. A seizure receipt is generated and appended to the audit log (I-confluent INSERT — ADR-013).
+4. A seizure receipt is generated and appended to the audit log (I-confluent INSERT — [ADR-013](./ADR-013-consistency-model.md)).
 5. Provider is soft-deleted in the provider table (ADR-013: physical deletion prohibited).
 
-The repair cost covered by seized escrow is bounded: Qpeek ≈ 793 GB for N=1000 (ADR-004).
+The repair cost covered by seized escrow is bounded: Qpeek ≈ 793 GB for N=1000 ([ADR-004](./ADR-004-repair-protocol.md)).
 At any provider MTTF above 180 days, the seized escrow from a departing provider will exceed
 the repair bandwidth cost. If it does not (very low-MTTF provider), the deficit is covered by the
 repair reserve fund, which accumulates from partial-release withheld amounts over time.
 
 ### 6. Vetting period economics
 
-During the 4–6 month vetting period (ADR-005), providers receive full audit-pass payouts but
+During the 4–6 month vetting period ([ADR-005](./ADR-005-peer-selection.md)), providers receive full audit-pass payouts but
 under the following modified hold structure:
 
 - Hold window: 60 days (double the post-vetting window)
@@ -156,7 +163,7 @@ under the following modified hold structure:
 
 This means a provider in the vetting period can earn but can access at most 50% of any month's
 earnings until they pass the vetting threshold. The extended hold mirrors the entry cost pattern
-identified in Paper 33 (Section 4.2.3): an economic barrier to rapid Sybil registration and
+identified in [Paper 33](../research/paper-33-ihle-incentive-mechanisms.md) (Section 4.2.3): an economic barrier to rapid Sybil registration and
 immediate withdrawal.
 
 After vetting is complete, the hold window reverts to 30 days and the release multiplier ceiling
@@ -175,6 +182,14 @@ gap), and cost_per_GB_transfer is the marginal cost of P2P transfer (negligible 
 model where providers bear their own bandwidth cost). In V2, the repair reserve floor is
 primarily a bookkeeping constraint, not a hard capital requirement, since repair bandwidth
 cost is borne by the receiving replacement provider, not by the microservice.
+
+**Theorem 1 conditions ([Paper 37](../research/paper-37-shelby-incentive-compatibility.md), Crystal et al.):** Vyomanaut's economic design satisfies the three formal conditions for honest storage equilibrium. At V2's daily full-audit frequency (pau ≈ 1 per chunk per day):
+
+- Condition (i) — slashing discourages false reporting — trivially satisfied since (1−pau)/pau ≈ 0;
+- Condition (ii) — audit reward ≥ audit cost — satisfied since disk read + hash computation is negligible;
+- Condition (iii) — storage reward ≥ storage cost — the participation constraint set by the storage rate.
+
+If audit frequency is reduced in V3 (probabilistic sampling, pau << 1), Condition (i) must be verified against the new pau value before reducing.
 
 ---
 
@@ -218,9 +233,14 @@ cost is borne by the receiving replacement provider, not by the microservice.
 
 ## References
 
+- [Paper 05 — Storj](../research/paper-05-storj.md): held-earnings vetting model (nine-month hold, reclaim on premature departure) — the closest production precedent to Vyomanaut's escrow structure
 - [Paper 29 — Filecoin](../research/paper-29-filecoin-whitepaper.md): graduated penalty structure (Manage.RepairOrders); collateral proportional to storage; repair re-introduction mechanics
 - [Paper 31 — PeerTrust](../research/paper-31-peertrust.md): adaptive dual-window scoring; cost of rebuilding reputation must exceed gain from milking; partial hold trigger design
 - [Paper 33 — Ihle et al.](../research/paper-33-ihle-incentive-mechanisms.md): decision tree selecting deterministic + non-transferable accumulated incentive; deterministic vs. auction pricing trade-offs; entry cost as Sybil deterrent; Gramaglia long-term P2P storage as closest architectural precedent
+- [Paper 35 — Razorpay API Docs](../research/paper-35-razorpay-upi-docs.md): on_hold_until releases on next business day (not exact date); paise-integer arithmetic mandatory; Route not Escrow+; UPI Intent replaces deprecated Collect flow
+- [Paper 37 — SHELBY](../research/paper-37-shelby-incentive-compatibility.md): Theorem 1 three conditions for honest equilibrium; at V2 daily audit frequency, Condition (i) is trivially satisfied; threshold must be checked if audit frequency is reduced
+- [Paper 40 — Buragohain et al.](../research/paper-40-buragohain-p2p-incentives.md): Nash conditions satisfied at any positive storage rate and N > 1; stable high-contribution equilibrium self-reinforces as provider count grows
+- [Paper 41 — Vakilinia et al.](../research/paper-41-vakilinia-incentive-compatible-dsn.md): bilateral game payoff conditions already satisfied by escrow seizure mechanism; confirms subgame-perfect equilibrium is {Store, No Challenge}
 - [ADR-006](ADR-006-polling-interval.md): 72-hour departure threshold; 24-hour polling interval
 - [ADR-007](ADR-007-provider-exit-states.md): four exit states; repair trigger conditions; escrow seizure trigger
 - [ADR-008](ADR-008-reliability-scoring.md): three-window rolling score; 24h/7d/30d windows; score decrement mechanics
