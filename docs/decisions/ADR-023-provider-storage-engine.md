@@ -4,22 +4,22 @@
 **Topic:** #16 Provider-Side Storage Engine
 **Supersedes:** —
 **Superseded by:** —
-**Research source:** Paper 27 (WiscKey, Lu et al., USENIX FAST 2016), Paper 26 (LSM-Tree, O'Neil et al.), Paper 25 (IRON File Systems)
+**Research source:** Paper 27, 26, 25, 32, 34
 
 ---
 
 ## Context
 
-The provider daemon must store and retrieve 256 KB chunks on local desktop and NAS hardware. Three constraints drive the design. First, writes must not amplify I/O so severely that a steady upload stream saturates background bandwidth — the ≤5% CPU and background I/O budget is shared with audit response (ADR-009). Second, audit challenge lookup must complete well within the response deadline of `(chunk_size / declared_upload_speed) × 1.5`; at 256 KB and 5 Mbps declared speed this is ~614 ms. Third, per-chunk content integrity must be verifiable at read time before the PoR response is computed — silent disk corruption must surface as an audit FAIL, not as a wrong hash (IRON, Paper 25).
+The provider daemon must store and retrieve 256 KB chunks on local desktop and NAS hardware. Three constraints drive the design. First, writes must not amplify I/O so severely that a steady upload stream saturates background bandwidth — the ≤5% CPU and background I/O budget is shared with audit response ([ADR-009](./ADR-009-background-execution.md)). Second, audit challenge lookup must complete well within the response deadline of `(chunk_size / declared_upload_speed) × 1.5`; at 256 KB and 5 Mbps declared speed this is ~614 ms. Third, per-chunk content integrity must be verifiable at read time before the PoR response is computed — silent disk corruption must surface as an audit FAIL, not as a wrong hash (IRON, [Paper 25](../research/paper-25-iron-file-systems.md)).
 
-Paper 26 established that at 256 KB value sizes an LSM-tree that stores keys and values together still has write amplification of 10–14×, and that LSM is inappropriate as the value store itself. Paper 27 (WiscKey) provides the concrete solution: keep only the small chunk index in the LSM; store the actual 256 KB chunk data in a separate append-only value log. This reduces write amplification to approximately 1 at our value size.
+[Paper 26](../research/paper-26-lsm-tree.md) established that at 256 KB value sizes an LSM-tree (Log-Structured Merge tree) that stores keys and values together still has write amplification of 10–14×, and that LSM is inappropriate as the value store itself. [Paper 27](../research/paper-27-wisckey.md) (WiscKey) provides the concrete solution: keep only the small chunk index in the LSM; store the actual 256 KB chunk data in a separate append-only value log. This reduces write amplification to approximately 1 at our value size.
 
 ## Options Considered
 
 | Option | Pros | Cons |
 |---|---|---|
 | Standard LSM (RocksDB with keys and values together) | Mature; no custom code | Write amplification 10–14× at 256 KB; compaction I/O competes with audit reads; LSM too large to stay cached |
-| Flat object store (one file per chunk, random disk offset) | Zero write amplification; write-once access pattern is a natural fit | No built-in index; requires an external lookup table anyway; no Bloom filter support; GC is entirely manual |
+| Flat object store (one file per chunk, random disk offset) | Zero write amplification; write-once access pattern is a natural fit | No built-in index; requires an external lookup table anyway; no Bloom filter support; GC (Garbage Collection) is entirely manual |
 | **WiscKey-style key-value separation (RocksDB for chunk index, append-only vLog for chunk data)** | Write amplification ≈ 1 at 256 KB; LSM index small and fully cacheable; Bloom filters eliminate disk I/O for absent chunks; sequential vLog appends are HDD-optimal | GC required on chunk deletion; vLog management adds operational code |
 
 ## Decision
@@ -53,7 +53,7 @@ content_hash    BYTEA[32]           (SHA256(chunk_data) — verified on every re
 
 Entry size: 32 + 4 + 262144 + 32 = 262212 bytes ≈ 256.2 KB.
 
-The `content_hash` is verified on every vLog read. If `SHA256(chunk_data) ≠ content_hash`, the daemon reports `audit_result = FAIL` to the microservice immediately and queues the chunk for repair reporting. Silent disk corruption surfaces as an audit failure rather than a wrong PoR response hash (IRON Paper 25 requirement).
+The `content_hash` is verified on every vLog read. If `SHA256(chunk_data) ≠ content_hash`, the daemon reports `audit_result = FAIL` to the microservice immediately and queues the chunk for repair reporting. Silent disk corruption surfaces as an audit failure rather than a wrong PoR response hash (IRON [Paper 25](../research/paper-25-iron-file-systems.md) requirement).
 
 **Audit challenge lookup path:**
 
@@ -64,7 +64,7 @@ The `content_hash` is verified on every vLog read. If `SHA256(chunk_data) ≠ co
 3. Read 262212 bytes from vLog at `vlog_offset`. One random disk read: ~1 ms SSD, ~12–15 ms HDD.
 4. Verify `SHA256(chunk_data) == content_hash`. Fail immediately if mismatch.
 5. Compute `response_hash = SHA256(chunk_data || challenge_nonce)`.
-6. Return signed audit receipt (ADR-017).
+6. Return signed audit receipt ([ADR-017](./ADR-017-audit-receipt-schema.md)).
 
 Total disk I/Os on cache hit: 1. Both SSD and HDD latencies are well within the 614 ms audit deadline.
 
@@ -84,7 +84,7 @@ On daemon restart, retrieve `<"vlog_head", head_offset>` from RocksDB. Scan the 
 
 **Garbage collection:**
 
-Triggered only on chunk deletion events: provider exit (ADR-007 announced departure), file owner deletion request, or repair reassignment by the coordination microservice. GC process:
+Triggered only on chunk deletion events: provider exit ([ADR-007](./ADR-007-provider-exit-states.md) announced departure), file owner deletion request, or repair reassignment by the coordination microservice. GC process:
 
 1. Read a chunk of vLog from the tail (e.g., 4 MB = ~16 entries).
 2. For each entry, check RocksDB for the `chunk_id`. If absent from RocksDB, the chunk is invalid.
@@ -107,7 +107,7 @@ low_priority_background_threads = 1
 rate_limiter = 10 MB/s   (background compaction I/O cap — tune empirically)
 ```
 
-These starting values keep RocksDB compaction within the ≤5% CPU budget (ADR-009). Compaction I/O is minimal because the LSM stores only 44-byte index entries, not 256 KB values.
+These starting values keep RocksDB compaction within the ≤5% CPU budget ([ADR-009](./ADR-009-background-execution.md)). Compaction I/O is minimal because the LSM stores only 44-byte index entries, not 256 KB values.
 
 ## Consequences
 
@@ -124,14 +124,18 @@ These starting values keep RocksDB compaction within the ≤5% CPU budget (ADR-0
 - Crash recovery requires scanning the vLog tail — worst case a few hundred chunks (~50 MB) if the daemon died immediately after a vLog fsync but before RocksDB flush
 
 **Open constraints:**
+
 - RocksDB rate limiter threshold (10 MB/s starting value) must be calibrated against actual provider hardware at V2 launch (Q27-1)
 - Sparse vLog placement to reduce within-provider spatial failure correlation is a V3 enhancement pending empirical failure data (Q27-2)
-
+- Q25-1 is answered: proactive continuous scrubbing is not justified. Base UE rate (Paper 32) is 2–6 per 1,000 drive days. Reactive scrubbing triggered by the first audit FAIL is the correct design — a provider with a recent FAIL has 30× elevated failure probability ([Paper 32](../research/paper-32-schroeder-flash-reliability.md), Figure 7) and all their chunks should be re-audited on an accelerated schedule.
+- Q25-2 is answered: sparse vLog placement is not required for V2. Chip failure affects a contiguous region but Vyomanaut's RS(16,56) redundancy absorbs this — each file has 55 surviving shards on independent providers.
 ## References
 
 - [Paper 27 — WiscKey](../research/paper-27-wisckey.md): key-value separation architecture; write amplification at 256 KB; audit lookup latency; GC design; crash recovery
 - [Paper 26 — LSM-Tree](../research/paper-26-lsm-tree.md): theoretical basis for key-value separation; batching parameter M; Bloom filter requirement
 - [Paper 25 — IRON File Systems](../research/paper-25-iron-file-systems.md): content_hash per chunk requirement; non-contiguous placement constraint
+- [Paper 32 — Schroeder et al.](../research/paper-32-schroeder-flash-reliability.md): Q25-1 answered (reactive scrubbing only); Q25-2 answered (sequential vLog acceptable); failure clustering signal for ADR-008
+- [Paper 34 — ELECT](../research/paper-34-elect-ec-tiering.md): confirms Vyomanaut chunk storage is a cold workload; WiscKey write amplification ≈ 1 at 256 KB is the correct design for this access pattern
 - [ADR-002](ADR-002-proof-of-storage.md): PoR challenge response format; audit_result field
 - [ADR-009](ADR-009-background-execution.md): ≤5% CPU background budget
 - [ADR-014](ADR-014-adversarial-defences.md): 20% ASN cap bounds within-provider burst failure impact at network level
