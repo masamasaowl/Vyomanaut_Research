@@ -4,7 +4,7 @@
 **Topic:** #15 Encryption-Erasure Interaction
 **Supersedes:** —
 **Superseded by:** —
-**Research source:** Paper 16 (AONT-RS, Resch & Plank, USENIX FAST 2011), Paper 15 (Szabó et al.)
+**Research source:** Paper 16, 15, 17
 
 ---
 
@@ -12,8 +12,8 @@
 
 This decision fixes the encoding pipeline for every segment stored on the network. Two orderings
 were under consideration: encrypt-then-code (one AES key per file, stored externally, then RS)
-and code-then-encrypt (RS first, then AES per-chunk — 56 keys per file). Paper 15 confirmed
-that encrypt-then-code preserves zero-knowledge when coding is delegated. Paper 16 introduces
+and code-then-encrypt (RS first, then AES per-chunk — 56 keys per file). [Paper 15](../research/paper-15-szabo-encrypt-erasure-separation.md) confirmed
+that encrypt-then-code preserves zero-knowledge when coding is delegated. [Paper 16](../research/paper-16-aont-rs-dispersal.md) introduces
 a third path that supersedes both: the All-or-Nothing Transform applied before RS coding, where
 the encryption key is self-embedded in the coded data and recoverable only when k slices are
 assembled. No external key storage is needed.
@@ -22,7 +22,7 @@ assembled. No external key storage is needed.
 
 | Option | Pros | Cons |
 |---|---|---|
-| Encrypt-then-code (one AES key per file) | Simple; one key per file; well-understood | External key must be stored securely; key loss = permanent data loss; separate key management infrastructure required (ADR-020) |
+| Encrypt-then-code (one AES key per file) | Simple; one key per file; well-understood | External key must be stored securely; key loss = permanent data loss; separate key management infrastructure required ([ADR-020](./ADR-020-key-management.md)) |
 | Code-then-encrypt (56 AES keys per file) | Strongest per-shard isolation; independent key per chunk | 56× key management overhead at n=56; no security improvement over AONT-RS per Paper 16; closes Q15-2 against this option |
 | **AONT-RS (AONT transform → RS code)** | No external key storage; computational security 2^256; storage ≈ Rabin; production-proven at Cleversafe (20+ installations) | Pointer file becomes sole retrieval credential; per-shard AEAD must come from Merkle audit path, not AONT |
 
@@ -88,14 +88,14 @@ Step 4 — Verify integrity
 With fewer than k=16 slices, the AONT package cannot be fully assembled. Without the complete
 package, h is unknown, so K cannot be computed, so no word of the original data can be
 decrypted. An attacker must enumerate up to 2^256 values of K to verify a match — computationally
-infeasible at any realistic compute budget. The 20% ASN cap (ADR-014) ensures that no single
+infeasible at any realistic compute budget. The 20% ASN cap ([ADR-014](./ADR-014-adversarial-defences.md)) ensures that no single
 correlated provider group can hold more than ~11 of 56 slices, keeping the threshold safe.
 
 **Cipher and hash selection:**
 
 Use AES-256 and SHA-256 (the "secure" AONT configuration). The "fast" configuration from the
 paper uses RC4-128 + MD5, which must not be adopted: RC4 is cryptographically broken (RFC 7465,
-2015). AES-256 throughput on AES-NI hardware: ~105 MB/s per Paper 16's production benchmark.
+2015). AES-256 throughput on AES-NI hardware: ~105 MB/s per [Paper 16's](../research/paper-16-aont-rs-dispersal.md) production benchmark.
 On hardware without AES-NI, ChaCha20-Poly1305 (reading-list Phase 1 #12) is the substitute —
 its software performance exceeds software AES on ARM and older x86.
 
@@ -119,13 +119,13 @@ pointer_file {
 ```
 
 The pointer file must be kept secure by the data owner. If the pointer file is lost, K cannot
-be recovered — there is no out-of-band key backup. ADR-020 (key management) must address
+be recovered — there is no out-of-band key backup. [ADR-020](./ADR-020-key-management.md) (key management) must address
 pointer file backup, loss recovery, and delegation.
 
 **Per-shard integrity:**
 
 The canary detects segment-level corruption on full decode. For the ongoing audit subsystem
-(ADR-002), challenge-response audits operate on the raw slice: `SHA256(slice_data || challenge_nonce)`.
+([ADR-002](./ADR-002-proof-of-storage.md)), challenge-response audits operate on the raw slice: `SHA256(slice_data || challenge_nonce)`.
 Providers are challenged on their raw RS slice, not on the decoded AONT package. No change to
 ADR-002 is required.
 
@@ -160,8 +160,10 @@ ADR-002 is required.
 
 - [Paper 16 — AONT-RS](../research/paper-16-aont-rs-dispersal.md): AONT mechanics; security proof; performance benchmarks; Cleversafe production deployment
 - [Paper 15 — Szabó et al.](../research/paper-15-szabo-encrypt-erasure-separation.md): confirms encrypt-then-code preserves zero-knowledge; AONT-RS supersedes this ordering
+- [Paper 17 — RFC 8439](../research/paper-17-chacha20-poly1305-rfc8439.md): ChaCha20-256 replaces AES-256-CTR in the AONT transform on hardware without AES-NI; nonce=0 safe because K is fresh per segment
 - [ADR-003](ADR-003-erasure-coding.md): RS parameters (s=16, r=40, lf=256 KB) — unchanged
 - [ADR-002](ADR-002-proof-of-storage.md): per-shard Merkle audit — unchanged; challenges raw slices directly
 - [ADR-014](ADR-014-adversarial-defences.md): 20% ASN cap ensures threshold security holds against colluding provider groups
 - [ADR-019](ADR-019-client-side-encryption.md): AONT = the client-side encryption; cipher primitive TBD pending RFC 8439
 - [ADR-020](ADR-020-key-management.md): pointer file backup and loss recovery is now the key management problem
+

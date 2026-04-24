@@ -4,7 +4,7 @@
 **Topic:** #12 P2P Transfer Protocol
 **Supersedes:** —
 **Superseded by:** —
-**Research source:** Paper 14 (RFC 9000), Paper 13 (libp2p spec), Paper 30 
+**Research source:** Paper 14, 13, 30 
 
 ---
 
@@ -56,7 +56,7 @@ providers (Q13-1).
 **Peer identity:**
 Each provider daemon generates an Ed25519 key pair at installation. The public key is registered
 with the coordination microservice at join time. The libp2p Peer ID is `multihash(public_key)`,
-consistent with S/Kademlia's cryptographic node ID principle ([Paper 03](../research/paper-03-skademlia.md)) and satisfying ADR-001's
+consistent with S/Kademlia's cryptographic node ID principle ([Paper 03](../research/paper-03-skademlia.md)) and satisfying [ADR-001's](./ADR-001-coordination-architecture.md)
 registration-gated admission model. The key pair is the node's cryptographic identity; the
 registration microservice is the admission gate.
 
@@ -64,13 +64,13 @@ registration microservice is the admission gate.
 
 | Parameter | Value | Source |
 |---|---|---|
-| k-bucket size | 16 | ADR-001 (S/Kademlia disjoint path design); set at genesis |
+| k-bucket size | 16 | [ADR-001](./ADR-001-coordination-architecture.md) (S/Kademlia disjoint path design); set at genesis |
 | Parallel lookups (alpha) | 3 | libp2p default; O(log n / 3) round trips in practice |
 | DHT mode | Server (all V2 desktop providers) | Full participant: stores and routes |
 | Key namespace | Custom HMAC validator | `HMAC(chunk_hash, file_owner_key)` — disables default CID namespace |
 | Republication | Driven by availability microservice | libp2p internal republication disabled |
 
-DCUtR retry count: set max_hole_punch_retries = 1 (not the libp2p default of 3). Paper 30 (Trautwein et al.) measured 4.4 million traversal attempts and found 97.6% of successful connections succeed on the first attempt. Retries 2 and 3 consume 100–400 ms each with only 2.4% marginal gain. For the audit challenge path with a 614 ms deadline, this is the correct setting.
+DCUtR retry count: set max_hole_punch_retries = 1 (not the libp2p default of 3). [Paper 30](../research/paper-30-trautwein-dcutr-nat.md)(Trautwein et al.) measured 4.4 million traversal attempts and found 97.6% of successful connections succeed on the first attempt. Retries 2 and 3 consume 100–400 ms each with only 2.4% marginal gain. For the audit challenge path with a 614 ms deadline, this is the correct setting.
 
 The custom key validator replaces libp2p's default CID-based namespace. Only the file owner
 can map a DHT lookup key back to the underlying chunk (Q07-5). This must not be overridden by
@@ -78,7 +78,7 @@ a libp2p version upgrade — pin the kad-dht namespace configuration in the daem
 path.
 
 **0-RTT policy:**
-0-RTT session resumption is disabled for all operations carrying an audit challenge response or
+0-RTT (Zero Round-Trip Time) session resumption is disabled for all operations carrying an audit challenge response or
 a signed receipt. The replay vulnerability (RFC 9000 §8.1) cannot be tolerated for these
 interactions. 0-RTT may be enabled for pure chunk data transfers where replaying the stream
 causes no auth or payment consequence. Latency cost of 1-RTT enforcement on audit reconnects
@@ -89,7 +89,7 @@ Multiple chunk transfer streams run in parallel over one QUIC connection, satisf
 libp2p connection manager watermarks: high=900, low=600 (appropriate for V2 desktop scale).
 
 **Application protocol above the stream:**
-BitSwap is not used. All data transfer is escrow-motivated direct transfer (ADR-011, ADR-012).
+BitSwap is not used. All data transfer is escrow-motivated direct transfer ([ADR-011](./ADR-011-escrow-payments.md), [ADR-012](./ADR-012-payment-basis.md)).
 libp2p's connection and stream layer is reused; the application protocol above the stream is
 Vyomanaut's own binary chunk transfer protocol. HTTP/3 framing overhead is not adopted.
 
