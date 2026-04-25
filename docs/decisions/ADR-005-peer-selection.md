@@ -44,7 +44,8 @@ Concentration prevention: the Preference subsystem uses Power of Two Choices —
 Based on BitTorrent's optimistic unchoking principle — random assignment from the vetted pool. Independence of randomly selected hosts from a filtered pool is confirmed (Bhagwan, [Paper 08](../research/paper-08-bhagwan-availability.md)).
 
 **Correlated failure prevention (Honest Geppetto):**
-No cluster sharing the same ASN or subnet may hold more than 20% of shards for a single file. This is a placement constraint enforced at write time. Implement only after 5 × n shards exist in the network.
+No cluster sharing the same ASN or subnet may hold more than 20% of shards for a single file. This is a placement constraint enforced at write time. The cap is enforced on every chunk assignment from the moment the network satisfies the bootstrap readiness conditions in ADR-029: ≥ 56 vetted providers across ≥ 5 distinct ASNs. The 20% cap is never deactivated after activation. The network never operates in a state where uploads are accepted without the cap being active — ADR-029's readiness gate ensures
+these conditions are met before the first upload is permitted.
 
 ## Consequences
 
@@ -72,3 +73,4 @@ No cluster sharing the same ASN or subnet may hold more than 20% of shards for a
 - [Paper 20 — IPFS Measurement](../research/paper-20-trautwein-ipfs.md): confirms < 2.3% of P2P nodes are cloud-hosted; desktop-first provider model is operationally viable at 300 k+ node scale
 - [Paper 21 — Saroiu et al.](../research/paper-21-saroiu-p2p-measurement.md): 30% of peers misreport bandwidth; confirms vetting must measure directly, not trust self-reports
 - [Paper 40 — Buragohain et al.](../research/paper-40-buragohain-p2p-incentives.md): low-contribution peers pull equilibrium downward; Preference subsystem (weighted assignment) is game-theoretically necessary to maintain the stable high-contribution equilibrium
+- [ADR-029](ADR-029-bootstrap-minimum-viable-network.md): minimum provider and ASN counts that must be met before cap enforcement (and before any upload is permitted)

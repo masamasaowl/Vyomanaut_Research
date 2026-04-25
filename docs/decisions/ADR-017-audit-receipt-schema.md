@@ -31,6 +31,7 @@ audit_receipts (
   provider_sig            BYTEA(64)    NOT NULL,  -- Ed25519 over all fields above
   service_sig             BYTEA(64)    NOT NULL,  -- Ed25519 over (provider_sig + service_ts)
   service_countersign_ts  TIMESTAMPTZ  NOT NULL
+  jit_flag  BOOLEAN  NOT NULL DEFAULT false   -- set by microservice at receipt evaluation
 )
 -- CONSTRAINTS:
 -- INSERT only. No UPDATE. No DELETE. Enforced via Postgres row security policy.

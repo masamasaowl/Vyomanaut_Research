@@ -50,7 +50,45 @@ Every audit event produces two signed artefacts:
 
 **Flow:** Provider sends response → microservice validates → microservice inserts one row → microservice returns countersignature. Provider's receipt is only considered valid after receiving the countersignature.
 
-**Known limitation:** The microservice may crash between validation and countersignature. Fix: microservice writes to an append-only Kafka log before sending the countersignature. Provider's receipt is held pending until the log entry is confirmed.
+**Audit durability — idempotent retry protocol (Kafka not required):**
+
+The crash window between validation and countersignature is closed by an idempotent retry
+protocol. This eliminates the Kafka dependency entirely.
+
+Protocol:
+1. On receipt of a provider's challenge response, the microservice first writes a
+   PENDING row to audit_receipts with audit_result = NULL and the full provider_sig.
+   This INSERT is durable (Postgres WAL) before any further processing occurs.
+2. The microservice then validates the response (verify SHA256(chunk_data || nonce)).
+3. The microservice updates the row: SET audit_result = PASS|FAIL, service_sig = ...,
+   service_countersign_ts = NOW().
+4. The countersignature is returned to the provider.
+
+If the microservice crashes after step 1 but before step 4:
+- The provider receives no countersignature.
+- On the next audit cycle (24 hours), the provider receives a new challenge.
+- The old PENDING row in audit_receipts has audit_result = NULL. The scoring system
+  ignores NULL rows (they are treated as in-flight, not as FAIL).
+- After 48 hours, any row with audit_result = NULL is garbage-collected: marked as
+  ABANDONED and not counted in any score window.
+
+If the provider re-submits the same challenge response before the next audit cycle
+(provider-side retry logic):
+- The microservice checks whether a row with the same challenge_nonce already exists
+  in audit_receipts. The challenge_nonce is a unique index.
+- If a PENDING row exists, the microservice completes processing and returns the
+  countersignature. Idempotent — no double-counting.
+- If a PASS/FAIL row already exists (completed), the microservice returns the existing
+  countersignature. Idempotent — no re-processing.
+
+Nonce validity window for re-submission: the challenge_nonce includes server_ts
+([ADR-017](./ADR-017-audit-receipt-schema.md)). Re-submissions are accepted for up to 48 hours after server_ts. Beyond
+48 hours, the nonce is expired and a new challenge must be issued.
+
+Schema change required:
+  audit_result column must accept NULL (in-flight) in addition to PASS/FAIL/TIMEOUT.
+  Add: abandoned_at TIMESTAMPTZ NULL (set by GC process for NULL rows > 48h old).
+  Add: UNIQUE INDEX on challenge_nonce to enforce idempotency at DB level.
 
 **Receipt replay attack prevention:** Response hash is `SHA256(chunk_id || challenge_nonce || response_hash || timestamp)` — not just response_hash alone.
 
