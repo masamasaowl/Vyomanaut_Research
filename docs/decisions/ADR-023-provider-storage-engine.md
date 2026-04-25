@@ -78,6 +78,54 @@ Total disk I/Os on cache hit: 1. Both SSD and HDD latencies are well within the 
 
 The `fsync()` before the RocksDB insert ensures that if the daemon crashes between steps 3 and 4, the vLog entry is durable and will be recovered on restart by the tail scan described below.
 
+**Concurrent write safety — single writer goroutine:**
+
+The vLog is a single append-only file with a sequential head pointer. Concurrent appends
+from multiple upload goroutines racing to the same file pointer produce undefined behaviour:
+two goroutines computing the same vlog_offset and then writing to overlapping regions.
+
+O_APPEND on POSIX systems is atomic only for writes smaller than PIPE_BUF (~4KB on Linux).
+For our 262,212-byte fixed-size entries, O_APPEND does not provide write atomicity.
+
+**Required architecture:** the provider daemon MUST use a single writer goroutine for all
+vLog appends. All other goroutines submit write requests to this goroutine via a buffered
+channel:
+
+```go
+type vLogWriteRequest struct {
+    chunkID     [32]byte
+    chunkData   []byte        // always 262144 bytes
+    resultChan  chan<- vLogWriteResult
+}
+
+type vLogWriteResult struct {
+    vlogOffset  uint64
+    err         error
+}
+
+// Single writer goroutine — the only goroutine that touches the vLog file handle
+func (vl *VLog) runWriter(requests <-chan vLogWriteRequest) {
+    for req := range requests {
+        offset, err := vl.appendEntry(req.chunkID, req.chunkData)
+        req.resultChan <- vLogWriteResult{offset, err}
+    }
+}
+```
+
+Write callers block on `resultChan` until the single writer goroutine confirms the write
+and returns the vlog_offset. The RocksDB INSERT follows immediately after the offset is
+confirmed.
+
+This architecture:
+
+- Guarantees sequential, non-overlapping vLog entries
+- Makes the single-writer invariant explicit in code (not in documentation)
+- Is safe under concurrent uploads from multiple data owners
+
+The channel buffer size (suggested: 32 pending write requests) should be set based on the
+maximum concurrent upload streams a provider can sustain. A full channel (backpressure)
+causes the upload goroutine to block — this is the correct flow control behaviour.
+
 **Crash recovery:**
 
 On daemon restart, retrieve `<"vlog_head", head_offset>` from RocksDB. Scan the vLog from `head_offset` to the end of the file. For each vLog entry found, re-insert the RocksDB record if the `chunk_id` is absent. This repairs any index entries lost between the last RocksDB flush and the crash. The maximum scan length is one RocksDB memtable flush interval worth of entries — typically a few hundred chunks.
@@ -108,6 +156,32 @@ rate_limiter = 10 MB/s   (background compaction I/O cap — tune empirically)
 ```
 
 These starting values keep RocksDB compaction within the ≤5% CPU budget ([ADR-009](./ADR-009-background-execution.md)). Compaction I/O is minimal because the LSM stores only 44-byte index entries, not 256 KB values.
+
+**HDD-specific compaction benchmark:**
+The Q27-1 benchmark protocol in `docs/research/benchmarking-protocol.md` was designed for
+SSD hardware. Before shipping a production provider daemon, the following HDD-specific
+benchmark MUST also pass:
+
+Target hardware: consumer 7200 RPM HDD (Seagate BarraCuda 1–4 TB or equivalent).
+Concurrent workload:
+  - Thread A: continuous vLog appends at the provider's declared upload speed (~5 MB/s for
+    a typical 40 Mbps upstream provider)
+  - Thread B: RocksDB background compaction running at rate_limiter = 10 MB/s
+  - Thread C: one random vLog read per second (audit challenge simulation)
+
+Pass criterion: p99 audit response latency ≤ 200 ms under active compaction.
+(The SSD criterion is ≤ 100 ms; the HDD criterion allows for the 12–15ms random seek
+baseline plus compaction interference headroom.)
+
+If p99 exceeds 200ms at 10 MB/s rate limiter, reduce the rate limiter in 2 MB/s
+decrements until the criterion is met. Record the maximum rate limiter that satisfies
+p99 ≤ 200ms as the HDD default. Set this as a separate config variable from the SSD
+default:
+  SSD: rate_limiter = 10 MB/s (from Q27-1 SSD calibration)
+  HDD: rate_limiter = TBD (from HDD benchmark above, expected 4–6 MB/s)
+
+The daemon detects storage device type at startup using OS block device stats (rotational
+flag in /sys/block/{dev}/queue/rotational on Linux) and sets the rate limiter accordingly.
 
 ## Consequences
 
