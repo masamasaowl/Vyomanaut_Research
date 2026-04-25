@@ -20,6 +20,7 @@ What the system must do:
 19 active topics. Every paper and every ADR maps back to one or more of these numbers.
 
 | # | Topic | Core question |
+
 |---|---|---|
 | #1 | Coordination Architecture | Central vs DHT balance; what stays decentralised and why; Satellite design |
 | #2 | Proof of Storage | Audit mechanism: full PoRep vs random Merkle challenge vs lightweight heartbeat |
