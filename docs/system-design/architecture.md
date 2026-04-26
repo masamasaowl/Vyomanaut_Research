@@ -191,6 +191,52 @@ The system has six first-class components and three external dependencies.
 | Secrets manager | Cluster audit secret distribution | Microservice replicas cannot start; existing instances continue running with cached secret |
 | Indian ISP infrastructure | Connectivity between providers and data owners | Covered by 40-fragment parity and 3-region relay deployment |
 
+### Component graph
+
+The diagram below shows all six first-class components with the protocol on every connection. HOT = on the audit cycle (latency-sensitive); COLD = administrative or background.
+
+```
+  ┌─────────────────────────────────────────────────────────────────────────────┐
+  │  DATA OWNER CLIENT (desktop / web)                                           │
+  └────┬────────────────────────────────────────┬───────────────────────────────┘
+       │                                         │
+       │ HTTPS  POST /upload/assign [COLD]        │ libp2p/QUIC  CHUNK_REQUEST /
+       │ HTTPS  GET  /file/*        [COLD]        │             CHUNK_RESPONSE [HOT]
+       │                                         │
+  ┌────▼──────────────────────────┐         ┌───▼─────────────────────────────────┐
+  │  COORDINATION MICROSERVICE     │         │  PROVIDER DAEMON (×56+)             │
+  │  (3 replicas, gossip cluster)  │         │  WiscKey storage engine             │
+  │                                │◄────────┤                                     │
+  │  [control plane only]          │ HTTPS   │  libp2p heartbeat → microservice    │
+  │                                │ HTTPS   │  HTTPS  audit challenge response     │
+  └────┬──────────┬────────────────┘ [HOT]   └───┬────────────────┬───────────────┘
+       │          │                               │                │
+       │          │ SQL  read/write [HOT]          │ libp2p/QUIC   │ libp2p/QUIC
+       │          │                               │ DHT FIND_VALUE │ repair transfer
+       │     ┌────▼──────────────┐                │ [COLD]         │ [COLD]
+       │     │  POSTGRESQL        │           ┌────▼───────────────▼──────────────┐
+       │     │  audit_receipts    │           │  KADEMLIA DHT                      │
+       │     │  escrow_events     │           │  (runs inside each provider daemon)│
+       │     │  providers         │           │  chunk_id (HMAC) → provider addr   │
+       │     │  chunk_assignments │           └────────────────────────────────────┘
+       │     └───────────────────┘
+       │
+       │ libp2p  QUIC dial (challenge dispatch) [HOT]
+       │ libp2p  Circuit Relay v2 coordination  [HOT]
+       │
+  ┌────▼──────────────────────────┐
+  │  RELAY NODES (3 at launch)     │
+  │  one per availability zone     │
+  │  128 concurrent reservations   │
+  │  each; fallback for sym. NAT   │
+  └────────────────────────────────┘
+
+Edge legend:
+  [HOT]  = on the daily audit cycle; latency-sensitive; must meet per-provider RTO
+  [COLD] = administrative, background, or infrequent; no latency SLA
+  All data plane transfers (chunk upload/download) bypass the microservice entirely.
+```
+
 ---
 
 ## 7. Trust Boundaries
@@ -212,17 +258,19 @@ This table defines what each component is and is not trusted to do. It determine
 
 ## 8. Deployment Topology
 
-**Coordination microservice:** Three VM instances, one per availability zone, in an Indian cloud region (Mumbai preferred). Each runs the microservice binary and shares a Postgres primary (with two read replicas). Gossip membership connects all three. External traffic goes through a load balancer for administrative paths; audit challenge dispatch uses client-driven direct routing.
+**Cloud provider.** AWS or GCP — operator's choice at deployment time. Both are acceptable. The architecture has no dependency on cloud-provider-specific features; managed Postgres (RDS or Cloud SQL) and standard VM instances are the only cloud primitives used. The remainder of this section gives AWS names in parentheses as a concrete reference; substitute GCP equivalents if deploying there.
 
-**Postgres:** Managed Postgres (e.g. AWS RDS or Cloud SQL) with Multi-AZ enabled. The microservice writes to the primary; read-heavy paths (score queries, assignment lookups) use read replicas.
+**Coordination microservice.** Three VM instances (e.g. AWS EC2 `t3.medium` or equivalent: **2 vCPU, 4 GB RAM**), one per availability zone in `ap-south-1` (Mumbai). Each runs the microservice binary. They share a managed Postgres primary in the same region with two read replicas across AZs. Gossip membership connects all three replicas directly. External administrative traffic routes through a load balancer; audit challenge dispatch and assignment calls bypass the load balancer via client-driven direct routing.
 
-**Relay nodes:** Three instances, one per availability zone. Each runs libp2p with Circuit Relay v2 enabled. At launch: Delhi AZ, Mumbai AZ1, Mumbai AZ2 (or Chennai as third). Sized for 128 concurrent relay reservations each — 384 total, providing 4.3× headroom for 90 relay-dependent providers at an initial network of 300.
+**Postgres.** Managed Postgres with Multi-AZ replication enabled (e.g. AWS RDS `db.t3.medium`: **2 vCPU, 4 GB RAM**, 100 GB GP3 SSD to start, auto-scaling enabled). The microservice writes to the primary; read-heavy paths (score queries, assignment lookups) use a read replica. Monthly partition archival of `audit_receipts` is mandatory — partitions older than 30 days move to object storage (S3 / GCS).
 
-**Provider daemon:** Runs on provider hardware (home desktop, NAS). Cross-platform binary for Windows, macOS, and Linux. No cloud dependency. Connects outbound to the microservice via HTTPS and to other providers via libp2p.
+**Relay nodes.** Three instances (**1 vCPU, 1 GB RAM, minimum 1 Gbps network**), one per availability zone. At launch: Delhi AZ, Mumbai AZ1, Mumbai AZ2 (or Chennai as third). Each runs libp2p with Circuit Relay v2 enabled, sized for 128 concurrent relay reservations — 384 total slots, 4.3× headroom at 300 initial providers. Scale to a fourth node when provider count exceeds 570 (the relay saturation point at 45% CGNAT fraction).
 
-**Data owner client:** Desktop app or web application. Runs the encoding pipeline locally (ChaCha20 AONT + Reed-Solomon) before any data leaves the device.
+**Provider daemon.** Runs on provider hardware — home desktop or NAS. Cross-platform binary for Windows 10+, macOS 12+, and Ubuntu 22.04+. No cloud dependency. Connects outbound to the microservice via HTTPS and to other providers via libp2p.
 
-**Secrets manager:** A managed secrets service (Vault, AWS SSM, GCP Secret Manager) accessible by all three microservice replicas. Stores the cluster master seed under versioned paths (`/vyomanaut/audit-secret/v{N}`). Not in the hot path — read at startup and cached for 5 minutes.
+**Data owner client.** Desktop app or web application. Runs the encoding pipeline locally (ChaCha20 AONT + Reed-Solomon) before any data leaves the device.
+
+**Secrets manager.** A managed secrets service (HashiCorp Vault, AWS SSM Parameter Store, or GCP Secret Manager) accessible by all three microservice replicas. Stores the cluster master seed under versioned paths (`/vyomanaut/audit-secret/v{N}`). Not in the hot path — loaded at replica startup and cached for 5 minutes. If the secrets manager is unreachable at startup, the replica does not start (fail-closed).
 
 ---
 
@@ -246,15 +294,32 @@ These seven principles governed every architectural decision. When a new enginee
 
 ---
 
+## 9.5 Security Boundary Summary
+
+The table below answers "can Vyomanaut staff read my files?" for every plausible attack path. It is the single reference for security reasoning during code review.
+
+| Threat | What limits it | ADR |
+|---|---|---|
+| Operator or microservice reads stored files | The AONT key K is never transmitted to or stored by the microservice. K is recoverable only by assembling k=16 fragments from providers. The microservice holds only encrypted pointer file ciphertext it cannot decrypt. | [ADR-019](../decisions/ADR-019-client-side-encryption.md), [ADR-022](../decisions/ADR-022-encryption-erasure-order.md) |
+| Compromised provider reads files it does not hold | A provider holds one of 56 fragments. Decrypting any word requires K. K requires all s+1 AONT codewords. A single fragment reveals nothing. | [ADR-022](../decisions/ADR-022-encryption-erasure-order.md) |
+| Compromised provider reads files it does hold (k=16 threshold breach) | The 20% ASN cap ensures no correlated group holds more than ~11 of 56 fragments. Collusion at or below 11 providers cannot reach the k=16 threshold. | [ADR-014](../decisions/ADR-014-adversarial-defences.md) |
+| DHT observer correlates lookup traffic to file identity | DHT lookup keys are `HMAC-SHA256(chunk_hash, file_owner_key)`. The file_owner_key is derived from the data owner's master secret. No observer can map a DHT key to a file without the owner's credentials. | [ADR-001](../decisions/ADR-001-coordination-architecture.md) |
+| Replay of a valid audit response from a previous challenge | The challenge nonce is `HMAC(server_secret, chunk_id + server_ts)`. A nonce is used exactly once (unique index on `challenge_nonce` in `audit_receipts`). Replaying an old nonce collides with the unique constraint. | [ADR-017](../decisions/ADR-017-audit-receipt-schema.md), [ADR-027](../decisions/ADR-027-cluster-audit-secret.md) |
+| Silent disk corruption producing a wrong but accepted audit response | The provider daemon verifies `SHA-256(chunk_data) == content_hash` from the vLog entry before computing any response. If verification fails, the result is `FAIL` — a wrong hash is never returned to the microservice. | [ADR-023](../decisions/ADR-023-provider-storage-engine.md) |
+| Provider outsources data retrieval just before a challenge | The audit deadline `(chunk_size / p95_throughput) × 1.5` is shorter than the round-trip time to fetch 256 KB from another provider over a residential connection. JIT retrieval is physically infeasible within the window. | [ADR-014](../decisions/ADR-014-adversarial-defences.md) |
+| Cluster secret leaks and nonces become predictable | Nonces include a version byte; rotation retires old secrets after 24 hours. The master seed lives only in the secrets manager, never on disk in any replica. | [ADR-027](../decisions/ADR-027-cluster-audit-secret.md) |
+
+---
+
 ## 10. Data Encoding Pipeline
 
 Before any data leaves the data owner's device, it passes through a four-stage pipeline that transforms it into 56 encrypted, independent fragments.
 
-### Stage 1 — Segment the file
+### Segmentation
 
-Large files are split into segments of up to 14 MB each (56 × 256 KB). Each segment is processed independently through stages 2–4.
+Files larger than 14 MB are split into multiple segments before encoding. Each segment is at most 14 MB (56 × 256 KB). Every segment is processed independently through Stages 1–4 below. The pointer file contains one entry per segment, including the provider list and chunk IDs for that segment's 56 fragments. Retrieval reconstructs each segment independently and concatenates them in order to rebuild the original file. There is no cross-segment state — losing all 56 fragments of one segment does not affect any other segment's recoverability.
 
-### Stage 2 — AONT encryption
+### Stage 1 — AONT encryption
 
 A fresh random 256-bit key K is generated for the segment. The AONT (All-or-Nothing Transform) processes the segment as follows:
 
