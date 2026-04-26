@@ -202,7 +202,7 @@ first quarter post-launch). Every P0 requirement is a launch blocker.
 | ID | Requirement | Priority | ADR / Notes |
 |----|-------------|----------|-------------|
 | FR-007 | The client must perform all encryption and erasure encoding on the data owner's device before any data is transmitted to any provider. | P0 | ADR-019, ADR-022 |
-| FR-008 | The encoding pipeline must use AONT-RS: apply the All-or-Nothing Transform (ChaCha20-256 on hardware without AES-NI, AES-256-CTR with AES-NI) followed by systematic Reed-Solomon coding with s=16, r=40, producing 56 fragments of 256 KB each. | P0 | ADR-022, ADR-019, ADR-003 |
+| FR-008 | The encoding pipeline must use AONT-RS: apply the All-or-Nothing Transform (ChaCha20-256 on hardware without AES-NI, AES-256-CTR with AES-NI) followed by systematic Reed-Solomon coding with s=16, r=40, producing 56 fragments of 256 KB each. Files smaller than 4 MB (one full segment = s × lf = 16 × 256 KB) must be padded to the minimum segment size before encoding. The pointer file must record the original file size in bytes so that padding bytes are stripped after decoding on retrieval. | P0 | ADR-022, ADR-019, ADR-003 |
 | FR-009 | The system must select 56 distinct providers for each file segment, ensuring no single ASN holds more than 20% of fragments (~11 of 56) for that segment, and must refuse the upload if this constraint cannot be satisfied. | P0 | ADR-014, ADR-005 |
 | FR-010 | The system must upload all 56 fragments via direct libp2p/QUIC P2P connections to providers, without routing any file data through the microservice. | P0 | ADR-021; data plane / control plane separation |
 | FR-011 | The system must create a pointer file containing the 56 provider IDs, 56 chunk content addresses, and erasure parameters, encrypt it with AEAD_CHACHA20_POLY1305 (key derived via HKDF from the master secret), and store the encrypted ciphertext with the microservice. | P0 | ADR-020, ADR-022 |
@@ -224,7 +224,7 @@ first quarter post-launch). Every P0 requirement is a launch blocker.
 | ID | Requirement | Priority | ADR / Notes |
 |----|-------------|----------|-------------|
 | FR-019 | The system must provide a file list view showing each file's name, size, upload date, current storage cost per month, and retrieval status (all fragments available / degraded / unavailable). | P1 | DO-04 |
-| FR-020 | The system must allow a data owner to delete a file, which must trigger removal of all 56 chunk assignments from the microservice and notify each holding provider to delete their fragment. | P1 | ADR-007; GC on vLog |
+| FR-020 | The system must allow a data owner to delete a file, which must trigger removal of all 56 chunk assignments from the microservice and notify each holding provider to delete their fragment. If a provider is unreachable at deletion time, the microservice must flag the chunk assignment as `pending_deletion` and retry the deletion notification at each subsequent heartbeat cycle. The provider daemon must check for `pending_deletion` assignments on startup and act on them before accepting new audit challenges. | P1 | ADR-007; GC on vLog |
 | FR-021 | The system must provide an escrow balance view showing: current balance, amount reserved for active files (next 30 days), amount available for withdrawal, and transaction history. | P1 | DO-04, ADR-016 |
 
 ### 6.5 Provider — Installation and Registration
@@ -302,6 +302,20 @@ first quarter post-launch). Every P0 requirement is a launch blocker.
 | FR-055 | The provider daemon must support a `--sim-count=N` flag that launches N simulated provider instances in a single process, each with isolated key pairs, RocksDB instances, and vLog files, for local integration testing without physical machines. | P0 | ADR-029; cannot build without testability |
 | FR-056 | Simulation mode must not bypass the network readiness gate; a simulation with `--sim-count=56` and `--sim-asn-count=5` must be required to satisfy the same readiness conditions as production before uploads are permitted. | P0 | ADR-029; simulation must proxy production behaviour |
 
+### 6.13 Provider — Pre-Registration Earnings Calculator
+
+| ID | Requirement | Priority | ADR / Notes |
+|----|-------------|----------|-------------|
+| FR-057 | The system must provide a storage earnings calculator accessible before registration (i.e. without an account) that accepts as input: declared storage in GB, declared uptime target as a percentage (e.g. 95%), and the current storage rate in paise per GB per month. The calculator must output: gross monthly earnings (storage_gb × rate), estimated escrow hold (30% of gross during vetting; 0% after), and estimated net monthly payout. This calculator must be available on the marketing site and within the installer welcome screen. | P1 | PR-06; ADR-024 |
+
+### 6.14 Data Owner — Escrow Management and Upload Resume
+
+| ID | Requirement | Priority | ADR / Notes |
+|----|-------------|----------|-------------|
+| FR-058 | The system must provide an authenticated endpoint (`GET /api/v1/provider/receipts`) allowing a provider to retrieve all audit receipts where they are the responding provider, filterable by `chunk_id` and date range. This endpoint is the provider's primary dispute evidence path and must be available even after a provider's status is set to DEPARTED. | P1 | SY-02; ADR-015, ADR-017 |
+| FR-059 | The system must allow a data owner to withdraw their available escrow balance — defined as the total balance minus the amount reserved to cover active file storage for the next 30 days — to their UPI-linked bank account. Withdrawal must use the Razorpay payout path with its own idempotency key (SHA-256(owner_id + withdrawal_request_id)) and must be blocked while any file upload is in-flight. | P1 | DO-04; ADR-011, ADR-016 |
+| FR-060 | If the data owner client crashes or loses connectivity after some but not all 56 shard uploads have completed for a given segment, the client must be able to resume the upload on next launch without re-transmitting already-acknowledged shards. Upload session state (segment ID, list of provider IDs with acknowledgement status, and pointer file draft) must be persisted locally keyed by a session ID generated at upload start, and must be cleaned up only after the pointer file has been successfully stored with the microservice. | P0 | DO-01; crash safety |
+
 ---
 
 ## 7. Non-Functional Requirements
@@ -330,7 +344,7 @@ first quarter post-launch). Every P0 requirement is a launch blocker.
 | NFR-008 | The audit challenge lookup path on the provider daemon (Bloom filter check + RocksDB lookup + vLog read + hash verification) must complete within 100 ms at p99 on SSD hardware and 200 ms at p99 on HDD hardware, under concurrent upload load. | Performance | p99 ≤ 100 ms SSD / 200 ms HDD | ADR-023 |
 | NFR-009 | The AONT encoding pass for a full 14 MB segment must complete within 200 ms at p50 and 400 ms at p99 on hardware without AES-NI (minimum-spec Indian desktop: dual-core, no AES-NI, 2 GB RAM, 7200 RPM HDD). | Performance | p50 ≤ 200 ms | ADR-019, benchmarking-protocol.md |
 | NFR-010 | The Argon2id master secret derivation at session start (t=3, m=64 MB, p=4) must complete within 500 ms at p50 on the minimum-spec target hardware. If it does not, parameters must be reduced per the fallback protocol in benchmarking-protocol.md. | Performance | p50 ≤ 500 ms | ADR-020 |
-| NFR-011 | The provider daemon must consume no more than 5% of CPU and remain within normal desktop I/O load during steady-state audit and transfer operation. | Performance | ≤ 5% CPU | ADR-009 |
+| NFR-011 | The provider daemon must consume no more than 5% of CPU and remain within normal desktop I/O load during steady-state operation, defined as fewer than 5 concurrent chunk write operations and the standard daily audit cycle. Peak load during bulk onboarding (many simultaneous chunk assignments) is excluded from this constraint. | Performance | ≤ 5% CPU at steady state | ADR-009 |
 | NFR-012 | Steady-state repair bandwidth per provider must not exceed 100 Kbps at the target MTTF of 300 days and a network of 1,000 providers each storing 50 GB. At these parameters, BWavg ≈ 39 Kbps/peer per the Giroire formula. | Performance | ≤ 100 Kbps/provider | ADR-003, ADR-004 |
 | NFR-013 | Write amplification in the provider storage engine must not exceed 1.1× at 256 KB chunk size, meaning a provider storing 50 GB of chunks must write no more than 55 GB to their storage device in total. | Performance | Write amplification ≤ 1.1× | ADR-023 |
 
@@ -372,6 +386,18 @@ first quarter post-launch). Every P0 requirement is a launch blocker.
 | NFR-030 | Every Razorpay payout API call must include the `X-Payout-Idempotency` header (mandatory as of 15 March 2025). Payout calls without this header are rejected by Razorpay. | Compliance | Razorpay API | ADR-012, Paper 35 |
 | NFR-031 | The RBI bank holiday lookup table used to compute `on_hold_until` dates must be updated as part of the December release deployment each year. | Compliance | RBI | ADR-024 |
 
+### 7.8 Privacy
+
+| ID | Requirement | Type | Target | ADR |
+|----|-------------|------|--------|-----|
+| NFR-032 | DHT lookup traffic must not allow a passive network observer to correlate lookup requests with file identity. This is implemented by HMAC-pseudonymised DHT keys (chunk lookup key = HMAC-SHA256(chunk_hash, file_owner_key)) as specified in FR-053 reference and ADR-001. A monitoring node that records all DHT traffic must not be able to link any lookup to a specific file or data owner without the file_owner_key. | Privacy | Traffic unlinkability | ADR-001, ADR-017 |
+
+### 7.9 End-to-End Latency
+
+| ID | Requirement | Type | Target | ADR |
+|----|-------------|------|--------|-----|
+| NFR-033 | The p50 time from a data owner initiating a file upload (encoding pipeline starts) to receiving confirmation that all 56 signed upload receipts have been collected and the pointer file has been stored with the microservice must not exceed 3 minutes for a 100 MB file, measured on a provider network where the p50 provider upload throughput is 10 Mbps. This target excludes Argon2id derivation time (session start, counted separately in NFR-010) and any time the data owner spends on the mnemonic confirmation step. | Performance | p50 ≤ 3 min for 100 MB | ADR-021 |
+
 ---
 
 ## 8. UX Considerations
@@ -393,10 +419,11 @@ month. Data owners see a monthly cost in rupees. Both must be derived from the s
 underlying rate with no hidden fees. The cost display must update in real time as the data
 owner selects files.
 
-**Provider earnings dashboard (FR-029):** The provider's primary question every day is "is
-my daemon working and am I earning?" The UI must answer this on a single screen without
-the provider needing to understand reliability scores, escrow windows, or audit mechanics.
-Translate technical state to plain language:
+**Provider local status interface (FR-029):** The provider's primary question every day is
+"is my daemon working and am I earning?" The local CLI or system tray interface must answer
+this without the provider needing to understand reliability scores, escrow windows, or audit
+mechanics. There is no web dashboard in V2 — all provider status information is surfaced
+through the daemon's local status interface only. Translate technical state to plain language:
 - "Your daemon is healthy. You've earned ₹340 this month."
 - "Your machine was offline for 26 hours. Your score dropped slightly but your earnings
   are not affected."
@@ -417,8 +444,9 @@ show a non-blocking banner with the top-up amount and a UPI deep link. When it r
 block new uploads (not retrieval) and show a clear error.
 
 **Provider daemon not running:** If the daemon has not sent a heartbeat in 4 hours, the
-provider dashboard must detect this via the microservice's last_heartbeat_ts and display
-a prominent warning with instructions to restart the daemon.
+provider's local status interface (tray icon or CLI) must indicate this with a warning and
+instructions to restart the daemon. The microservice also tracks `last_heartbeat_ts` and
+can surface this state to any operator monitoring tool.
 
 ---
 
@@ -447,8 +475,11 @@ a prominent warning with instructions to restart the daemon.
 
 - `audit_receipts`: INSERT-only, row security policy enforced at DB. Unique index on
   `challenge_nonce` for idempotent retry. `audit_result` column must accept NULL (in-flight
-  state). `abandoned_at` column for GC of stale PENDING rows. Schema version must be 33
-  bytes for `challenge_nonce` (32-byte HMAC + 1-byte version prefix per ADR-027).
+  state). `abandoned_at` column for GC of stale PENDING rows. Schema version must be **33
+  bytes** for `challenge_nonce` (32-byte HMAC + 1-byte version prefix per ADR-027).
+  **Cross-document note:** `architecture.md` Section 14 (Audit System) currently shows
+  `challenge_nonce BYTEA(32)` in the receipt schema table — this is incorrect and must be
+  updated to `BYTEA(33)` before the schema is implemented.
 - `providers`: `last_known_multiaddrs JSONB`, `last_heartbeat_ts TIMESTAMPTZ`,
   `multiaddr_stale BOOLEAN` added per ADR-028.
 - `escrow_events`: INSERT-only, idempotency_key UNIQUE, amount_paise BIGINT only.
@@ -519,12 +550,14 @@ for MTTF validation. (Q08-1)
 
 ### 11.1 Phases
 
-| Phase | Condition to exit | Upload gate |
-|-------|-----------------|-------------|
-| **Internal** | All P0 FRs and NFR benchmarks pass | Disabled (internal team only) |
-| **Private beta** | Network readiness gate satisfied (FR-053); relay nodes deployed | Enabled for 20 invited data owners and 100 providers |
-| **Public beta** | Provider 30-day survival rate ≥ 50%; no data loss events; audit TIMEOUT rate < 5% | Open registration, escrow deposits enabled |
-| **V2 GA** | Provider 90-day survival rate ≥ 60%; data owner 30-day retention ≥ 70% | Full public |
+These target quarters are planning references, not commitments.
+
+| Phase | Condition to exit | Upload gate | Target Quarter |
+|-------|-----------------|-------------|---------------|
+| **Internal** | All P0 FRs and NFR benchmarks pass | Disabled (internal team only) | Q3 2026 |
+| **Private beta** | Network readiness gate satisfied (FR-053); relay nodes deployed | Enabled for 20 invited data owners and 100 providers | Q4 2026 |
+| **Public beta** | Provider 30-day survival rate ≥ 50%; no data loss events; audit TIMEOUT rate < 5% | Open registration, escrow deposits enabled | Q1 2027 |
+| **V2 GA** | Provider 90-day survival rate ≥ 60%; data owner 30-day retention ≥ 70% | Full public | Q2 2027 |
 
 ### 11.2 Feature Flags
 
@@ -533,7 +566,7 @@ for MTTF validation. (Q08-1)
 | `upload_gate_enabled` | false | true | Enforces FR-053 readiness conditions |
 | `payment_releases_enabled` | false | true | Enables actual Razorpay payouts |
 | `sim_mode_allowed` | true | false | Allows `--sim-count` flag on daemon |
-| `provider_ui_enabled` | false | false | Enables provider dashboard (P1 feature) |
+| `provider_ui_enabled` | false | false | Enables provider local status interface tray app (P1 feature, replaces CLI-only mode) |
 
 ### 11.3 Risk Factors and Mitigations
 
@@ -542,7 +575,7 @@ for MTTF validation. (Q08-1)
 | Indian ISP CGNAT blocks QUIC for > 30% of providers | Medium | High | Confirmed TCP fallback path; identical hole-punch success rate (Paper 30) |
 | Razorpay Route API changes break `on_hold_until` semantics | Low | High | Abstract behind PaymentProvider interface (ADR-011); monitor API changelog |
 | Minimum-spec hardware benchmark fails (NFR-009/010) | Medium | High | Benchmarking protocol documented; fallback parameters defined for Argon2id |
-| Provider pool does not reach 56 before anticipated launch | High | Critical | Recruit providers through private beta before enabling data owner uploads; FR-053 enforces the gate |
+| Provider pool does not reach 56 before anticipated launch | High | Critical | (1) Recruit providers through private beta before enabling data owner uploads; FR-053 enforces the gate. (2) Simulation mode (FR-055) allows full system verification and data owner testing with 56 virtual providers before any real provider is recruited; the internal phase can complete entirely without real providers. |
 | Data owner loses passphrase and mnemonic simultaneously | Low per user, certain at scale | High | Disclosed clearly at onboarding (FR-005); no support path exists by design |
 
 ### 11.4 Rollback Plan
@@ -589,6 +622,10 @@ double-payment on retry.
 | FR-046 – FR-052 | PR-04; ADR-011, ADR-012, ADR-016, ADR-024 |
 | FR-053 – FR-054 | SY-01; ADR-029 |
 | FR-055 – FR-056 | ADR-029 |
+| FR-057 | PR-06; ADR-024 |
+| FR-058 | SY-02; ADR-015, ADR-017 |
+| FR-059 | DO-04; ADR-011, ADR-016 |
+| FR-060 | DO-01; crash safety |
 | NFR-001 – NFR-003 | ADR-003, ADR-014 |
 | NFR-004 – NFR-006 | ADR-003, ADR-021, ADR-025 |
 | NFR-007 – NFR-013 | ADR-003, ADR-004, ADR-009, ADR-014, ADR-019, ADR-020, ADR-023 |
@@ -596,6 +633,8 @@ double-payment on retry.
 | NFR-021 – NFR-024 | ADR-015, ADR-016, ADR-023 |
 | NFR-025 – NFR-028 | ADR-009, ADR-025; architecture.md §24 |
 | NFR-029 – NFR-031 | ADR-011, ADR-012, ADR-024; Paper 35 |
+| NFR-032 | ADR-001, ADR-017 |
+| NFR-033 | ADR-021 |
 
 ### 13.2 Research Basis
 
