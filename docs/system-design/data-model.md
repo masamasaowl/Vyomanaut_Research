@@ -47,7 +47,7 @@ justification in Section 8.
 **Index rule.** Every index has a named query pattern. Indexes that cannot be linked
 to a query pattern in this document must be dropped.
 
-**Invariant rule.** Three invariants in Section 3 may never be violated by any
+**Invariant rule.** Five invariants in Section 3 may never be violated by any
 migration or application code path. Migrations that would break an invariant are
 rejected at review time, not at runtime.
 
@@ -188,6 +188,7 @@ erDiagram
     segments      ||--o{ chunk_assignments: "dispersed as"
     providers     ||--o{ chunk_assignments: "holds"
     providers     ||--o{ audit_periods    : "scored in"
+    providers     ||--o{ audit_receipts   : "challenged in"
     providers     ||--o{ escrow_events    : "earns / loses"
     audit_periods ||--o{ escrow_events    : "releases from"
     chunk_assignments ||--o{ audit_receipts : "audited via"
@@ -199,7 +200,7 @@ erDiagram
 
 ## 3. Design Invariants
 
-These three invariants may never be broken by any migration, query, or application
+These five invariants may never be broken by any migration, query, or application
 code path. A PR that violates any of them is rejected.
 
 **Invariant 1 — Append-only audit log.**
@@ -218,6 +219,19 @@ column anywhere. (ADR-016, NFR-022)
 Payment history, audit history, and chunk assignment history all reference
 `provider_id` — hard-deleting a provider row silently orphans these records.
 (ADR-007, ADR-013)
+
+**Invariant 4 — All financial amounts are integer paise.**
+Every column that stores money is `BIGINT` in units of paise (₹1 = 100 paise).
+No `FLOAT`, `NUMERIC`, or `DECIMAL` may appear anywhere in the payment path —
+in tables, views, or application code. Floating-point arithmetic is non-deterministic
+across systems and is a correctness violation, not a style preference. (ADR-016, NFR-046)
+
+**Invariant 5 — Challenge nonces are always 33 bytes.**
+`audit_receipts.challenge_nonce` is `BYTEA` with an `octet_length = 33` CHECK.
+This is 1 version byte + 32-byte HMAC-SHA256, not 32 bytes. Changing it to 32 bytes
+silently breaks cross-replica validation after a microservice failover because the
+version prefix is what allows any replica to load the correct `server_secret_vN`.
+(ADR-027, requirements.md §9.3)
 
 ---
 
@@ -296,8 +310,10 @@ CREATE TABLE providers (
     status                  provider_status NOT NULL DEFAULT 'PENDING_ONBOARDING',
 
     -- ── Hardware declaration ─────────────────────────────────────────────────
-    declared_storage_gb     INT             NOT NULL CHECK (declared_storage_gb > 0),
-    -- Self-declared. Verified indirectly by vetting audits. The assignment
+    declared_storage_gb     INT             NOT NULL CHECK (declared_storage_gb BETWEEN 10 AND 100000),
+    -- Self-declared. Minimum 10 GB (floor for meaningful participation).
+    -- Maximum 100,000 GB (100 TB) caps unrealistic declarations from bad actors.
+    -- Verified indirectly by vetting audits. The assignment
     -- service refuses chunk assignments once this ceiling is reached (FR-030).
 
     city                    VARCHAR(100)    NOT NULL,
@@ -551,6 +567,10 @@ CREATE TABLE chunk_assignments (
 
     -- ── Constraints ──────────────────────────────────────────────────────────
     CONSTRAINT chunk_assignments_one_active_per_shard
+        -- REQUIRES POSTGRESQL 15+: NULLS NOT DISTINCT syntax was introduced in PG 15.
+        -- On PG 14, replace with a UNIQUE partial index:
+        --   CREATE UNIQUE INDEX ON chunk_assignments (segment_id, shard_index)
+        --   WHERE status IN ('ACTIVE', 'REPAIRING');
         UNIQUE NULLS NOT DISTINCT (segment_id, shard_index)
         WHERE (status = 'ACTIVE' OR status = 'REPAIRING'),
     -- At most one ACTIVE or REPAIRING assignment per (segment, shard_index).
@@ -614,6 +634,9 @@ CREATE TABLE audit_periods (
     created_at      TIMESTAMPTZ     NOT NULL DEFAULT NOW(),
 
     CONSTRAINT audit_periods_no_overlap
+        -- PREREQUISITE: CREATE EXTENSION IF NOT EXISTS btree_gist;
+        -- This constraint will fail at DDL time if btree_gist is not installed.
+        -- btree_gist is required to use the = operator (for UUID) inside EXCLUDE.
         EXCLUDE USING gist (
             provider_id WITH =,
             tstzrange(period_start, period_end, '[)') WITH &&
@@ -641,6 +664,14 @@ INSERT here. No row is ever updated except during the two-phase PENDING → fina
 write (ADR-015). No row is ever deleted (Invariant 1, ADR-015, NFR-021).
 
 ```sql
+-- ── Audit result type ─────────────────────────────────────────────────────────
+-- PASS / FAIL / TIMEOUT are the three terminal states. The column is nullable
+-- (no NOT NULL) to represent the in-flight PENDING state during the two-phase
+-- write (ADR-015). Defining this as an ENUM — rather than TEXT with a CHECK —
+-- is consistent with all other status columns and prevents invalid string
+-- values at the Postgres wire protocol level before any constraint fires.
+CREATE TYPE audit_result_type AS ENUM ('PASS', 'FAIL', 'TIMEOUT');
+
 CREATE TABLE audit_receipts (
     -- ── Primary key ──────────────────────────────────────────────────────────
     receipt_id              UUID            PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -688,13 +719,12 @@ CREATE TABLE audit_receipts (
     -- jit_flag=TRUE (ADR-014 Defence 3). See §8.8.
 
     -- ── Audit result (two-phase write, ADR-015) ───────────────────────────────
-    audit_result            TEXT            CHECK (
-                                audit_result IN ('PASS', 'FAIL', 'TIMEOUT') OR
-                                audit_result IS NULL
-                            ),
+    audit_result            audit_result_type,
     -- NULL = in-flight PENDING (Phase 1 of two-phase write is complete; Phase 2
     -- not yet executed). PASS / FAIL / TIMEOUT = final result. NULL is not a
     -- missing value — it is a meaningful state. See §8.9.
+    -- Using audit_result_type (ENUM) rather than TEXT ensures Postgres rejects
+    -- invalid strings at the wire protocol level, not just at constraint check time.
 
     -- ── Signatures (dual Ed25519, ADR-017) ───────────────────────────────────
     provider_sig            BYTEA           CHECK (
