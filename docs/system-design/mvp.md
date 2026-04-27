@@ -1,8 +1,9 @@
-"# Vyomanaut V2 — MVP Roadmap
+# Vyomanaut V2 — MVP Roadmap
 
 ---
 
 | Field | Value |
+
 |---|---|
 | **Document ID** | `VYOM-ROAD-001` |
 | **Version** | 2.0 |
@@ -16,6 +17,7 @@
 **Companion documents** (authoritative where this document conflicts):
 
 | Document | Path | Relationship |
+
 |---|---|---|
 | System Architecture | `docs/system-design/architecture.md` | Describes the finished system; this document describes how to build it |
 | Product Requirements | `docs/system-design/requirements.md` | Defines what must be built; this document defines in what order |
@@ -28,6 +30,7 @@
 **Change log:**
 
 | Version | Date | Change | Author |
+
 |---|---|---|---|
 | 1.0 | April 2026 | Initial draft | Vyomanaut Engineering |
 | 2.0 | April 2026 | Full rewrite: added executive summary, glossary, requirement traceability, risk register, capacity implications, dependency graph, observability rollout, security checklist, appendices | Vyomanaut Engineering |
@@ -43,6 +46,7 @@ This document is the build plan for Vyomanaut V2 — a paid, zero-knowledge, dis
 **What makes this an MVP.** The MVP is the smallest version of the system that exercises all four critical paths end-to-end under real conditions, is safe to run with real users, and is honest about what it does not yet do. The four critical paths are:
 
 | # | Critical Path | Failure if broken |
+
 |---|---|---|
 | 1 | Encode > upload > store | Corrupted data that passes audits and is unrecoverable |
 | 2 | Challenge > respond > score | Providers earning without holding data |
@@ -98,6 +102,7 @@ Every milestone exists to bring one or more of these paths to correctness. Nothi
 ## Terminology and Glossary
 
 | Term | Definition |
+
 |---|---|
 | **AONT** | All-or-Nothing Transform. An encryption scheme where the key K is embedded in the ciphertext and can only be recovered by assembling all codewords. Used before erasure coding so that possessing fewer than k=16 fragments reveals nothing. |
 | **ASN** | Autonomous System Number. Identifies an ISP or network operator. The 20% ASN cap ensures no correlated provider group holds more than ~11 of 56 fragments of any file. |
@@ -159,6 +164,7 @@ This section provides enough context for the roadmap to be read standalone. The 
 ### Technology stack
 
 | Layer | Technology |
+
 |---|---|
 | Language | Go (microservice, daemon, client) |
 | Database | PostgreSQL (INSERT-only audit log, CRDT escrow ledger) |
@@ -173,6 +179,7 @@ This section provides enough context for the roadmap to be read standalone. The 
 ### Erasure parameters (V2 — fixed, do not change)
 
 | Parameter | Value | Meaning |
+
 |---|---|---|
 | s | 16 | Data shards (reconstruction threshold) |
 | r | 40 | Parity shards |
@@ -225,6 +232,7 @@ Plaintext
 **Milestones involved:** M1 (encoding), M2 (storage engine), M3 (P2P), M7 (client orchestration).
 
 **Failure modes this path prevents:**
+
 - Corrupted data that passes audits → canary verification, content_hash on every read
 - Data readable by the service → AONT key K never leaves the client; microservice holds only encrypted pointer ciphertext
 - Single-provider failure causes data loss → 40 parity fragments; survives loss of any 40 of 56
@@ -248,6 +256,7 @@ Microservice
 **Milestones involved:** M2 (storage read), M3 (network delivery), M4 (audit system), M5 (scoring).
 
 **Failure modes this path prevents:**
+
 - Provider fakes a response without holding data → SHA-256(chunk_data || nonce) is uncomputable without the chunk
 - Provider outsources retrieval just-in-time → Timing deadline: `(chunk_size / p95_throughput) x 1.5`
 - Audit results are altered after the fact → INSERT-only table enforced by Postgres row security policy
@@ -291,6 +300,7 @@ Audit PASS recorded
 **Milestones involved:** M5 (scoring), M6 (payment system).
 
 **Failure modes this path prevents:**
+
 - Provider paid without holding data → Only PASS receipts generate DEPOSIT events
 - Provider paid twice → Idempotency key = `SHA-256(provider_id + audit_period)` on every payout
 - Float rounding errors in payment → All amounts are integer paise; float arithmetic is a correctness violation
@@ -360,6 +370,7 @@ Sprint 6:  M8             (all milestones complete)
 ### Parallelisation rules
 
 | Sprint | Parallel tracks | Gate condition |
+
 |---|---|---|
 | 1 | M0, M1, M2 run independently | M0 provides repo layout; M1 and M2 have no code dependencies on each other |
 | 2 | M3 can start independently; M4 requires M2 (storage read) + M3 (network dispatch) | M4 cannot begin integration testing until M2 and M3 pass their exit criteria |
@@ -385,6 +396,7 @@ The MVP is the smallest system that:
 These are deliberately excluded. They are recorded here so no one builds them accidentally before the critical paths work.
 
 | Excluded | Deferred to | Rationale |
+
 |---|---|---|
 | Provider local dashboard (tray app / web UI) | V2 post-MVP | CLI-only is sufficient for private beta (PR-02 is P1, not P0) |
 | Hot Storage Band | V3 | Separate erasure parameters, separate payment model; not researched |
@@ -414,6 +426,7 @@ The milestones are strictly sequential. Milestone N depends on Milestone N-1 bei
 Each milestone contains:
 
 | Section | Purpose |
+
 |---|---|
 | **Goal** | One sentence: what is true after this milestone that was not true before |
 | **Dependencies** | Which prior milestones must be complete |
@@ -428,7 +441,7 @@ Each milestone contains:
 
 ---
 
-"## Milestone 0 — Foundation
+## Milestone 0 — Foundation
 
 **Goal:** A monorepo with tooling, CI, and a 56-node simulated provider network running on a single developer laptop. No business logic yet. This milestone establishes the substrate everything else builds on.
 
@@ -438,6 +451,7 @@ Each milestone contains:
 ### Requirement traceability
 
 | FR/NFR | Description | How this milestone addresses it |
+
 |---|---|---|
 | FR-055 | `--sim-count=N` launches N simulated providers | Simulation mode skeleton implemented here |
 | FR-056 | Simulation must not bypass readiness gate | Gate wired (all conditions FAIL in M0) |
@@ -475,6 +489,7 @@ Create every table defined in the ADRs in a single `migrations/001_initial_schem
 Key constraints to enforce from day one:
 
 | Constraint | Source | Why |
+
 |---|---|---|
 | `audit_receipts`: row security policy blocking UPDATE and DELETE | FR-039, NFR-021 | Tamper-evident audit log |
 | `escrow_events`: row security policy blocking UPDATE and DELETE | NFR-022 | CRDT-safe ledger |
@@ -924,7 +939,7 @@ go test ./internal/p2p/... -v -race
 scripts/test-p2p-connection.sh
 ```
 
-"## Milestone 4 — Audit System
+## Milestone 4 — Audit System
 
 **Goal:** The microservice issues audit challenges to providers, providers respond with signed receipts, and the receipts are durably recorded in the INSERT-only audit log. The cluster audit secret is correctly shared across microservice replicas. The 12-field receipt schema is complete and correct.
 
@@ -1842,6 +1857,7 @@ The build assumes a team of three engineers. This is a minimum-viable team for t
 Metrics are wired in the milestone where the underlying system is built. This table shows the cumulative state of the observability stack at the end of each milestone. Nothing is added retrospectively.
 
 | Milestone | New metrics added |
+
 |---|---|
 | **M0** | Infra: `microservice_replica_count{state="healthy"}`, `db_read_p99_latency_ms`. CI: no metrics. |
 | **M1** | `encoding_duration_ms` histogram (AONT + RS encode; ChaCha20 vs AES-NI). |
@@ -1856,6 +1872,7 @@ Metrics are wired in the milestone where the underlying system is built. This ta
 ### Alert thresholds (operational from M8)
 
 | Alert | Condition | Severity | Action |
+
 |---|---|---|---|
 | Audit TIMEOUT spike | `rate(audit_results_total{result="TIMEOUT"}[1h]) / rate(audit_challenges_issued_total[1h]) > 0.05` | P1 | Check relay nodes; check heartbeat address freshness |
 | Disk corruption detected | `increase(content_hash_failures_total[7d]) > 0` | P1 | Accelerated re-audit already triggered; investigate provider hardware |
@@ -1997,6 +2014,7 @@ psql -c "SELECT COUNT(*) FROM chunk_assignments WHERE created_at > NOW() - INTER
 **These numbers confirm the system is live:**
 
 | Signal | Expected value | If wrong |
+
 |---|---|---|
 | Readiness gate | `all_conditions_met: true` | Stop; do not proceed until green |
 | Healthy replicas | 3 | Follow microservice-failover runbook |
