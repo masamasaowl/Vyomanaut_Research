@@ -9,6 +9,12 @@ flagged explicitly. Every quoted source is linked.
 
 ---
 
+## Executive Summary
+
+The current architecture supports growth to approximately [100,000 providers × 10,000 chunks before re-architecture is required](#8-hard-ceilings--what-breaks-first), at which point the Postgres audit INSERT rate (~10,000 rows/sec) becomes the binding ceiling and probabilistic audit sampling or write sharding must be introduced. The [first constraint to appear in the growth path is relay slot exhaustion](#52-relay-infrastructure-scaling), occurring at roughly 570–850 providers depending on Indian CGNAT prevalence, and can be resolved incrementally by adding one relay node (~₹1,500/month on Indian cloud) per ~280 additional providers. The [minimum viable floor is 56 active vetted providers across 5 ASNs in 3 metro regions](#7-minimum-viable-floor), with 3 relay nodes and 56 Razorpay Linked Accounts past their 24-hour cooling period — below this, the assignment service returns HTTP 503 for all uploads. At the worst-case MTTF of 180 days, [a provider must not be loaded beyond approximately 70 GB of chunk data](#31-steady-state-repair-bandwidth-bwavg) to stay within the 100 Kbps background bandwidth budget, and this ceiling must be enforced at onboarding rather than discovered operationally. The [relay headroom formula is: required slots = N × relay\_fraction × 1.5, available slots = relay\_nodes × 128](#52-relay-infrastructure-scaling); add a relay node when required slots exceed 80% of available.
+
+---
+
 ## How to read this document
 
 Each calculation section identifies a **binding constraint** — the single resource that
@@ -24,6 +30,21 @@ something must change.
 | `DERIVED` | Computed from other values by formula. Changes when its inputs change. |
 | `MEASURED` | Taken from empirical data in a cited paper or benchmark. |
 | `ASSUMED` | An estimate with no cited source. Flag for empirical validation. Treat conservatively. |
+
+---
+
+## Table of Contents
+
+1. [Dimensions Table](#1-dimensions-table)
+2. [Storage Capacity](#2-storage-capacity)
+3. [Bandwidth Budget](#3-bandwidth-budget)
+4. [Audit System Throughput](#4-audit-system-throughput)
+5. [Network and DHT Scaling](#5-network-and-dht-scaling)
+6. [Payment System Throughput](#6-payment-system-throughput)
+7. [Minimum Viable Floor](#7-minimum-viable-floor)
+8. [Hard Ceilings — What Breaks First](#8-hard-ceilings--what-breaks-first)
+9. [Scale Milestones](#9-scale-milestones)
+10. [Summary: Floor and Ceiling](#10-summary-floor-and-ceiling)
 
 ---
 
@@ -76,7 +97,18 @@ is not grounded.
 | Audit deadline (5 Mbps provider) | — | ~614 | ms | DERIVED ((256 KB / 500 KB/s) × 1.5) | [ADR-014](../decisions/ADR-014-adversarial-defences.md) |
 | Audit receipt row size (raw fields) | — | ~297 | bytes | DERIVED (sum of schema fields) | [ADR-017](../decisions/ADR-017-audit-receipt-schema.md) |
 | Audit receipt row size (Postgres on-disk est.) | — | ~450 | bytes | ASSUMED (raw + Postgres page overhead ~50%) | — |
-| Postgres single-instance INSERT ceiling | — | 5,000–10,000 | rows/sec | MEASURED (optimised single instance) | [Paper 11](../research/paper-11-bailis-coordination.md) |
+| Postgres single-instance INSERT ceiling | — | 5,000–10,000 | rows/sec | ASSUMED | See note below |
+
+*Note on Postgres INSERT ceiling:* This value is taken from general Postgres benchmark
+literature, not from a measurement on the `audit_receipts` schema. The `audit_receipts`
+table contains two 64-byte Ed25519 signatures (`provider_sig` and `service_sig`) plus a
+32-byte nonce and multiple timestamp fields, making rows significantly wider than typical
+benchmark workloads. The actual ceiling on this schema is expected to be lower than
+5,000–10,000 rows/sec. **This value must be benchmarked on the real schema before V2 GA.**
+Run a sustained INSERT-only load test against a production-equivalent Postgres instance
+with row security policy enabled and measure the point at which INSERT latency exceeds 50 ms
+at p99. Update this table with the measured value before closing the V2 launch checklist.
+This is a dependency for NFR-021.
 
 ### 1.4 Provider storage engine
 
@@ -332,8 +364,13 @@ The 12-hour safety budget ([ADR-004](../decisions/ADR-004-repair-protocol.md)) p
 *Critical finding:* **At very small provider counts (56–200), the Qpeek repair window
 exceeds 12 hours.** This means a second failure during an ongoing repair is possible and
 the system is more vulnerable shortly after launch than the steady-state numbers suggest.
-Operators should monitor repair queue depth carefully in the first months before N > 500.
-The risk decreases monotonically as N increases.
+The `repair_queue_depth` metric (defined in [architecture.md Section 24](./architecture.md#24-observability))
+is the primary monitoring signal; the alert threshold fires when depth > 1,000. At N < 500,
+operators must additionally verify manually that no repair job is outstanding before
+accepting a new provider departure within a 24-hour window — the automated alert alone is
+insufficient at this scale because individual failure events can push the queue below the
+threshold while still exceeding the 12-hour repair window. The risk decreases monotonically
+as N increases past 500.
 
 *Note on Dalle et al. ([Paper 36](../research/paper-36-dalle-failure-correlation.md)):* The real standard deviation of repair bandwidth is
 22× larger than the independent model predicts. The Qpeek values above are mean burst
@@ -363,6 +400,71 @@ At N=10,000 this is ~2,500 reconnects/hour = ~0.7/sec average, but with bursty r
 after restart. The load balancer should be placed in front of the heartbeat endpoint separately
 from the audit challenge endpoints, as [ADR-028](../decisions/ADR-028-provider-heartbeat.md) notes.
 
+### 3.4 Economic Capacity
+
+This section estimates the fiat cost floor at each scale milestone — the minimum payment
+volume the system must process and the Razorpay fee load it incurs.
+
+**Razorpay payout fee model (from [Paper 35](../research/paper-35-razorpay-upi-docs.md) / Razorpay documentation):**
+
+Fees are deducted from the Razorpay master account, not from the provider payout. The gross
+payout to the provider is exactly the amount specified.
+
+- IMPS payouts: approximately ₹3–5 per transaction (varies by bank partnership)
+- UPI payouts to VPA: typically ₹0 on the UPI rail, but Razorpay charges a service fee of
+  ₹2–4 per transaction on programmatic payout calls
+- Use ₹4 per payout as the conservative planning estimate
+
+**Minimum viable payout volume — monthly (to keep the network solvent):**
+
+For a provider storing 50 GB with MTTF=300 days to earn more than the cost of participation
+(electricity, minimal bandwidth consumed by 39 Kbps background), a rough minimum storage
+rate of ₹1.50 per GB per month is assumed. This is deliberately conservative and will be
+revised once the storage rate is set as a product decision (OQ-001 in requirements.md).
+
+```
+Minimum monthly earnings per provider = 50 GB × ₹1.50/GB = ₹75/month
+Monthly payout volume at N providers = N × ₹75
+Razorpay payout fees at N providers = N × ₹4 (one payout per provider per month)
+Net revenue to providers = monthly payout volume - fees = N × ₹71
+```
+
+**Monthly payout volume and fee load at scale milestones:**
+
+| N providers | Monthly payout (gross, ₹) | Razorpay fees (₹) | Fee as % of payout |
+|---|---|---|---|
+| 56 | 4,200 | 224 | 5.3% |
+| 300 | 22,500 | 1,200 | 5.3% |
+| 1,000 | 75,000 | 4,000 | 5.3% |
+| 5,000 | 375,000 | 20,000 | 5.3% |
+| 10,000 | 750,000 | 40,000 | 5.3% |
+
+*Note:* Fee percentage is constant because both scale linearly with N. At ₹4/payout, fees
+consume 5.3% of payout volume at the ₹75/provider/month floor rate. If the actual storage
+rate is higher (e.g. ₹5/GB/month → ₹250/provider/month), fees drop to 1.6%.
+
+**Minimum data owner deposit volume to sustain the network at each scale:**
+
+Data owners must collectively deposit enough escrow to cover provider payouts each month.
+A provider storing 50 GB per file represents 56 providers × 1 chunk each — but in practice,
+data owners share the provider pool. For planning, assume each provider's storage is filled
+by 10 independent data owners on average, each depositing ₹7.50/month for their share.
+
+```
+Required data owner deposit volume = provider payout volume + Razorpay fees + Vyomanaut margin
+Minimum (at zero margin) = N × ₹75 + N × ₹4 = N × ₹79/month
+```
+
+The storage rate product decision (OQ-001) sets the Vyomanaut margin above this floor.
+At the ₹1.50/GB planning rate, the network is margin-negative — this rate is a floor for
+provider viability, not a target price.
+
+**Fee sustainability check:** The 5.3% Razorpay fee load at ₹75/month per provider is
+non-trivial. If the storage rate is set at ₹2/GB/month (₹100/provider/month), fees drop
+to 4%. At ₹5/GB/month (₹250/provider/month), fees drop to 1.6%. The storage rate must
+be set high enough that fees do not materially erode provider earnings. The product
+decision on pricing (OQ-001) must account for this explicitly.
+
 ---
 
 ## 4. Audit System Throughput
@@ -382,27 +484,31 @@ Challenges/sec  = Challenges/day / 86,400
 | 1,000 | 200,000 | 200 M | 2,315 /sec |
 | 10,000 | 10,000 | 100 M | 1,157 /sec |
 | 10,000 | 200,000 | 2 B | 23,148 /sec |
-| 100,000 | 10,000 | 1 B | 11,574 /sec — **Postgres ceiling** |
+| 100,000 | 10,000 | 1 B | 11,574 /sec — **approaches Postgres ceiling** |
 
 ### 4.2 Postgres INSERT ceiling for audit_receipts
 
-The Bailis paper ([Paper 11](../research/paper-11-bailis-coordination.md)) and operational Postgres benchmarks establish a single-instance
-optimised INSERT ceiling of 5,000–10,000 rows/sec.
+As noted in Section 1.3, the INSERT ceiling on the `audit_receipts` schema has not been
+benchmarked and must be measured before V2 GA. The general Postgres benchmark ceiling of
+5,000–10,000 rows/sec is used as a planning estimate. The actual ceiling may be lower due
+to row width (two 64-byte Ed25519 signatures per row).
 
 ```
-Postgres ceiling at 10,000 rows/sec:
+Estimated Postgres ceiling at 10,000 rows/sec:
   Max challenges/day = 10,000 × 86,400 = 864 M
   → ~100,000 providers × 10,000 chunks/provider (0.25 GB/provider of 256 KB chunks)
   → ~5,000 providers × 200,000 chunks/provider (50 GB/provider)
 ```
 
-**Postgres INSERT is the first architectural ceiling in the audit pipeline. It binds at
-approximately 100,000 providers × 10,000 chunks, or 5,000 providers × 200,000 chunks.**
+**Based on the planning estimate, Postgres INSERT is the first architectural ceiling in the
+audit pipeline. It binds at approximately 100,000 providers × 10,000 chunks, or 5,000
+providers × 200,000 chunks. This estimate must be replaced with a measured value before
+V2 GA.**
 
 At V2 launch (hundreds of providers × tens of thousands of chunks), the INSERT rate is
-~tens of rows/sec — orders of magnitude below the ceiling. This is not a V2 concern but
-is the hard limit before the audit system must be re-architected (batching, partitioned
-writes, write-ahead log bypassing, or probabilistic sampling).
+~tens of rows/sec — orders of magnitude below any reasonable ceiling. This is not a V2
+concern but is the hard limit before the audit system must be re-architected (batching,
+partitioned writes, write-ahead log bypassing, or probabilistic sampling).
 
 *If probabilistic sampling is introduced to extend this ceiling*, the SHELBY
 incentive-compatibility conditions (Theorem 1, [Paper 37](../research/paper-37-shelby-incentive-compatibility.md)) must be re-verified at the
@@ -418,7 +524,7 @@ Storage/day  = Challenges/day × ~450 bytes/row
 Storage/year = Storage/day × 365
 ```
 
-At the Postgres INSERT ceiling (864 M rows/day):
+At the Postgres INSERT planning ceiling (864 M rows/day):
 ```
 Storage/day  = 864M × 450 bytes = 389 GB/day
 Storage/year = 389 × 365 = 142 TB/year
@@ -439,7 +545,7 @@ window ([ADR-008](../decisions/ADR-008-reliability-scoring.md)).
 
 ## 5. Network and DHT Scaling
 
-### 5.1 DHT hop count at scale
+### 5.1 DHT hop count and record capacity at scale
 
 Kademlia lookup takes O(log₂ N / α) round trips with α=3 parallel lookups.
 
@@ -460,6 +566,53 @@ benchmark is the relevant one.
 DHT lookup latency is a logarithmic function of N. Adding providers makes lookups marginally
 slower — this is not a scaling bottleneck.
 
+**DHT record count and provider RAM requirement:**
+
+Each assigned chunk on each provider generates one DHT provider record. libp2p's Kademlia
+implementation stores provider records in memory on every DHT server node. Record count
+therefore scales as:
+
+```
+DHT records per provider node (routing table + provider records it holds)
+  ≈ chunks_per_provider (provider records for chunks it owns)
+    + k-bucket entries (routing state, bounded at k=16 per bucket × log₂(N) buckets)
+```
+
+The dominant term at any realistic scale is the provider records. At 200 bytes per record
+(estimated from libp2p's record encoding — chunk_id hash + provider multiaddr + expiry):
+
+```
+DHT record memory at 200,000 chunks/provider:
+  200,000 × 200 bytes = 40 MB per DHT server node
+
+DHT record memory at 2,000,000 chunks/provider (500 GB at 256 KB/chunk):
+  2,000,000 × 200 bytes = 400 MB per DHT server node
+```
+
+At current allocation targets (50–500 GB per provider), DHT record memory is 40–400 MB —
+within the operating range of any desktop machine. However, this establishes a concrete
+**provider hardware requirement**: a provider daemon running as a DHT server must have at
+least the following free RAM available for the DHT layer, in addition to the OS and other
+processes:
+
+| Provider storage | Chunks | DHT record memory |
+|---|---|---|
+| 10 GB | ~40,000 | ~8 MB |
+| 50 GB | ~200,000 | ~40 MB |
+| 200 GB | ~800,000 | ~160 MB |
+| 500 GB | ~2,000,000 | ~400 MB |
+
+**This is a provider hardware requirement that must appear in the daemon's minimum system
+specification.** A provider attempting to run the daemon with less RAM than their chunk
+allocation requires will cause the DHT layer to evict records, producing lookup failures
+and audit TIMEOUT results that are indistinguishable from provider absence.
+
+At 10,000 providers each storing 200,000 chunks: total DHT record count across the network
+is 2 billion, distributed across all DHT server nodes. Each node holds a locally relevant
+subset (determined by XOR distance), not the full 2 billion — so per-node memory remains
+bounded at ~40–400 MB regardless of total network size. DHT record memory does not become
+a network-level bottleneck at V2 or V3 scale.
+
 ### 5.2 Relay infrastructure scaling
 
 Every provider behind symmetric NAT requires a Circuit Relay v2 slot for every concurrent
@@ -478,6 +631,7 @@ on average.
 ```
 Required relay slots = N × 0.30 × 1.5 = N × 0.45
 Available slots = relay_nodes × 128
+Headroom formula: add relay node when (N × relay_fraction × 1.5) > (relay_nodes × 128 × 0.80)
 ```
 
 **Relay headroom at launch (3 nodes, 384 slots):**
@@ -594,7 +748,11 @@ Max simultaneous uploads = floor(N / n) = floor(56 / 56) = 1 file segment at a t
 
 The assignment service cannot begin a second file segment's upload until all 56 shard slots of
 the first are confirmed — the same 56 providers are needed for both. In practice, a second
-upload must wait for the first to complete at the provider level, not just the microservice level.
+upload must wait for the first to complete at the provider level, not just the microservice
+level. This constraint relaxes linearly: at N=112, 2 simultaneous uploads are possible; at
+N=560, up to 10 simultaneous uploads are possible. During private beta, the product team must
+communicate this concurrency limit to data owner testers — a queued second upload is not a
+bug, it is the expected behaviour at minimum network size.
 
 **First usable file size (at 56 providers, each with capacity):**
 ```
@@ -626,12 +784,13 @@ constraint binds.
 
 | Constraint | Binds at | Symptom | Action to extend |
 |---|---|---|---|
-| Relay slot exhaustion (30% fraction, 3 nodes × 128 slots) | ~850 providers | Audit TIMEOUT rate rises for relay-dependent providers | Add relay nodes; each adds capacity for ~280 more providers |
-| Relay slot exhaustion (45% fraction, Indian CGNAT) | ~570 providers | Same | Same; plan for more aggressive relay scaling |
-| Repair window exceeds 12h (small network) | < 500 providers | Qpeek repair takes > 12 hours; second failure risk during repair | Accept risk at launch; monitor repair queue; ensure repair completes before MTTF second-failure probability window |
-| Postgres audit INSERT rate | ~100,000 providers × 10,000 chunks OR ~5,000 providers × 200,000 chunks | Audit challenge processing queue grows; INSERT latency rises | Monthly partitioning (mandatory from day 1); probabilistic sampling when ceiling approached (re-verify SHELBY conditions first) |
+| Relay slot exhaustion (45% fraction, Indian CGNAT) | ~570 providers | Audit TIMEOUT rate rises for relay-dependent providers | Add relay nodes; each adds capacity for ~280 more providers |
+| Relay slot exhaustion (30% fraction, 3 nodes × 128 slots) | ~850 providers | Same | Same; plan for more aggressive relay scaling if Q20-1 confirms high CGNAT fraction |
+| Repair window exceeds 12h (small network) | < 500 providers | Qpeek repair takes > 12 hours; second failure risk during repair; `repair_queue_depth` alert (threshold 1,000) may not fire before window is exceeded | Accept risk at launch; monitor `repair_queue_depth` (see [architecture.md §24](./architecture.md#24-observability)); manually verify no concurrent repairs outstanding before accepting new departures |
+| Postgres audit INSERT rate | ~100,000 providers × 10,000 chunks OR ~5,000 providers × 200,000 chunks (planning estimate — must be benchmarked on actual schema before V2 GA) | Audit challenge processing queue grows; INSERT latency rises | Monthly partitioning (mandatory from day 1); probabilistic sampling when ceiling approached (re-verify SHELBY conditions first) |
 | Postgres audit receipt storage | ~1.6 TB/year at V2 launch scale | Disk fills; query latency rises on unpartitioned table | Monthly partition archiving to object storage |
 | Per-provider bandwidth (50 GB/provider at MTTF=180d) | ~70 GB/provider at MTTF=180d | BWavg exceeds 100 Kbps; repair traffic visibly impairs provider foreground I/O | Enforce per-provider chunk count ceiling in onboarding; reduce allocation at lower MTTF |
+| Provider RAM for DHT records | ~400 MB at 500 GB/provider allocation | DHT record eviction; audit TIMEOUT false positives | Enforce minimum free RAM in provider hardware requirements; document in daemon minimum spec |
 | Microservice quorum (3-node gossip) | > 5 replicas | Gossip overhead grows; operational complexity exceeds value of hand-rolled solution | Migrate to etcd or Consul ([ADR-025](../decisions/ADR-025-microservice-consistency-mechanism.md) open constraint) |
 | Razorpay Route payout release | ~120,000 providers in 4-hour window | Release window must extend past midnight | Distribute release across longer window or upgrade Razorpay rate limit tier |
 
@@ -654,16 +813,16 @@ first architectural ceiling.
 
 ### Milestone 1 — Network open (56 providers)
 - First uploads permitted
-- Simultaneous uploads: 1 at a time (all 56 slots occupied by one segment)
+- Simultaneous uploads: 1 at a time (all 56 slots occupied by one segment); second upload queues until first completes
 - Relay: 17 relay-dependent providers, 26 slots needed, 384 available — no action needed
-- Repair window: ~22 hours per failure — monitor; acceptable if no concurrent failures
+- Repair window: ~22 hours per failure — monitor `repair_queue_depth` ([architecture.md §24](./architecture.md#24-observability)); acceptable if no concurrent failures occur; manually verify no outstanding repair jobs before accepting any new provider departure within a 24-hour window
 
 ### Milestone 2 — 300 providers
 - Simultaneous uploads: 5 independent file segments in parallel (300 / 56 ≈ 5)
-- Relay: 90 relay-dependent, 135 slots needed — 65% headroom remaining
+- Relay: 90 relay-dependent, 135 slots needed — 65% headroom remaining at 30% CGNAT fraction; if Q20-1 telemetry shows Indian CGNAT fraction exceeds 30%, add 4th relay node before reaching 400 providers
 - Repair window: ~8 hours per failure (within the 12-hour safety window)
 - BWavg at 50 GB/provider, MTTF=300d: ~39 Kbps/peer — comfortable
-- **Relay capacity is healthy; no infrastructure action needed**
+- **Relay capacity is healthy; no infrastructure action needed at 30% CGNAT; watch Q20-1 telemetry**
 
 ### Milestone 3 — 570 providers (relay warning at 45% CGNAT fraction)
 - Relay slots needed: ~386 vs 384 available — **add the 4th relay node now**
@@ -675,21 +834,23 @@ first architectural ceiling.
 ### Milestone 5 — 1,000 providers
 - Repair window: ~8 hours — comfortable
 - Audit challenge rate: up to 200M/day (200,000 chunks/provider) — 2,315/sec — still below
-  Postgres ceiling of 5,000–10,000/sec
+  Postgres ceiling (planning estimate)
 - Monthly audit receipt storage: ~375 GB/month at 200,000 chunks/provider — archiving needed
 - **First time Giroire formula is comfortably within all parameters simultaneously**
 
 ### Milestone 6 — 5,000 providers
-- Audit INSERT rate at 200,000 chunks/provider: 11,574/sec — at Postgres ceiling
+- Audit INSERT rate at 200,000 chunks/provider: ~11,574/sec — approaching Postgres planning ceiling
 - At 10,000 chunks/provider: 579/sec — comfortable
 - **Storage allocation ceiling per provider becomes the binding parameter at this scale;
   providers storing > 50 GB at MTTF=300d push BWavg toward the 100 Kbps budget**
+- DHT record memory: ~40 MB per provider at 200,000 chunks — within range; document in hardware spec
 
 ### Milestone 7 — 10,000 providers
 - Audit receipts: 16.4 TB/year (10,000 chunks/provider) — partitioning and archiving mandatory
 - Heartbeat ingress: 12 MB/day — negligible
 - Monthly payout computation: 50,000 operations at 3.5/sec — within Razorpay rate limits
-- **Postgres audit INSERT rate remains the primary ceiling; evaluate probabilistic sampling**
+- Monthly Razorpay fees at ₹75/provider/month: ₹40,000 — monitor fee-to-payout ratio
+- **Postgres audit INSERT rate remains the primary ceiling; benchmark actual schema INSERT rate; evaluate probabilistic sampling**
 
 ---
 
@@ -698,11 +859,14 @@ first architectural ceiling.
 | | Value | Binding constraint |
 |---|---|---|
 | **Minimum viable floor** | 56 providers, 5 ASNs, 3 metro regions, 3 relay nodes, 56 Razorpay accounts | [ADR-029](../decisions/ADR-029-bootstrap-minimum-viable-network.md) — all conditions must be simultaneously true |
+| **Simultaneous uploads at floor** | 1 at a time | Assignment service requires 56 distinct providers per segment |
 | **Usable storage at floor** | ~800 GB user data (56 providers × 50 GB, 28.57% efficiency) | s/n ratio |
 | **BWavg at floor (MTTF=300d)** | ~39 Kbps/peer | Giroire Formula 1, [Paper 10](../research/paper-10-giroire-lazy.md) |
-| **Repair window at floor** | ~22 hours (exceeds 12h safety target) | Small N; monitor closely |
-| **First relay upgrade trigger** | ~570–850 providers | CGNAT fraction uncertainty |
+| **Repair window at floor** | ~22 hours (exceeds 12h safety target) | Small N; monitor `repair_queue_depth`; manual oversight required |
+| **First relay upgrade trigger** | ~570–850 providers | CGNAT fraction uncertainty; Q20-1 telemetry resolves |
 | **Per-provider chunk ceiling (MTTF=180d)** | ~70 GB | 100 Kbps bandwidth budget |
 | **Per-provider chunk ceiling (MTTF=300d)** | ~130 GB | 100 Kbps bandwidth budget |
-| **Audit throughput ceiling (current architecture)** | ~100,000 providers × 10,000 chunks | Postgres INSERT rate, [Paper 11](../research/paper-11-bailis-coordination.md) |
+| **Provider RAM required for DHT (500 GB allocation)** | ~400 MB free | DHT record memory at 2M chunks per provider |
+| **Audit throughput ceiling (current architecture)** | ~100,000 providers × 10,000 chunks (planning estimate) | Postgres INSERT rate — must be benchmarked on actual schema before V2 GA |
 | **Architecture change required above** | 100,000 providers (at 10,000 chunks each) | Probabilistic audit sampling or write sharding |
+| **Razorpay fee load** | ~5.3% of payout at ₹75/provider/month floor rate | Drops to 1.6% at ₹250/provider/month; pricing decision (OQ-001) must account for this |
