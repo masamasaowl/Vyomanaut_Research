@@ -217,11 +217,13 @@ components:
         - PASS
         - FAIL
         - TIMEOUT
-        - null
       description: |
         `null` = PENDING (Phase 1 of two-phase write complete; result not yet set).
-        `PASS` / `FAIL` / `TIMEOUT` = terminal state.
+        JSON serialisers must emit `null`, not the string `"null"` or omit the field.
+        `PASS` / `FAIL` / `TIMEOUT` = terminal states.
         PENDING rows are excluded from all scoring window queries. (ADR-015)
+        Note: OAS 3.0 does not allow `null` as an enum member. Use `nullable: true`
+        on the enclosing property to express that this field may be null.
 
     EscrowEventType:
       type: string
@@ -634,6 +636,7 @@ components:
         - city
         - region
         - asn
+        - initial_multiaddrs
         - provider_sig
       properties:
         ed25519_public_key:
@@ -688,8 +691,10 @@ components:
           minItems: 1
           maxItems: 8
           description: |
-            Initial libp2p addresses of the provider daemon. Superseded by the
-            4-hourly signed heartbeat after registration. (ADR-028)
+            Initial libp2p listen addresses of the provider daemon at registration time.
+            Required: the microservice needs at least one address to dispatch the first
+            audit challenge before any heartbeat is received. These are superseded by
+            the first successful 4-hourly heartbeat. (ADR-028)
         provider_sig:
           $ref: '#/components/schemas/Ed25519Signature'
           description: |
@@ -1020,6 +1025,7 @@ components:
       required:
         - file_id
         - num_segments
+        - original_size_bytes
       properties:
         file_id:
           $ref: '#/components/schemas/UUID'
@@ -1031,8 +1037,17 @@ components:
           minimum: 1
           maximum: 10000
           description: |
-            Number of 14 MB segments the file has been split into.
+            Number of 14 MB encoded segments the file has been split into.
             `ceil(original_size_bytes / (16 × 262144))`. (ADR-022)
+        original_size_bytes:
+          type: integer
+          format: int64
+          minimum: 1
+          description: |
+            Plaintext file size in bytes before AONT padding. Required by the
+            assignment service to compute the 30-day storage cost and verify that
+            the data owner's escrow balance is sufficient before assigning providers.
+            (FR-014: refuse upload if balance < cost_for_30_days(file_size))
 
     ShardAssignment:
       type: object
@@ -1095,7 +1110,12 @@ components:
             $ref: '#/components/schemas/SegmentAssignment'
           description: One entry per segment; length equals `num_segments`.
 
-    ErasureParams:
+    ErasureParamsInfo:
+      description: |
+        Erasure coding parameters — fixed for all V2 files. Included in the pointer file
+        plaintext for future-proofing; never negotiated at upload time. (ADR-003)
+        s=16 (reconstruction threshold), r=40 (parity), n=56 (total shards),
+        lf=262144 bytes (256 KB fragment size).
       type: object
       required:
         - s
@@ -1110,7 +1130,7 @@ components:
         r:
           type: integer
           enum: [40]
-          description: Parity fragments. Fixed at 40 (analytically optimal). (ADR-003)
+          description: Parity fragments. Fixed at 40 (analytically optimal per Giroire). (ADR-003)
         n:
           type: integer
           enum: [56]
@@ -1120,11 +1140,18 @@ components:
           enum: [262144]
           description: Fragment size in bytes. Fixed at 256 KB (262,144 bytes). (ADR-003)
 
-    PointerFileSegment:
+    PointerFilePlaintextSegment:
+      description: |
+        **Informational schema — not transmitted to the microservice.**
+        Describes the plaintext structure of one segment entry inside the pointer file,
+        before AEAD encryption. The pointer file is stored by the microservice as
+        ciphertext only (ADR-020, NFR-014). This schema is for client-side
+        implementation reference. The encrypted form is `FileRegisterRequest.pointer_ciphertext`.
       type: object
       required:
         - segment_id
         - segment_index
+        - file_key
         - provider_ids
         - chunk_ids
         - erasure_params
@@ -1134,13 +1161,22 @@ components:
         segment_index:
           type: integer
           minimum: 0
+          description: 0-based. Segments are concatenated in this order on retrieval.
+        file_key:
+          type: string
+          pattern: '^[0-9a-f]{64}$'
+          description: |
+            Hex-encoded 32-byte file_key derived via
+            HKDF-SHA256(master_secret, salt=owner_id, info="vyomanaut-file-v1"||file_id).
+            Stored for convenience inside the encrypted pointer file; always re-derivable
+            from the master secret and file_id. (ADR-020)
         provider_ids:
           type: array
           items:
             $ref: '#/components/schemas/UUID'
           minItems: 56
           maxItems: 56
-          description: Provider IDs in shard_index order.
+          description: Provider IDs in shard_index order (0–55).
         chunk_ids:
           type: array
           items:
@@ -1149,7 +1185,7 @@ components:
           maxItems: 56
           description: SHA-256 content addresses in shard_index order.
         erasure_params:
-          $ref: '#/components/schemas/ErasureParams'
+          $ref: '#/components/schemas/ErasureParamsInfo'
 
     FileRegisterRequest:
       type: object
@@ -1415,9 +1451,13 @@ components:
         satisfied:
           type: boolean
         current_value:
-          description: Current measured value (type varies by condition).
+          type: integer
+          minimum: 0
+          description: Current measured value (e.g. number of active providers, replica count).
         required_value:
-          description: Threshold that must be met.
+          type: integer
+          minimum: 0
+          description: Threshold that must be met or exceeded for this condition to pass.
 
     ReadinessResponse:
       type: object
@@ -1611,6 +1651,10 @@ components:
         - window_end
         - challenges_issued
         - results
+        - pass_rate
+        - timeout_rate
+        - content_hash_failures
+        - jit_flags_raised
       properties:
         window_start:
           type: string
@@ -1815,7 +1859,13 @@ paths:
         "400":
           $ref: '#/components/responses/400BadRequest'
         "429":
-          description: Rate limit exceeded.
+          description: Rate limit exceeded (3 attempts per phone per 10 minutes).
+          headers:
+            Retry-After:
+              description: Seconds until the rate limit resets. Client MUST wait this long before retrying.
+              schema:
+                type: integer
+                example: 600
           content:
             application/json:
               schema:
@@ -2299,6 +2349,24 @@ paths:
           $ref: '#/components/responses/401Unauthorized'
         "403":
           $ref: '#/components/responses/403Forbidden'
+        "409":
+          description: |
+            A promised downtime window is already active for this provider, or the
+            provider's status is DEPARTED. A provider cannot stack multiple overlapping
+            downtime declarations.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                AlreadyActive:
+                  value:
+                    code: DOWNTIME_ALREADY_ACTIVE
+                    message: "A promised downtime window is already active until 2026-04-28T06:00:00Z."
+                ProviderDeparted:
+                  value:
+                    code: PROVIDER_DEPARTED
+                    message: "Provider account is DEPARTED. Downtime declarations are not accepted."
 
   /api/v1/provider/depart:
     post:
@@ -2314,7 +2382,7 @@ paths:
         having escrow seized. (ADR-007, ADR-024, FR-034)
 
         **Cannot be undone.** Re-joining requires a new registration with a new phone number.
-      operationId: announceDepature
+      operationId: announceDeparture
       requestBody:
         required: true
         content:
@@ -2417,8 +2485,16 @@ paths:
           $ref: '#/components/responses/401Unauthorized'
         "403":
           $ref: '#/components/responses/403Forbidden'
+        "404":
+          description: |
+            The `file_id` was not found in a prior `POST /api/v1/upload/assign` call.
+            The client must call the assign endpoint before registering the pointer file.
+          $ref: '#/components/responses/404NotFound'
         "409":
-          description: File ID conflicts with an existing active file.
+          description: |
+            A pointer file has already been registered for this `file_id` and the
+            file is in ACTIVE status. Re-registration of a completed upload is not
+            permitted; use `DELETE /api/v1/file/{file_id}` to remove it first.
           $ref: '#/components/responses/409Conflict'
 
   /api/v1/file/{file_id}/pointer:
@@ -2500,6 +2576,15 @@ paths:
           $ref: '#/components/responses/403Forbidden'
         "404":
           $ref: '#/components/responses/404NotFound'
+        "409":
+          description: File is already in DELETED status.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                code: FILE_ALREADY_DELETED
+                message: "File 01944a6e-8f3c-7000-b000-d4e5f6a7b8c9 is already in DELETED status."
 
   # ────────────────────────────
   # Pricing
@@ -2568,7 +2653,10 @@ paths:
               $ref: '#/components/schemas/AuditChallengeDispatchRequest'
       responses:
         "202":
-          description: Challenge dispatched.
+          description: |
+            Challenge dispatched to the provider's current libp2p address.
+            The scheduler tracks the pending challenge; the receipt will arrive
+            asynchronously via `POST /api/v1/audit/receipt`.
           content:
             application/json:
               schema:
@@ -2577,6 +2665,9 @@ paths:
           $ref: '#/components/responses/400BadRequest'
         "401":
           $ref: '#/components/responses/401Unauthorized'
+        "403":
+          description: Admin API key provided but insufficient privileges, or provider is DEPARTED.
+          $ref: '#/components/responses/403Forbidden'
         "404":
           $ref: '#/components/responses/404NotFound'
 
@@ -2621,8 +2712,11 @@ paths:
           $ref: '#/components/responses/403Forbidden'
         "409":
           description: |
-            Duplicate `challenge_nonce`. The existing receipt's countersignature is returned
-            in the body so the daemon can store it without re-submitting. (ADR-015)
+            Duplicate `challenge_nonce`. The audit receipt for this nonce already exists
+            and its result is final (PASS or FAIL). The existing countersignature is
+            returned so the provider daemon can store it without re-submitting.
+            This is an **idempotent success path**, not an error — the daemon should
+            treat this identically to a 200 response. (ADR-015)
           content:
             application/json:
               schema:
