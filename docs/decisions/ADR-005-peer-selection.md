@@ -3,7 +3,7 @@
 **Status:** Accepted
 **Topic:** #5 Peer Selection Algorithm
 **Supersedes:** —
-**Superseded by:** —
+**Superseded by:** — Partially superseded by [ADR-029](./ADR-029-bootstrap-minimum-viable-network.md)
 **Research source:** Papers 01, 05, 07, 08, 20, 21, 40
 
 ---
@@ -44,6 +44,10 @@ Concentration prevention: the Preference subsystem uses Power of Two Choices —
 Based on BitTorrent's optimistic unchoking principle — random assignment from the vetted pool. Independence of randomly selected hosts from a filtered pool is confirmed (Bhagwan, [Paper 08](../research/paper-08-bhagwan-availability.md)).
 
 **Correlated failure prevention (Honest Geppetto):**
+> **Note:** The "5 × n shards" activation condition stated here is superseded by
+> [ADR-029](./ADR-029-bootstrap-minimum-viable-network.md). The correct condition is:
+> ≥ 56 vetted providers across ≥ 5 distinct ASNs. The "5 × n shards" clause is retired.
+
 No cluster sharing the same ASN or subnet may hold more than 20% of shards for a single file. This is a placement constraint enforced at write time. The cap is enforced on every chunk assignment from the moment the network satisfies the bootstrap readiness conditions in ADR-029: ≥ 56 vetted providers across ≥ 5 distinct ASNs. The 20% cap is never deactivated after activation. The network never operates in a state where uploads are accepted without the cap being active — ADR-029's readiness gate ensures
 these conditions are met before the first upload is permitted.
 

@@ -33,6 +33,6 @@ Status values: `Accepted` · `Proposed` · `Superseded by ADR-NNN` · `Deprecate
 | ADR-021 | #12 P2P Transfer | **Accepted** — libp2p + QUIC v1 | Papers 13, 14 |
 | ADR-022 | #15 Encoding Pipeline | **Accepted** — AONT-RS | Papers 15, 16 |
 | ADR-023 | #16 Storage Engine | **Accepted** — WiscKey | Papers 25, 26, 27 |
-| ADR-024 | #18 Economic Mechanism | **Proposed** — blocked on Phase 5 | — |
+| ADR-024 | #18 Economic Mechanism | **Accepted** — Papers 5, 29, 31, 33, 35, 37, 40, 41 | — |
 | ADR-025 | #1 Microservice Cluster | Accepted — (3,2,2) gossip | Paper 12 |
 | ADR-026 | #17 Repair BW | **Proposed** — Hitchhiker only | — |

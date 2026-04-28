@@ -1,43 +1,72 @@
-# System Design
-
-## Functional Requirements
-
-What the system must do:
-
-1. A service for users, companies, and data owners to store data
-2. The data is stored inside the idle memory of phones, laptops, and devices
-3. Data owner pays; storage provider earns (escrow)
-4. Storage provider cannot access the stored data
-5. Data must be available to the data owner at all times
-6. The storage provider can alter their storage contribution
-7. Storage provider can exit the network; data owner can delete the data
-8. The service never stores or reads the given data
-
----
-
-## Research Topics
-
-19 active topics. Every paper and every ADR maps back to one or more of these numbers.
-
-| # | Topic | Core question |
-
-|---|---|---|
-| #1 | Coordination Architecture | Central vs DHT balance; what stays decentralised and why; Satellite design |
-| #2 | Proof of Storage | Audit mechanism: full PoRep vs random Merkle challenge vs lightweight heartbeat |
-| #3 | Erasure Coding | EC scheme selection (RS / MSR / LRC); (k, m) parameters; cold vs warm tradeoffs |
-| #4 | Replication / Repair Protocol | Who triggers repair; peer-to-peer chunk transfer during repair; repair bandwidth budget |
-| #5 | Peer Selection Algorithm | Selection criteria: latency, uptime, geography, free space; initial assignment |
-| #6 | Availability & Polling | Polling interval vs audit gap attack surface; heartbeat failure detection |
-| #7 | Provider Exit State Mechanism | Accidental / announced / promised exit; grace period; migration orchestration |
-| #8 | Reliability Scoring Model | EigenTrust vs rolling audit rate vs hybrid; bootstrapping new providers; decay function |
-| #9 | Client-Side Encryption | Encryption scheme; key derivation per chunk vs per file; forward secrecy |
-| #10 | Key Management Strategy | Owner key loss scenario; key rotation; delegation to service for republication |
-| #11 | Background OS Execution | iOS/Android background execution limits; provider tier model (desktop vs mobile) |
-| #12 | P2P Transfer Protocol | QUIC vs WebRTC; NAT traversal; connection migration for mobile providers |
-| #13 | Escrow & Payment Basis | Per GB stored vs per audit passed vs per GB transferred; penalty structure |
-| #14 | Consistency Model | Which operations need strong consistency vs eventual; invariant confluence framework |
-| #15 | Encryption-Erasure Interaction | Encrypt-then-code vs code-then-encrypt; key management cost of each choice |
-| #16 | Provider-Side Storage Engine | How providers store chunks locally; LSM-tree vs object store; EC tiering |
-| #17 | Repair Bandwidth Optimisation | MSR/LRC regenerating codes; repair parallelisation; helper node selection |
-| #18 | Economic Mechanism Design | Game-theoretic incentive compatibility; credit systems; SLA enforcement |
-| #19 | Adversarial Provider Behaviour | Provider deletes data between audits; false audit responses; collusion modelling |
+# Universal Rules
+ 
+These rules apply to every document inside within the system design repository without exception.
+ 
+### 0.1 Hyperlink discipline
+ 
+Every reference to another document in the repository must be a relative hyperlink.
+Every reference to a paper must link to its research note in `docs/research/`. Every
+ADR citation must link to its file in `docs/decisions/`. Every FR/NFR citation must
+link to the relevant section of `docs/system-design/requirements.md`.
+ 
+**Accepted form:** `[ADR-027](../decisions/ADR-027-cluster-audit-secret.md)`  
+**Rejected form:** "see ADR-027" or "ADR-027" without a link
+ 
+The only exception is in Mermaid diagram source blocks, where hyperlinks cannot be
+embedded. In those blocks, use the short form (e.g. `ADR-027`) and provide a
+cross-reference table immediately after the diagram block.
+ 
+### 0.2 Source of truth hierarchy
+ 
+When this specification conflicts with an ADR, the ADR wins. When an ADR conflicts
+with `architecture.md`, the ADR wins. When `requirements.md` conflicts with
+`architecture.md`, `requirements.md` wins. The new documents must not introduce
+new decisions — they document decisions already made.
+ 
+### 0.3 No new scope
+ 
+None of the documents below may introduce new design decisions, new component names,
+new API endpoints, new database columns, or new error codes that are not already
+defined in an accepted ADR, `architecture.md`, `requirements.md`, `data-model.md`,
+or `openapi.yaml`. If a gap is discovered, stop authoring, file it in
+`docs/research/open-questions.md`, and note it in the document with a `> TODO:` callout.
+ 
+### 0.4 Integer paise and no float
+ 
+Any document that mentions money must use integer paise (not rupees, not decimals).
+This mirrors [Invariant 4 in `data-model.md`](./data-model.md#3-design-invariants) and
+[NFR-046 in `requirements.md`](./requirements.md#7-non-functional-requirements).
+ 
+### 0.5 Diagram format
+ 
+All sequence diagrams use [Mermaid `sequenceDiagram`](https://mermaid.js.org/syntax/sequenceDiagram.html)
+syntax, rendered in GitHub Markdown. All state diagrams use `stateDiagram-v2`. All
+ER-style or flow diagrams use `flowchart LR` or `flowchart TD`. No PlantUML. No
+image files. Source must be in the Markdown file itself so it is diffable.
+ 
+Each diagram must have:
+1. A title comment `%% Title` at the top of the Mermaid block.
+2. A numbered cross-reference table after the block mapping step labels to ADRs/FRs.
+3. A prose paragraph before the block explaining what the diagram shows and why it matters.
+4. A "What this diagram does not show" note — explicitly bounding scope prevents
+   the reader from inferring unintended behaviour from a simplified diagram.
+### 0.6 Failure handling is always explicit
+ 
+Every sequence diagram must have at least one `alt` or `opt` block showing the
+primary failure path for that flow. Diagrams that show only the happy path are
+incomplete and will be rejected at review.
+ 
+### 0.7 Versioning
+ 
+Each document opens with a metadata block:
+ 
+```markdown
+**Status:** Draft | Review | Accepted  
+**Version:** 1.0  
+**Date:** [ISO 8601]  
+**Authors:** Vyomanaut Engineering  
+**Repository:** https://github.com/masamasaowl/Vyomanaut_Research  
+**Supersedes:** —  
+**Companion documents:** [list with hyperlinks]
+```
+ 

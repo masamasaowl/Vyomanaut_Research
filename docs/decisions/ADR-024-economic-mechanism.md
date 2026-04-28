@@ -65,11 +65,14 @@ the WiscKey index, [ADR-023](./ADR-023-provider-storage-engine.md)) is negligibl
 Revisit if segment count grows to the point where metadata cost is measurable.
 
 ### 2. Escrow hold structure
+> **Note:** The computation runs on the 23rd; the Razorpay release fires on the next business day after on_hold_until, targeting the first 3 business days of the following month.
+>
 
 At any given time, a provider's earned-but-not-yet-released escrow balance is bounded by a
 **rolling hold window of 30 days**. Earnings older than 30 days are released automatically on
 the first of each month, provided the provider's 30-day reliability score is above the release
 threshold (see §4).
+
 
 Storj [Paper-05](../research/paper-05-storj.md) precedent: Storj holds earnings for nine months (Section 4.16). Vyomanaut's 30-day rolling window is shorter, calibrated to provider cash-flow expectations for Indian home desktop providers. The seizure mechanism (all held earnings reclaimed on silent departure to fund repair) is identical in principle.
 

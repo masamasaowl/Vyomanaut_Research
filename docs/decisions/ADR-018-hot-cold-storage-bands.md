@@ -22,7 +22,9 @@ Two explicit bands, with provider consent given at join time:
 - High MTTF (desktop, NAS)
 - Low bandwidth acceptable
 - High space overhead in erasure (big chunks for durability)
-- Payment basis: per GB stored per month
+- Provider Payment basis: per
+audit passed per [ADR-012](./ADR-012-payment-basis.md)
+- Data owner billing basis: per GB stored per month (the billing rate is converted to per-audit-pass credits internally).
 - Target: archive data, backups, infrequently accessed files
 
 **Hot Storage Band:**

@@ -401,6 +401,7 @@ after restart. The load balancer should be placed in front of the heartbeat endp
 from the audit challenge endpoints, as [ADR-028](../decisions/ADR-028-provider-heartbeat.md) notes.
 
 ### 3.4 Economic Capacity
+> **Note:** All figures in this section use ₹1.50/GB/month as an OQ-001 placeholder only. This rate has not been decided. Substitute the product-decided rate when OQ-001 is resolved before private beta (see [requirements.md OQ-001](./requirements.md/#12-open-questions)).
 
 This section estimates the fiat cost floor at each scale milestone — the minimum payment
 volume the system must process and the Razorpay fee load it incurs.

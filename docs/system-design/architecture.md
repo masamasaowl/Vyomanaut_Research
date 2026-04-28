@@ -519,7 +519,7 @@ The microservice verifies the response_hash, then writes one row to `audit_recei
 | chunk_id | Content address of the chunk |
 | file_id | Pseudonymous file handle |
 | provider_id | Which provider responded |
-| challenge_nonce | Versioned nonce; prevents replay |
+| challenge_nonce | BYTEA(33); Versioned nonce; prevents replay |
 | server_challenge_ts | Set by server; prevents backdating |
 | response_hash | The proof: SHA-256(chunk_data ‖ nonce) |
 | response_latency_ms | Just-in-time retrieval detector |
@@ -551,7 +551,7 @@ The 72-hour threshold is calibrated to Bolosky's bimodal desktop absence distrib
 
 The repair scheduler contacts k=16 surviving fragment holders, downloads their fragments, runs Reed-Solomon decode to reconstruct the AONT package, re-encodes the missing fragments, and uploads them to newly selected providers. New providers are selected with the same ASN diversity constraints as original assignments.
 
-The scheduler prioritises confirmed permanent departures (providers past the 72-hour threshold) over pre-warning jobs (chunks approaching r0 but not yet there). This prevents permanently degraded chunks from accumulating behind lower-priority work. ([ADR-039](../decisions/ADR-004-repair-protocol.md))
+The scheduler prioritises confirmed permanent departures (providers past the 72-hour threshold) over pre-warning jobs (chunks approaching r0 but not yet there). This prevents permanently degraded chunks from accumulating behind lower-priority work. ([ADR-004](../decisions/ADR-004-repair-protocol.md))
 
 ### Bandwidth budget
 
