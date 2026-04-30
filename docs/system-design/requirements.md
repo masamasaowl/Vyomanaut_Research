@@ -109,84 +109,13 @@ deposit money at the start of each month.
 
 ---
 
-## 5. User Stories
-
-### Data Owner Stories
-
-**DO-01** — As a data owner, I want to upload a file from my desktop and receive confirmation
-that it has been distributed across providers, so that I know my data is protected before I
-close the app.
-
-**DO-02** — As a data owner, I want to retrieve any previously uploaded file by entering my
-passphrase, so that I am not dependent on any single provider or device to access my data.
-
-**DO-03** — As a data owner, I want to delete a file and receive confirmation that all 56
-fragments have been removed from the network, so that I stop being billed for it.
-
-**DO-04** — As a data owner, I want to see my storage usage, monthly cost, and active file
-list in a single view, so that I can manage my spend without opening a spreadsheet.
-
-**DO-05** — As a data owner, I want to recover all my files on a new machine by entering
-my passphrase (or a 24-word recovery phrase), so that a stolen or broken laptop is not a
-data loss event.
-
-**DO-06** — As a data owner, I want to deposit funds into my escrow account via UPI, so
-that I can pay for storage without entering credit card details or creating a crypto wallet.
-
-**DO-07** — As a data owner, I want the upload to use only my local device for encryption,
-so that I can verify that the service never sees my plaintext data.
-
-### Provider Stories
-
-**PR-01** — As a storage provider, I want to install the daemon with a single installer
-and have it register automatically, so that I do not need to configure networking or
-cryptography.
-
-**PR-02** — As a storage provider, I want to see my current earnings, upcoming release date,
-and reliability score on a dashboard, so that I know my daemon is working without tailing
-log files.
-
-**PR-03** — As a storage provider, I want to announce a planned offline period and have the
-system hold my earnings rather than penalise me, so that I can take my machine for repairs
-without financial consequence.
-
-**PR-04** — As a storage provider, I want to receive my monthly earnings automatically to
-my UPI-linked bank account, so that I do not need to initiate a withdrawal.
-
-**PR-05** — As a storage provider, I want to set a maximum storage allocation (e.g., 500 GB)
-so that the daemon never fills my disk beyond what I am comfortable offering.
-
-**PR-06** — As a storage provider joining the network, I want to understand what my expected
-monthly earnings are before committing disk space, so that I can decide if participation is
-worth it.
-
-**PR-07** — As a storage provider, I want to announce my departure from the network and have
-the system gracefully migrate my chunks before I shut down, so that I receive my remaining
-earnings rather than a seizure.
-
-### System / Operator Stories
-
-**SY-01** — As an operator, I want the network to refuse data owner uploads until the
-minimum viable provider pool is satisfied, so that no file is stored with insufficient
-redundancy from day one. (ADR-029)
-
-**SY-02** — As an operator, I want every audit receipt to be signed by both the provider
-and the microservice, so that I can produce a receipt in any dispute without relying on
-either party's self-report. (ADR-015, ADR-017)
-
-**SY-03** — As an operator, I want the system to automatically trigger repair within 72
-hours of a provider's silent departure, so that no file sits below the repair threshold
-waiting for manual intervention. (ADR-004, ADR-007)
-
----
-
-## 6. Functional Requirements
+## 5. Functional Requirements
 
 Requirements are grouped by domain. Each carries a priority label: **P0** (must ship for
 V2 launch), **P1** (must ship before first paying customer), **P2** (should ship within the
 first quarter post-launch). Every P0 requirement is a launch blocker.
 
-### 6.1 Data Owner — Registration and Onboarding
+### 5.1 Data Owner — Registration and Onboarding
 
 | ID | Requirement | Priority | ADR / Notes |
 |----|-------------|----------|-------------|
@@ -197,7 +126,7 @@ first quarter post-launch). Every P0 requirement is a launch blocker.
 | FR-005 | The system must warn the data owner, in plain language, that loss of both the passphrase and the mnemonic results in permanent, unrecoverable data loss with no support path. | P0 | UX requirement; legal protection |
 | FR-006 | The system must allow a data owner to deposit escrow funds using UPI Intent flow (not UPI Collect, which is deprecated as of February 2026), with Smart Collect 2.0 reconciliation. | P0 | ADR-011, Paper 35 |
 
-### 6.2 Data Owner — File Upload
+### 5.2 Data Owner — File Upload
 
 | ID | Requirement | Priority | ADR / Notes |
 |----|-------------|----------|-------------|
@@ -210,7 +139,7 @@ first quarter post-launch). Every P0 requirement is a launch blocker.
 | FR-013 | The system must display the expected monthly storage cost for the file before the upload begins, calculated from the current storage rate and file size. | P1 | DO-04, FR-006 alignment |
 | FR-014 | The system must refuse to begin an upload if the data owner's escrow balance is insufficient to cover 30 days of storage for the file. | P0 | Prevents free-riding on provider capacity |
 
-### 6.3 Data Owner — File Retrieval
+### 5.3 Data Owner — File Retrieval
 
 | ID | Requirement | Priority | ADR / Notes |
 |----|-------------|----------|-------------|
@@ -219,7 +148,7 @@ first quarter post-launch). Every P0 requirement is a launch blocker.
 | FR-017 | The client must verify each retrieved fragment against its SHA-256 content address before decoding. Any fragment that fails must be replaced by requesting from an alternate provider. | P0 | Integrity check; ADR-022 canary verification |
 | FR-018 | After RS decoding and AONT decryption, the client must verify the canary word. If it fails, the client must surface an error and must not hand corrupted plaintext to the data owner. | P0 | ADR-022 |
 
-### 6.4 Data Owner — File Management
+### 5.4 Data Owner — File Management
 
 | ID | Requirement | Priority | ADR / Notes |
 |----|-------------|----------|-------------|
@@ -227,7 +156,7 @@ first quarter post-launch). Every P0 requirement is a launch blocker.
 | FR-020 | The system must allow a data owner to delete a file, which must trigger removal of all 56 chunk assignments from the microservice and notify each holding provider to delete their fragment. If a provider is unreachable at deletion time, the microservice must flag the chunk assignment as `pending_deletion` and retry the deletion notification at each subsequent heartbeat cycle. The provider daemon must check for `pending_deletion` assignments on startup and act on them before accepting new audit challenges. | P1 | ADR-007; GC on vLog |
 | FR-021 | The system must provide an escrow balance view showing: current balance, amount reserved for active files (next 30 days), amount available for withdrawal, and transaction history. | P1 | DO-04, ADR-016 |
 
-### 6.5 Provider — Installation and Registration
+### 5.5 Provider — Installation and Registration
 
 | ID | Requirement | Priority | ADR / Notes |
 |----|-------------|----------|-------------|
@@ -237,7 +166,7 @@ first quarter post-launch). Every P0 requirement is a launch blocker.
 | FR-025 | The system must initiate Razorpay Route Linked Account creation asynchronously after registration and must not begin chunk assignment until the 24-hour cooling period has elapsed and the account is confirmed active. | P0 | ADR-024, Paper 35 |
 | FR-026 | The daemon must set `providers.status = PENDING_ONBOARDING` at registration, advance to `VETTING` on first successful heartbeat, and advance to `ACTIVE` automatically once 80 consecutive audit passes are recorded. | P0 | ADR-005, ADR-007 |
 
-### 6.6 Provider — Operation
+### 5.6 Provider — Operation
 
 | ID | Requirement | Priority | ADR / Notes |
 |----|-------------|----------|-------------|
@@ -247,7 +176,7 @@ first quarter post-launch). Every P0 requirement is a launch blocker.
 | FR-030 | The daemon must honour a provider-set storage cap: if accepting a new chunk assignment would exceed the cap, the daemon must decline the assignment and inform the microservice. | P1 | PR-05 |
 | FR-031 | The daemon must auto-start on OS boot using the platform-appropriate mechanism (Windows Service, macOS LaunchDaemon, Linux systemd unit) with no manual configuration by the provider. | P0 | ADR-009; reliability of provider uptime |
 
-### 6.7 Provider — Exit and Departure
+### 5.7 Provider — Exit and Departure
 
 | ID | Requirement | Priority | ADR / Notes |
 |----|-------------|----------|-------------|
@@ -257,7 +186,7 @@ first quarter post-launch). Every P0 requirement is a launch blocker.
 | FR-035 | When a provider's last heartbeat exceeds 72 hours, the system must automatically declare a silent departure, seize the 30-day rolling escrow window into the repair reserve fund, trigger repair for all chunks, and block the provider's Peer ID from further interactions. | P0 | ADR-007, ADR-024 |
 | FR-036 | A provider declared as silently departed who attempts to reconnect must receive HTTP 403. Re-joining the network requires a new full registration with a new phone number. | P0 | ADR-007; prevents gaming the departure threshold |
 
-### 6.8 Audit System
+### 5.8 Audit System
 
 | ID | Requirement | Priority | ADR / Notes |
 |----|-------------|----------|-------------|
@@ -267,7 +196,7 @@ first quarter post-launch). Every P0 requirement is a launch blocker.
 | FR-040 | The microservice must use a per-provider TCP-style RTO (RTO = AVG + 4 × VAR of recent audit response times) as the challenge timeout, not a fixed value. New providers must default to the pool-median RTO. | P0 | ADR-006, Paper 28 |
 | FR-041 | If a provider's content_hash verification fails when reading a chunk for an audit response, the provider daemon must immediately report `audit_result = FAIL` with a corruption error code, and the microservice must queue accelerated re-audit of all chunks on that provider within the next polling cycle. | P0 | ADR-023, Paper 32 |
 
-### 6.9 Repair System
+### 5.9 Repair System
 
 | ID | Requirement | Priority | ADR / Notes |
 |----|-------------|----------|-------------|
@@ -276,7 +205,7 @@ first quarter post-launch). Every P0 requirement is a launch blocker.
 | FR-044 | Repair must be triggered immediately (regardless of the 72-hour threshold) if the fragment count for any chunk drops to s=16 (the reconstruction floor). | P0 | ADR-004 emergency floor |
 | FR-045 | During repair, replacement providers must be selected with the same 20% ASN cap constraint that governs original chunk assignment. | P0 | ADR-014 |
 
-### 6.10 Payment System
+### 5.10 Payment System
 
 | ID | Requirement | Priority | ADR / Notes |
 |----|-------------|----------|-------------|
@@ -288,27 +217,27 @@ first quarter post-launch). Every P0 requirement is a launch blocker.
 | FR-051 | During the vetting period (first 4–6 months), the hold window must be 60 days and the release cap must be 50%. After vetting is complete, the hold window must revert to 30 days with no release cap. | P0 | ADR-024 |
 | FR-052 | The microservice must refuse any request to transfer a provider's escrow balance to a different provider_id. Escrow is identity-bound and non-transferable. | P0 | ADR-024, Paper 33 |
 
-### 6.11 Network Readiness Gate
+### 5.11 Network Readiness Gate
 
 | ID | Requirement | Priority | ADR / Notes |
 |----|-------------|----------|-------------|
 | FR-053 | The assignment service must return HTTP 503 for all data owner upload requests until all seven readiness conditions are simultaneously satisfied: ≥ 56 active vetted providers, ≥ 5 distinct ASNs, ≥ 3 distinct Indian metro regions, full (3,2,2) microservice quorum, ≥ 56 Razorpay Linked Accounts with 24-hour cooling complete, ≥ 3 relay nodes deployed, and the cluster audit secret loaded on all replicas. | P0 | ADR-029 |
 | FR-054 | The microservice must expose a `GET /api/v1/admin/readiness` endpoint that returns the current pass/fail status of each of the seven readiness conditions, re-evaluated every 60 seconds. | P0 | ADR-029; operational monitoring |
 
-### 6.12 Provider Daemon — Simulation Mode
+### 5.12 Provider Daemon — Simulation Mode
 
 | ID | Requirement | Priority | ADR / Notes |
 |----|-------------|----------|-------------|
 | FR-055 | The provider daemon must support a `--sim-count=N` flag that launches N simulated provider instances in a single process, each with isolated key pairs, RocksDB instances, and vLog files, for local integration testing without physical machines. | P0 | ADR-029; cannot build without testability |
 | FR-056 | Simulation mode must not bypass the network readiness gate; a simulation with `--sim-count=56` and `--sim-asn-count=5` must be required to satisfy the same readiness conditions as production before uploads are permitted. | P0 | ADR-029; simulation must proxy production behaviour |
 
-### 6.13 Provider — Pre-Registration Earnings Calculator
+### 5.13 Provider — Pre-Registration Earnings Calculator
 
 | ID | Requirement | Priority | ADR / Notes |
 |----|-------------|----------|-------------|
 | FR-057 | The system must provide a storage earnings calculator accessible before registration (i.e. without an account) that accepts as input: declared storage in GB, declared uptime target as a percentage (e.g. 95%), and the current storage rate in paise per GB per month. The calculator must output: gross monthly earnings (storage_gb × rate), estimated escrow hold (30% of gross during vetting; 0% after), and estimated net monthly payout. This calculator must be available on the marketing site and within the installer welcome screen. | P1 | PR-06; ADR-024 |
 
-### 6.14 Data Owner — Escrow Management and Upload Resume
+### 5.14 Data Owner — Escrow Management and Upload Resume
 
 | ID | Requirement | Priority | ADR / Notes |
 |----|-------------|----------|-------------|
@@ -316,6 +245,7 @@ first quarter post-launch). Every P0 requirement is a launch blocker.
 | FR-059 | The system must allow a data owner to withdraw their available escrow balance — defined as the total balance minus the amount reserved to cover active file storage for the next 30 days — to their UPI-linked bank account. Withdrawal must use the Razorpay payout path with its own idempotency key (SHA-256(owner_id + withdrawal_request_id)) and must be blocked while any file upload is in-flight. | P1 | DO-04; ADR-011, ADR-016 |
 | FR-060 | If the data owner client crashes or loses connectivity after some but not all 56 shard uploads have completed for a given segment, the client must be able to resume the upload on next launch without re-transmitting already-acknowledged shards. Upload session state (segment ID, list of provider IDs with acknowledgement status, and pointer file draft) must be persisted locally keyed by a session ID generated at upload start, and must be cleaned up only after the pointer file has been successfully stored with the microservice. | P0 | DO-01; crash safety |
 
+>**Note:** Part 6 - User stories was removed due to low significance in documentation
 ---
 
 ## 7. Non-Functional Requirements
