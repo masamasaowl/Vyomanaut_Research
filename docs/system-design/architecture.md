@@ -1,9 +1,9 @@
 # Vyomanaut V2 — System Architecture Document
 
 **Version:** 1.0  
-**Status:** Design-complete. Build phase beginning.  
-**Authors:** Vyomanaut Engineering  
-**Last updated:** April 2026  
+**Status:** Pre-Build phase.  
+**Authors:** https://github.com/masamasaowl  
+**Last updated:** May 2026  
 **Repository:** https://github.com/masamasaowl/Vyomanaut_Research  
 **Decisions index:** `docs/decisions/README.md`  
 **Research index:** `docs/research/reading-list.md`
@@ -21,7 +21,7 @@ This document is for:
 - **Engineers reviewing code** — to check a proposed change against the architecture.
 - **Future engineers joining the project** — to get up to speed without reading all 41 research papers.
 
-This document is not a build plan. It does not say what to build first or how long things take. It describes what the finished system looks like.
+Note: This document is not a build plan. It does not say what to build first or how long things take. It describes what the finished system looks like.
 
 ---
 
@@ -34,7 +34,7 @@ This document is not a build plan. It does not say what to build first or how lo
 5. [System Context](#5-system-context)
 6. [Component Overview](#6-component-overview)
 7. [Trust Boundaries](#7-trust-boundaries)
-8. [Deployment Topology](#8-deployment-topology)
+8. [Minimum Viable Network](#8-minimum-viable-network)
 9. [Core Design Principles](#9-core-design-principles)
 10. [Data Encoding Pipeline](#10-data-encoding-pipeline)
 11. [Key Hierarchy](#11-key-hierarchy)
@@ -51,7 +51,7 @@ This document is not a build plan. It does not say what to build first or how lo
 22. [Runtime Flows](#22-runtime-flows)
 23. [Error Handling](#23-error-handling)
 24. [Observability](#24-observability)
-25. [Minimum Viable Network](#25-minimum-viable-network)
+25. [Deployment Topology](#25-deployment-topology)
 26. [Known Limitations and V3 Scope](#26-known-limitations-and-v3-scope)
 27. [ADR Reference Index](#27-adr-reference-index)
 
@@ -86,11 +86,11 @@ These are explicit design decisions, each with a documented reason. Building aro
 
 ## 3. Quality Attributes
 
-These are the non-functional requirements that drove architectural decisions. Every tradeoff in the design can be traced back to at least one of these.
+These are the non-functional requirements that drove architectural decisions. They reveal how research improved the project.
 
 ### Durability
 **Target:** Data loss rate < 10⁻¹⁵ per year per file.  
-**How achieved:** Reed-Solomon RS(16, 56) with lazy repair at r0=8. At the target MTTF of 300 days per provider, the Giroire formula gives an actual loss rate of approximately 10⁻²⁵ per year — four orders of magnitude below the target. The 20% ASN cap is a co-requisite: without it, correlated failures invalidate the calculation. ([ADR-003](../decisions/ADR-003-erasure-coding.md), [ADR-014](../decisions/ADR-014-adversarial-defences.md))
+**How achieved:** Reed-Solomon RS(16, 56) with lazy repair at r0=8. At the target MTTF of 300 days per provider, the Giroire formula gives an actual loss rate of approximately 10⁻²⁵ per year — ten orders of magnitude below the target. The 20% ASN cap is a co-requisite: without it, correlated failures invalidate the calculation. ([ADR-003](../decisions/ADR-003-erasure-coding.md), [ADR-014](../decisions/ADR-014-adversarial-defences.md))
 
 ### Availability
 **Target:** File retrievable at any time as long as 16 of 56 fragment holders are reachable.  
@@ -110,9 +110,9 @@ These are the non-functional requirements that drove architectural decisions. Ev
 **Target:** No single microservice replica failure interrupts service.  
 **How achieved:** Three replicas with a (3, 2, 2) quorum. One replica can fail; reads and writes continue with the remaining two. ([ADR-025](../decisions/ADR-025-microservice-consistency-mechanism.md))
 
-### Provider background CPU usage
-**Target:** ≤ 5% of CPU and background I/O from the provider daemon.  
-**How achieved:** WiscKey storage engine keeps write amplification at ~1.0 for 256 KB chunks. ChaCha20 AONT encoding completes in ~186 ms per 14 MB segment on hardware without AES acceleration. ([ADR-009](../decisions/ADR-009-background-execution.md), [ADR-023](../decisions/ADR-023-provider-storage-engine.md))
+### Background CPU usage
+**Target:** ≤ 5% of CPU and background I/O from the data owner device and provider daemon.  
+**How achieved:** WiscKey storage engine keeps write amplification at ~1.0 for 256 KB chunks for the Provider. And ChaCha20 AONT encoding completes in ~186 ms per 14 MB segment for Data Owners on hardware without AES acceleration. ([ADR-009](../decisions/ADR-009-background-execution.md), [ADR-023](../decisions/ADR-023-provider-storage-engine.md))
 
 ### Zero-knowledge storage
 **Target:** The service and its operators must never be able to read any stored data.  
@@ -256,21 +256,23 @@ This table defines what each component is and is not trusted to do. It determine
 
 ---
 
-## 8. Deployment Topology
+## 8. Minimum Viable Network
 
-**Cloud provider.** AWS or GCP — operator's choice at deployment time. Both are acceptable. The architecture has no dependency on cloud-provider-specific features; managed Postgres (RDS or Cloud SQL) and standard VM instances are the only cloud primitives used. The remainder of this section gives AWS names in parentheses as a concrete reference; substitute GCP equivalents if deploying there.
+The system refuses upload requests until all of the following conditions are simultaneously true. The assignment service re-evaluates every 60 seconds and exposes the state at `GET /api/v1/admin/readiness`. ([ADR-029](../decisions/ADR-029-bootstrap-minimum-viable-network.md))
 
-**Coordination microservice.** Three VM instances (e.g. AWS EC2 `t3.medium` or equivalent: **2 vCPU, 4 GB RAM**), one per availability zone in `ap-south-1` (Mumbai). Each runs the microservice binary. They share a managed Postgres primary in the same region with two read replicas across AZs. Gossip membership connects all three replicas directly. External administrative traffic routes through a load balancer; audit challenge dispatch and assignment calls bypass the load balancer via client-driven direct routing.
+| Condition | Threshold | Reason |
+|---|---|---|
+| Active vetted providers | ≥ 56 | RS(16, 56) requires exactly 56 distinct shard holders per file |
+| Distinct ASNs in active pool | ≥ 5 | With fewer than 5 ASNs, one ASN necessarily holds > 20% — the cap is unenforceable |
+| Distinct Indian metro regions | ≥ 3 | Geographic baseline: Delhi NCR, Mumbai, and one southern metro |
+| Microservice cluster state | Full (3, 2, 2) quorum | Degraded quorum is operational but not a safe launch baseline |
+| Razorpay Linked Accounts | ≥ 56 with 24h cooling complete | No provider can receive payment until cooling passes |
+| Relay infrastructure | ≥ 3 relay nodes deployed | Required for symmetric-NAT providers (~30% of expected population) |
+| Cluster audit secret | Loaded on all replicas | All replicas must share the secret before any challenge is issued |
 
-**Postgres.** Managed Postgres with Multi-AZ replication enabled (e.g. AWS RDS `db.t3.medium`: **2 vCPU, 4 GB RAM**, 100 GB GP3 SSD to start, auto-scaling enabled). The microservice writes to the primary; read-heavy paths (score queries, assignment lookups) use a read replica. Monthly partition archival of `audit_receipts` is mandatory — partitions older than 30 days move to object storage (S3 / GCS).
+Upload requests return HTTP 503 ("Network not ready") until all conditions are met.
 
-**Relay nodes.** Three instances (**1 vCPU, 1 GB RAM, minimum 1 Gbps network**), one per availability zone. At launch: Delhi AZ, Mumbai AZ1, Mumbai AZ2 (or Chennai as third). Each runs libp2p with Circuit Relay v2 enabled, sized for 128 concurrent relay reservations — 384 total slots, 4.3× headroom at 300 initial providers. Scale to a fourth node when provider count exceeds 570 (the relay saturation point at 45% CGNAT fraction).
-
-**Provider daemon.** Runs on provider hardware — home desktop or NAS. Cross-platform binary for Windows 10+, macOS 12+, and Ubuntu 22.04+. No cloud dependency. Connects outbound to the microservice via HTTPS and to other providers via libp2p.
-
-**Data owner client.** Desktop app or web application. Runs the encoding pipeline locally (ChaCha20 AONT + Reed-Solomon) before any data leaves the device.
-
-**Secrets manager.** A managed secrets service (HashiCorp Vault, AWS SSM Parameter Store, or GCP Secret Manager) accessible by all three microservice replicas. Stores the cluster master seed under versioned paths (`/vyomanaut/audit-secret/v{N}`). Not in the hot path — loaded at replica startup and cached for 5 minutes. If the secrets manager is unreachable at startup, the replica does not start (fail-closed).
+**Scale validation at 1,000,000 providers (analytical):** The Giroire BWavg formula scales as D/N (total data / provider count). For fixed per-provider storage, BWavg stays at ~39 Kbps regardless of provider count. LossRate is similarly scale-invariant for fixed D/N. The erasure parameters are valid at any scale with consistent D/N ratios.
 
 ---
 
@@ -333,17 +335,17 @@ The security property: recovering K requires computing h, which requires all s+1
 
 The cipher is ChaCha20-256 on hardware without AES-NI (the common case for Indian desktops), and AES-256-CTR on hardware with AES-NI. The daemon detects this at startup via CPUID and sets a global constant. Both paths produce identical outputs from the AONT's perspective — only the performance differs. ([ADR-019](../decisions/ADR-019-client-side-encryption.md))
 
-### Stage 3 — Reed-Solomon erasure coding
+### Stage 2 — Reed-Solomon erasure coding
 
 The AONT package feeds into systematic Reed-Solomon coding with parameters s=16, r=40, producing 56 fragments of 256 KB each. The first 16 fragments are the direct AONT package words (the systematic property). The remaining 40 are parity.
 
 The parameters come from the Giroire optimality condition: r=40 is the unique value that minimises repair bandwidth at s=16, r0=8. Choosing any other r increases bandwidth. ([ADR-003](../decisions/ADR-003-erasure-coding.md))
 
-### Stage 4 — Upload and pointer file creation
+### Stage 3 — Upload and pointer file creation
 
 The 56 fragments upload directly to 56 providers selected by the microservice's assignment service. On completion, the data owner's client creates the pointer file containing the 56 provider IDs, 56 chunk content addresses (SHA-256 of each fragment), and the erasure parameters. The pointer file is encrypted with AEAD_CHACHA20_POLY1305 before storage. The microservice stores the encrypted ciphertext and cannot decrypt it. ([ADR-020](../decisions/ADR-020-key-management.md), [ADR-022](../decisions/ADR-022-encryption-erasure-order.md))
 
-### Decoding
+### Stage 4 - Decoding
 
 To retrieve a file, the data owner contacts any 16 of the 56 providers, downloads their fragments, runs Reed-Solomon decode to recover the AONT package, recovers K from the package (h is computable from the full package, K = c_{s+1} XOR h), decrypts each word, and verifies the canary. If the canary is wrong, the segment is corrupt — escalate to the audit subsystem.
 
@@ -992,23 +994,21 @@ If the availability service fails to republish a provider's DHT record within th
 
 ---
 
-## 25. Minimum Viable Network
+## 25. Deployment Topology
 
-The system refuses upload requests until all of the following conditions are simultaneously true. The assignment service re-evaluates every 60 seconds and exposes the state at `GET /api/v1/admin/readiness`. ([ADR-029](../decisions/ADR-029-bootstrap-minimum-viable-network.md))
+**Cloud provider.** AWS or GCP — operator's choice at deployment time. Both are acceptable. The architecture has no dependency on cloud-provider-specific features; managed Postgres (RDS or Cloud SQL) and standard VM instances are the only cloud primitives used. The remainder of this section gives AWS names in parentheses as a concrete reference; substitute GCP equivalents if deploying there.
 
-| Condition | Threshold | Reason |
-|---|---|---|
-| Active vetted providers | ≥ 56 | RS(16, 56) requires exactly 56 distinct shard holders per file |
-| Distinct ASNs in active pool | ≥ 5 | With fewer than 5 ASNs, one ASN necessarily holds > 20% — the cap is unenforceable |
-| Distinct Indian metro regions | ≥ 3 | Geographic baseline: Delhi NCR, Mumbai, and one southern metro |
-| Microservice cluster state | Full (3, 2, 2) quorum | Degraded quorum is operational but not a safe launch baseline |
-| Razorpay Linked Accounts | ≥ 56 with 24h cooling complete | No provider can receive payment until cooling passes |
-| Relay infrastructure | ≥ 3 relay nodes deployed | Required for symmetric-NAT providers (~30% of expected population) |
-| Cluster audit secret | Loaded on all replicas | All replicas must share the secret before any challenge is issued |
+**Coordination microservice.** Three VM instances (e.g. AWS EC2 `t3.medium` or equivalent: **2 vCPU, 4 GB RAM**), one per availability zone in `ap-south-1` (Mumbai). Each runs the microservice binary. They share a managed Postgres primary in the same region with two read replicas across AZs. Gossip membership connects all three replicas directly. External administrative traffic routes through a load balancer; audit challenge dispatch and assignment calls bypass the load balancer via client-driven direct routing.
 
-Upload requests return HTTP 503 ("Network not ready") until all conditions are met.
+**Postgres.** Managed Postgres with Multi-AZ replication enabled (e.g. AWS RDS `db.t3.medium`: **2 vCPU, 4 GB RAM**, 100 GB GP3 SSD to start, auto-scaling enabled). The microservice writes to the primary; read-heavy paths (score queries, assignment lookups) use a read replica. Monthly partition archival of `audit_receipts` is mandatory — partitions older than 30 days move to object storage (S3 / GCS).
 
-**Scale validation at 1,000,000 providers (analytical):** The Giroire BWavg formula scales as D/N (total data / provider count). For fixed per-provider storage, BWavg stays at ~39 Kbps regardless of provider count. LossRate is similarly scale-invariant for fixed D/N. The erasure parameters are valid at any scale with consistent D/N ratios.
+**Relay nodes.** Three instances (**1 vCPU, 1 GB RAM, minimum 1 Gbps network**), one per availability zone. At launch: Delhi AZ, Mumbai AZ1, Mumbai AZ2 (or Chennai as third). Each runs libp2p with Circuit Relay v2 enabled, sized for 128 concurrent relay reservations — 384 total slots, 4.3× headroom at 300 initial providers. Scale to a fourth node when provider count exceeds 570 (the relay saturation point at 45% CGNAT fraction).
+
+**Provider daemon.** Runs on provider hardware — home desktop or NAS. Cross-platform binary for Windows 10+, macOS 12+, and Ubuntu 22.04+. No cloud dependency. Connects outbound to the microservice via HTTPS and to other providers via libp2p.
+
+**Data owner client.** Desktop app or web application. Runs the encoding pipeline locally (ChaCha20 AONT + Reed-Solomon) before any data leaves the device.
+
+**Secrets manager.** A managed secrets service (HashiCorp Vault, AWS SSM Parameter Store, or GCP Secret Manager) accessible by all three microservice replicas. Stores the cluster master seed under versioned paths (`/vyomanaut/audit-secret/v{N}`). Not in the hot path — loaded at replica startup and cached for 5 minutes. If the secrets manager is unreachable at startup, the replica does not start (fail-closed).
 
 ---
 
