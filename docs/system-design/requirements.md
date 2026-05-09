@@ -131,7 +131,7 @@ first quarter post-launch). Every P0 requirement is a launch blocker.
 | ID | Requirement | Priority | ADR / Notes |
 |----|-------------|----------|-------------|
 | FR-007 | The client must perform all encryption and erasure encoding on the data owner's device before any data is transmitted to any provider. | P0 | ADR-019, ADR-022 |
-| FR-008 | The encoding pipeline must use AONT-RS: apply the All-or-Nothing Transform (ChaCha20-256 on hardware without AES-NI, AES-256-CTR with AES-NI) followed by systematic Reed-Solomon coding with s=16, r=40, producing 56 fragments of 256 KB each. Files smaller than 4 MB (one full segment = s × lf = 16 × 256 KB) must be padded to the minimum segment size before encoding. The pointer file must record the original file size in bytes so that padding bytes are stripped after decoding on retrieval. | P0 | ADR-022, ADR-019, ADR-003 |
+| FR-008 | The encoding pipeline must use AONT-RS. (Refer: [architecture.md Section 10](./architecture.md#10-data-encoding-pipeline)) | P0 | ADR-022, ADR-019, ADR-003 |
 | FR-009 | The system must select 56 distinct providers for each file segment, ensuring no single ASN holds more than 20% of fragments (~11 of 56) for that segment, and must refuse the upload if this constraint cannot be satisfied. | P0 | ADR-014, ADR-005 |
 | FR-010 | The system must upload all 56 fragments via direct libp2p/QUIC P2P connections to providers, without routing any file data through the microservice. | P0 | ADR-021; data plane / control plane separation |
 | FR-011 | The system must create a pointer file containing the 56 provider IDs, 56 chunk content addresses, and erasure parameters, encrypt it with AEAD_CHACHA20_POLY1305 (key derived via HKDF from the master secret), and store the encrypted ciphertext with the microservice. | P0 | ADR-020, ADR-022 |
@@ -245,7 +245,47 @@ first quarter post-launch). Every P0 requirement is a launch blocker.
 | FR-059 | The system must allow a data owner to withdraw their available escrow balance — defined as the total balance minus the amount reserved to cover active file storage for the next 30 days — to their UPI-linked bank account. Withdrawal must use the Razorpay payout path with its own idempotency key (SHA-256(owner_id + withdrawal_request_id)) and must be blocked while any file upload is in-flight. | P1 | DO-04; ADR-011, ADR-016 |
 | FR-060 | If the data owner client crashes or loses connectivity after some but not all 56 shard uploads have completed for a given segment, the client must be able to resume the upload on next launch without re-transmitting already-acknowledged shards. Upload session state (segment ID, list of provider IDs with acknowledgement status, and pointer file draft) must be persisted locally keyed by a session ID generated at upload start, and must be cleaned up only after the pointer file has been successfully stored with the microservice. | P0 | DO-01; crash safety |
 
->**Note:** Part 6 - User stories was removed due to low significance in documentation
+---
+
+## 6.User Stories
+
+Data Owner Stories
+DO-01 — As a data owner, I want to upload a file from my desktop and receive confirmation that it has been distributed across providers, so that I know my data is protected before I close the app.
+
+DO-02 — As a data owner, I want to retrieve any previously uploaded file by entering my passphrase, so that I am not dependent on any single provider or device to access my data.
+
+DO-03 — As a data owner, I want to delete a file and receive confirmation that all 56 fragments have been removed from the network, so that I stop being billed for it.
+
+DO-04 — As a data owner, I want to see my storage usage, monthly cost, and active file list in a single view, so that I can manage my spend without opening a spreadsheet.
+
+DO-05 — As a data owner, I want to recover all my files on a new machine by entering my passphrase (or a 24-word recovery phrase), so that a stolen or broken laptop is not a data loss event.
+
+DO-06 — As a data owner, I want to deposit funds into my escrow account via UPI, so that I can pay for storage without entering credit card details or creating a crypto wallet.
+
+DO-07 — As a data owner, I want the upload to use only my local device for encryption, so that I can verify that the service never sees my plaintext data.
+
+Provider Stories
+PR-01 — As a storage provider, I want to install the daemon with a single installer and have it register automatically, so that I do not need to configure networking or cryptography.
+
+PR-02 — As a storage provider, I want to see my current earnings, upcoming release date, and reliability score on a dashboard, so that I know my daemon is working without tailing log files.
+
+PR-03 — As a storage provider, I want to announce a planned offline period and have the system hold my earnings rather than penalise me, so that I can take my machine for repairs without financial consequence.
+
+PR-04 — As a storage provider, I want to receive my monthly earnings automatically to my UPI-linked bank account, so that I do not need to initiate a withdrawal.
+
+PR-05 — As a storage provider, I want to set a maximum storage allocation (e.g., 500 GB) so that the daemon never fills my disk beyond what I am comfortable offering.
+
+PR-06 — As a storage provider joining the network, I want to understand what my expected monthly earnings are before committing disk space, so that I can decide if participation is worth it.
+
+PR-07 — As a storage provider, I want to announce my departure from the network and have the system gracefully migrate my chunks before I shut down, so that I receive my remaining earnings rather than a seizure.
+
+System / Operator Stories
+SY-01 — As an operator, I want the network to refuse data owner uploads until the minimum viable provider pool is satisfied, so that no file is stored with insufficient redundancy from day one. (ADR-029)
+
+SY-02 — As an operator, I want every audit receipt to be signed by both the provider and the microservice, so that I can produce a receipt in any dispute without relying on either party's self-report. (ADR-015, ADR-017)
+
+SY-03 — As an operator, I want the system to automatically trigger repair within 72 hours of a provider's silent departure, so that no file sits below the repair threshold waiting for manual intervention. (ADR-004, ADR-007)
+
 ---
 
 ## 7. Non-Functional Requirements
