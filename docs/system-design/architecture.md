@@ -72,12 +72,11 @@
 19. [Reliability Scoring](#19-reliability-scoring)
 20. [Adversarial Defences](#20-adversarial-defences)
 21. [Consistency Model](#21-consistency-model)
-22. [Runtime Flows](#22-runtime-flows)
-23. [Error Handling](#23-error-handling)
-24. [Observability](#24-observability)
-25. [Deployment Topology](#25-deployment-topology)
-26. [Known Limitations and V3 Scope](#26-known-limitations-and-v3-scope)
-27. [ADR Reference Index](#27-adr-reference-index)
+22. [Error Handling](#22-error-handling)
+23. [Observability](#23-observability)
+24. [Deployment Topology](#24-deployment-topology)
+25. [Known Limitations and V3 Scope](#25-known-limitations-and-v3-scope)
+26. [ADR Reference Index](#26-adr-reference-index)
 
 ---
 
@@ -174,8 +173,8 @@ External parties:
   DATA OWNER ──────────────────────────────────────────────── PROVIDER (×56+)
   (desktop app / web UI)                                      (daemon on home desktop / NAS)
        │                                                              │
-       │ HTTPS: deposit, upload metadata, retrieve pointer            │ libp2p/QUIC: chunk upload/download
-       │ QUIC: direct P2P chunk upload (to providers directly)        │ HTTPS: heartbeat, audit response
+       │ HTTPS: deposit, upload metadata, retrieve pointer            │ libp2p/QUIC: chunk upload/download; audit challenge + response
+       │ QUIC: direct P2P chunk upload (to providers directly)        │ HTTPS: heartbeat (4-hour address update only)
        │                                                              │
        └────────────────── COORDINATION MICROSERVICE ────────────────┘
                            (control plane only — never data)
@@ -186,6 +185,10 @@ External parties:
                     (payment rails)         (cluster audit secret)
 ```
 
+Provider side labels:
+  libp2p/QUIC: chunk upload/download; audit challenge + response
+  HTTPS:       heartbeat (4-hour address update only)
+  
 What the microservice knows: which chunk is on which provider, who passed their last audit, who should be paid, and the encrypted ciphertext of pointer files (which it cannot decrypt).
 
 What the microservice never touches: file plaintext, AONT keys, decryption keys of any kind.
@@ -214,52 +217,6 @@ The system has six first-class components and three external dependencies.
 | Razorpay Route + Smart Collect 2.0 | Provider payment releases and data owner deposits | Payment releases pause; audits and storage continue unaffected |
 | Secrets manager | Cluster audit secret distribution | Microservice replicas cannot start; existing instances continue running with cached secret |
 | Indian ISP infrastructure | Connectivity between providers and data owners | Covered by 40-fragment parity and 3-region relay deployment |
-
-### Component graph
-
-The diagram below shows all six first-class components with the protocol on every connection. HOT = on the audit cycle (latency-sensitive); COLD = administrative or background.
-
-```
-  ┌─────────────────────────────────────────────────────────────────────────────┐
-  │  DATA OWNER CLIENT (desktop / web)                                           │
-  └────┬────────────────────────────────────────┬───────────────────────────────┘
-       │                                         │
-       │ HTTPS  POST /upload/assign [COLD]        │ libp2p/QUIC  CHUNK_REQUEST /
-       │ HTTPS  GET  /file/*        [COLD]        │             CHUNK_RESPONSE [HOT]
-       │                                         │
-  ┌────▼──────────────────────────┐         ┌───▼─────────────────────────────────┐
-  │  COORDINATION MICROSERVICE     │         │  PROVIDER DAEMON (×56+)             │
-  │  (3 replicas, gossip cluster)  │         │  WiscKey storage engine             │
-  │                                │◄────────┤                                     │
-  │  [control plane only]          │ HTTPS   │  libp2p heartbeat → microservice    │
-  │                                │ HTTPS   │  HTTPS  audit challenge response     │
-  └────┬──────────┬────────────────┘ [HOT]   └───┬────────────────┬───────────────┘
-       │          │                               │                │
-       │          │ SQL  read/write [HOT]          │ libp2p/QUIC   │ libp2p/QUIC
-       │          │                               │ DHT FIND_VALUE │ repair transfer
-       │     ┌────▼──────────────┐                │ [COLD]         │ [COLD]
-       │     │  POSTGRESQL        │           ┌────▼───────────────▼──────────────┐
-       │     │  audit_receipts    │           │  KADEMLIA DHT                      │
-       │     │  escrow_events     │           │  (runs inside each provider daemon)│
-       │     │  providers         │           │  chunk_id (HMAC) → provider addr   │
-       │     │  chunk_assignments │           └────────────────────────────────────┘
-       │     └───────────────────┘
-       │
-       │ libp2p  QUIC dial (challenge dispatch) [HOT]
-       │ libp2p  Circuit Relay v2 coordination  [HOT]
-       │
-  ┌────▼──────────────────────────┐
-  │  RELAY NODES (3 at launch)     │
-  │  one per availability zone     │
-  │  128 concurrent reservations   │
-  │  each; fallback for sym. NAT   │
-  └────────────────────────────────┘
-
-Edge legend:
-  [HOT]  = on the daily audit cycle; latency-sensitive; must meet per-provider RTO
-  [COLD] = administrative, background, or infrequent; no latency SLA
-  All data plane transfers (chunk upload/download) bypass the microservice entirely.
-```
 
 ---
 
@@ -351,7 +308,9 @@ A fresh random 256-bit key K is generated for the segment. The AONT (All-or-Noth
 
 1. Append a fixed-value 16-byte canary word to the segment.
 2. Generate K = SecureRandom(256 bits).
-3. For each 16-byte word d_i in the segment: `c_i = d_i XOR cipher(K, counter=i)`.
+3. For each 16-byte word d_i in the segment: 
+      - ChaCha20 path:  `c_i = d_i XOR ChaCha20_keystream_word(K, block=⌊i/16⌋, offset=i%16)`
+      - AES-CTR path:  `c_i = d_i XOR AES-256-ECB(K, i+1)    // counter starts at i+1 per AONT-RS spec.`
 4. Compute the commitment hash: `h = SHA-256(c_0 || c_1 || ... || c_s)`.
 5. Append the key-embedding block: `c_{s+1} = K XOR h`.
 
@@ -367,7 +326,7 @@ The parameters come from the Giroire optimality condition: r=40 is the unique va
 
 ### Stage 3 — Upload and pointer file creation
 
-The 56 fragments upload directly to 56 providers selected by the microservice's assignment service. On completion, the data owner's client creates the pointer file containing the 56 provider IDs, 56 chunk content addresses (SHA-256 of each fragment), and the erasure parameters. The pointer file is encrypted with AEAD_CHACHA20_POLY1305 before storage. The microservice stores the encrypted ciphertext and cannot decrypt it. ([ADR-020](../decisions/ADR-020-key-management.md), [ADR-022](../decisions/ADR-022-encryption-erasure-order.md))
+The 56 fragments upload directly to 56 providers selected by the microservice's assignment service. On completion, the data owner's client creates the pointer file containing the 56 provider IDs, 56 chunk content addresses (SHA-256 of each fragment), and the erasure parameters. The pointer file is encrypted with AEAD_CHACHA20_POLY1305 before storage. The microservice stores three fields from the AEAD operation: the ciphertext body (pointer_ciphertext BYTEA), the 96-bit counter nonce (pointer_nonce BYTEA(12)), and the 16-byte Poly1305 authentication tag (pointer_tag BYTEA(16)). These map directly to the files table schema in ADR-020. The microservice cannot decrypt the ciphertext — it holds no key ([ADR-020](../decisions/ADR-020-key-management.md), [ADR-022](../decisions/ADR-022-encryption-erasure-order.md))
 
 ### Stage 4 - Decoding
 
@@ -419,7 +378,7 @@ Recovery paths:
 
 **First heartbeat.** Once running, the daemon sends a signed heartbeat to the microservice control plane every 4 hours, reporting the provider's current libp2p multiaddresses. Indian residential ISPs frequently rotate DHCP leases — the heartbeat ensures the microservice always has a fresh address for audit challenge dispatch. Status advances to `VETTING`. ([ADR-028](../decisions/ADR-028-provider-heartbeat.md))
 
-**Vetting period (4–6 months).** The provider receives non-critical chunk assignments under extra erasure redundancy while the system measures their reliability. Earnings accumulate under a 60-day hold window with a 50% release cap. After 80+ consecutive audit passes — the statistical threshold where a 99% confidence estimate of reliability becomes achievable — the provider advances to `ACTIVE`. ([ADR-005](../decisions/ADR-005-peer-selection.md), [ADR-024](../decisions/ADR-024-economic-mechanism.md))
+**Vetting period (4–6 months).** The provider receives non-critical chunk assignments under extra erasure redundancy while the system measures their reliability. Earnings accumulate under a 60-day hold window with a 50% release cap. After 80 audit passes recorded (not necessarily consecutive) since first chunk assignment, with no DEPARTED or SILENT_DEPARTURE event in the interim, and at least 120 days elapsed — the provider advances to `ACTIVE`. ([ADR-005](../decisions/ADR-005-peer-selection.md), [ADR-024](../decisions/ADR-024-economic-mechanism.md))
 
 **Full operation.** The hold window shortens to 30 days. The release cap is removed. The provider competes for new chunk assignments alongside all other active providers. Higher reliability scores win more assignments. ([ADR-008](../decisions/ADR-008-reliability-scoring.md))
 
@@ -536,7 +495,7 @@ The provider receives the challenge and:
 
 The microservice verifies the provider's Ed25519 signature over the receipt fields, then writes one row to `audit_receipts`. The table is INSERT-only — no row is ever updated or deleted, enforced by Postgres row security policy. But (audit_result, service_sig, service_countersign_ts) fields are treated as an exeption. Both the provider and microservice sign the receipt with Ed25519. ([ADR-017](../decisions/ADR-017-audit-receipt-schema.md), [ADR-015](../decisions/ADR-015-audit-trail.md))
 
-### The 12-field receipt schema
+### The Audit receipt schema
 
 | Field | Purpose |
 |---|---|
@@ -545,13 +504,16 @@ The microservice verifies the provider's Ed25519 signature over the receipt fiel
 | chunk_id | Content address of the chunk |
 | file_id | Pseudonymous file handle |
 | provider_id | Which provider responded |
-| challenge_nonce | BYTEA(33); Versioned nonce; prevents replay |
+| challenge_nonce | BYTEA(33) — 1-byte version prefix OR HMAC-SHA256(server_secret_vN, chunk_id + server_ts). |
 | server_challenge_ts | Set by server; prevents backdating |
 | response_hash | The proof: SHA-256(chunk_data ‖ nonce) |
 | response_latency_ms | Just-in-time retrieval detector |
 | audit_result | PASS / FAIL / TIMEOUT |
 | provider_sig | Ed25519 over all fields above |
 | service_sig | Ed25519 over provider_sig + countersign timestamp |
+| service_countersign_ts | Timestamp of microservice countersignature |
+| jit_flag | Set when response_latency_ms < (chunk_size / p95_throughput) × 0.3 — JIT anomaly |
+| abandoned_at | Set by GC for PENDING rows older than 48h; not counted in any score window |
 
 ### Crash-safe receipt writing
 
@@ -560,6 +522,8 @@ The microservice uses a two-phase write to survive crashes between challenge val
 2. Validate the response_hash.
 3. Update the row: set audit_result = PASS|FAIL, service_sig, service_countersign_ts.
 4. Return the countersignature to the provider.
+
+>**Note:** The UPDATE from PENDING to PASS/FAIL/TIMEOUT is the only permitted mutation on audit_receipts. The Postgres row security policy must explicitly carve out this single transition (WHERE audit_result IS NULL) while blocking all other UPDATE and DELETE operations. See ADR-015.
 
 If the microservice crashes between step 1 and step 3: the provider receives no countersignature. On the next audit cycle (24 hours), a new challenge is issued. The orphaned PENDING row is garbage-collected after 48 hours (marked ABANDONED, not counted in any score window). If the provider retries the same response before the next cycle, the microservice detects the duplicate challenge_nonce and returns the existing receipt.
 
@@ -671,7 +635,7 @@ All amounts are stored as integer paise (₹1 = 100 paise). No floating-point ar
 
 ### Monthly release computation
 
-On the 23rd of each month, the microservice computes each provider's releasable balance. Razorpay releases on the next business day after `on_hold_until` — the target window for providers is "within the first 3 business days of the following month." The microservice sets `on_hold_until` to the last working day of the current month, accounting for RBI bank holidays via a static lookup table updated each December.
+On the 23rd of each month, the microservice computes each provider's releasable balance. Razorpay releases on the next business day after `on_hold_until` — the target window for providers is "within the first 3 business days of the following month." The microservice sets ``on_hold_until` to the last working day of the current month (computed from a static rbi_bank_holidays_YYYY table updated each December), so that Razorpay's release on the next business day after that timestamp lands within the first three business days of the following month
 
 The release multiplier is determined by the provider's 30-day reliability score:
 
@@ -780,6 +744,7 @@ Five classes of adversarial provider behaviour are explicitly defended against. 
 **Attack:** A provider does not store the data but retrieves it just-in-time from another provider during a challenge.
 
 **Defence:** The audit deadline is `(chunk_size / p95_measured_upload_throughput) × 1.5`. The p95 throughput is measured empirically during vetting and updated from audit responses — a provider cannot extend their deadline by self-declaring a low speed. Fetching 256 KB from another provider over the internet takes longer than the deadline allows.
+A lower floor also applies: if response_latency_ms < `(chunk_size / p95_throughput_kbps) × 0.3`, the response is anomalously fast, suggesting JIT retrieval from a co-located source. The microservice sets jit_flag = true on the receipt. Three or more JIT flags from the same provider within a rolling 7-day window triggers a 0.5× weight penalty on that provider's audit passes in the 24h scoring window for 30 days. Three JIT flags with identical response_latency_ms within ±5ms escalates to the manual review queue as a collusion signal.
 
 ### Just-in-time retrieval
 
@@ -816,139 +781,14 @@ Of approximately 20 core database operations in the system, 14 are coordination-
 | Seize escrow on departure | Same floor invariant |
 | Assign chunk to provider (new file upload) | Uniqueness: no two providers assigned the same slot |
 | Validate capability token | Token expiry is time-dependent and cannot be checked by a replica with a stale view |
-| Physical provider row deletion | Prohibited — use soft delete only |
+
+>**NOTE:** Physical row deletion from the providers table is unconditionally prohibited (ADR-013). There is no code path that executes it. status = DEPARTED is the only legal exit from the provider table. This constraint is enforced by the Postgres row security policy.
 
 Any new operation added to the codebase must be evaluated against this framework before choosing an implementation path. The five-step protocol: (1) state the invariant, (2) ask the merge question, (3) check Bailis Table 2, (4) scope coordination to minimum, (5) document in PR.
 
 ---
 
-## 22. Runtime Flows
-
-These are the five most important end-to-end flows in the system. Each describes the sequence of steps across components.
-
-### Flow 1 — Data owner uploads a file
-
-```
-Data owner client                Microservice                   Provider (×56)
-      │                               │                               │
-      │─ Argon2id(passphrase) ──────► master_secret (local)          │
-      │─ AONT transform (local) ───► 56 encrypted 256KB fragments    │
-      │                               │                               │
-      │─ POST /upload/assign ────────►│                               │
-      │                               │─ Check readiness gate         │
-      │                               │─ Select 56 providers          │
-      │                               │  (Power of Two Choices,       │
-      │                               │   ASN cap enforced)           │
-      │◄─ 56 (provider, chunk_id) ───│                               │
-      │                               │                               │
-      │─ QUIC connect ───────────────────────────────────────────────►│ (×56 parallel)
-      │─ Upload 256KB fragment ───────────────────────────────────────►│
-      │◄─ Signed upload receipt ──────────────────────────────────────│
-      │                               │                               │
-      │─ HKDF(master_secret, file_id) ─► pointer file encryption key │
-      │─ Encrypt pointer file (AEAD_CHACHA20_POLY1305) ─ local        │
-      │─ POST /file/register ────────►│                               │
-      │                               │─ Store encrypted ciphertext   │
-      │◄─ Confirmation ──────────────│                               │
-```
-
-### Flow 2 — Daily audit challenge
-
-```
-Microservice                                          Provider
-      │                                                    │
-      │─ SELECT chunks due for audit ─► audit_schedule     │
-      │─ server_ts = NOW()                                  │
-      │─ nonce = HMAC(server_secret_vN, chunk_id+server_ts) │
-      │                                                    │
-      │─ QUIC dial to last_known_multiaddrs ──────────────►│ (using heartbeat address)
-      │─ Send (chunk_id, nonce) ──────────────────────────►│
-      │                                                    │
-      │                          provider reads vLog       │
-      │                          verifies content_hash     │
-      │                          computes response_hash    │
-      │                          signs receipt             │
-      │                                                    │
-      │◄─ Signed audit receipt ───────────────────────────│ (must arrive before deadline)
-      │                                                    │
-      │─ Verify response_hash                              │
-      │─ INSERT PENDING row → audit_receipts               │
-      │─ Update row: PASS/FAIL + service_sig               │
-      │─ Return countersignature ─────────────────────────►│
-      │─ Update reliability score windows                  │
-```
-
-### Flow 3 — Silent departure triggers repair
-
-```
-Microservice                          Replacement provider (×N missing)
-      │                                          │
-      │─ Heartbeat timeout: 72h elapsed          │
-      │─ SET providers.status = DEPARTED         │
-      │─ DELETE chunk_assignments for provider   │
-      │─ Seize escrow → repair_reserve_fund      │
-      │─ Enqueue repair jobs (one per chunk)     │
-      │                                          │
-      │─ For each affected chunk:                │
-      │  ─ QUIC dial to 16 surviving holders     │
-      │  ─ Download 16 fragments                 │
-      │  ─ RS decode → AONT package              │
-      │  ─ RS re-encode → N missing fragments    │
-      │  ─ Select N replacement providers        │
-      │    (ASN cap enforced)                    │
-      │  ─ Upload to replacements ──────────────►│
-      │◄─ Signed upload receipts ────────────────│
-      │  ─ Update chunk_assignments              │
-```
-
-### Flow 4 — Monthly payment release
-
-```
-Microservice                   Razorpay              Provider's bank
-      │                            │                       │
-      │─ (23rd of month)           │                       │
-      │─ Compute releasable balance│                       │
-      │  for each active provider  │                       │
-      │─ Apply release multiplier  │                       │
-      │  (from 30d score)          │                       │
-      │─ Check dual-window flag    │                       │
-      │  (7d vs 30d deterioration) │                       │
-      │                            │                       │
-      │─ PATCH /transfers/:id      │                       │
-      │  on_hold_until = last      │                       │
-      │  working day of month ────►│                       │
-      │                            │─ Release on next      │
-      │◄─ Confirmation ───────────│  business day ───────►│
-      │                            │                       │
-      │─ Append RELEASE event      │                       │
-      │  to escrow_events          │                       │
-```
-
-### Flow 5 — Data owner retrieves a file
-
-```
-Data owner client                    Provider (×16 of 56)
-      │                                     │
-      │─ Decrypt pointer file               │
-      │  (HKDF → pointer file key →         │
-      │   AEAD_CHACHA20_POLY1305 decrypt)   │
-      │─ Read provider list + chunk IDs     │
-      │                                     │
-      │─ QUIC dial to any of the 16 available providers ─────────────────────────►│
-      │─ Request chunk by chunk_id ─────────────────────────────────►│
-      │◄─ 256KB fragment ────────────────────────────────────────────│ (×16)
-      │                                     │
-      │─ Verify each chunk: SHA-256 == chunk_id
-      │─ RS decode 16 fragments → AONT package
-      │─ Recover K: h = SHA-256(all codewords); K = c_{s+1} XOR h
-      │─ Decrypt each word: d_i = c_i XOR cipher(K, i)
-      │─ Verify canary word
-      │─ Reconstruct original file
-```
-
----
-
-## 23. Error Handling
+## 22. Error Handling
 
 ### Audit challenge timeout
 
@@ -980,7 +820,7 @@ If the availability service fails to republish a provider's DHT record within th
 
 ---
 
-## 24. Observability
+## 23. Observability
 
 ### Key metrics (microservice)
 
@@ -1018,13 +858,13 @@ If the availability service fails to republish a provider's DHT record within th
 
 ---
 
-## 25. Deployment Topology
+## 24. Deployment Topology
 
 **Cloud provider.** AWS or GCP — operator's choice at deployment time. Both are acceptable. The architecture has no dependency on cloud-provider-specific features; managed Postgres (RDS or Cloud SQL) and standard VM instances are the only cloud primitives used. The remainder of this section gives AWS names in parentheses as a concrete reference; substitute GCP equivalents if deploying there.
 
 **Coordination microservice.** Three VM instances (e.g. AWS EC2 `t3.medium` or equivalent: **2 vCPU, 4 GB RAM**), one per availability zone in `ap-south-1` (Mumbai). Each runs the microservice binary. They share a managed Postgres primary in the same region with two read replicas across AZs. Gossip membership connects all three replicas directly. External administrative traffic routes through a load balancer; audit challenge dispatch and assignment calls bypass the load balancer via client-driven direct routing.
 
-**Postgres.** Managed Postgres with Multi-AZ replication enabled (e.g. AWS RDS `db.t3.medium`: **2 vCPU, 4 GB RAM**, 100 GB GP3 SSD to start, auto-scaling enabled). The microservice writes to the primary; read-heavy paths (score queries, assignment lookups) use a read replica. Monthly partition archival of `audit_receipts` is mandatory — partitions older than 30 days move to object storage (S3 / GCS).
+**Postgres.** Managed Postgres with Multi-AZ replication enabled (e.g. AWS RDS `db.t3.medium`: **2 vCPU, 4 GB RAM**, 100 GB GP3 SSD to start, auto-scaling enabled). The microservice writes to the primary; read-heavy paths (score queries, assignment lookups) use a read replica. Monthly partition archival of `audit_receipts` is mandatory — partitions older than 90 days move to object storage (S3 / GCS). This preserves the full 30-day scoring window plus the 60-day dual-window analysis horizon and supports the 90-day provider cohort telemetry required by Q08-1 and Q29-1.
 
 **Relay nodes.** Three instances (**1 vCPU, 1 GB RAM, minimum 1 Gbps network**), one per availability zone. At launch: Mumbai AZ1, Mumbai AZ2, Chennai/Hyderabad. Each runs libp2p with Circuit Relay v2 enabled, sized for 128 concurrent relay reservations — 384 total slots, 4.3× headroom at 300 initial providers. Scale to a fourth node when provider count exceeds 570 (the relay saturation point at 45% CGNAT fraction).
 
@@ -1036,7 +876,7 @@ If the availability service fails to republish a provider's DHT record within th
 
 ---
 
-## 26. Known Limitations and V3 Scope
+## 25. Known Limitations and V3 Scope
 
 These are explicit design decisions, each with a documented reason and a V3 path.
 
@@ -1054,7 +894,7 @@ These are explicit design decisions, each with a documented reason and a V3 path
 
 ---
 
-## 27. ADR Reference Index
+## 26. ADR Reference Index
 
 | Component | ADRs |
 |---|---|
