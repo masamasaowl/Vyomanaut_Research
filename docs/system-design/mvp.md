@@ -1,6 +1,6 @@
 # Vyomanaut V2 — MVP Specification: Demo / Production Mode
 
-**Status:** Authoritative — read alongside ADR-031 (to be written), architecture.md, and the pre-ADR analysis  
+**Status:** Authoritative — read alongside ADR-031, architecture.md, and the pre-ADR analysis  
 **Version:** 1.0  
 **Date:** May 2026  
 **Repository:** https://github.com/masamasaowl/Vyomanaut_Research  
