@@ -55,7 +55,7 @@ info:
     in the field description (e.g. "ADR-017") or in the endpoint description block.
 
   contact:
-    name: Vyomanaut Engineering
+    name: Masamasaowl
     url: https://github.com/masamasaowl/Vyomanaut_Research
   license:
     name: Proprietary
@@ -78,7 +78,7 @@ tags:
   - name: Pricing
     description: Storage cost estimation (no auth required; pre-registration)
   - name: Audit
-    description: Challenge dispatch (admin) and receipt submission (providers)
+    description: Audit challenge dispatch (admin-initiated via POST /api/v1/audit/challenge) and audit statistics. Note - Audit challenge/response is conducted entirely over libp2p streams (protocol /vyomanaut/audit-challenge/1.0.0). The microservice opens the stream to the provider, sends ChallengeRequest, receives ChallengeResponse, and writes the receipt directly to audit_receipts — no HTTP POST from the provider is involved. See interface-contracts.md §4.2.
   - name: Admin
     description: Operational endpoints; require AdminApiKey
 
@@ -177,11 +177,7 @@ components:
       type: string
       pattern: '^[0-9a-f]{66}$'
       description: |
-        Hex-encoded 33-byte challenge nonce: 1-byte version prefix ||
-        32-byte HMAC-SHA256(server_secret_vN, chunk_id || server_ts).
-        MUST be 66 hex characters — not 64. The version byte identifies
-        which server_secret version was used, enabling cross-replica
-        validation after failover. (ADR-027, requirements.md §9.3)
+        Hex-encoded 33-byte challenge nonce: 1-byte version prefix (value = N, identifying server_secret_vN used for HMAC) || 32-byte HMAC-SHA256(server_secret_vN, chunk_id || server_ts_ms_int64_be). MUST be 66 hex characters — not 64. The version byte enables cross-replica validation after failover. (ADR-027, requirements.md §9.3)
       example: "01a3f1b2c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1"
 
     Multiaddr:
@@ -231,18 +227,37 @@ components:
         - DEPOSIT
         - RELEASE
         - SEIZURE
+        - REVERSAL
       description: |
         DEPOSIT — data owner funds escrow.
         RELEASE — monthly payment released to provider after multiplier applied.
         SEIZURE — all held earnings seized on silent departure (ADR-024).
+        REVERSAL — Razorpay payout reversed; amount restored to escrow balance. idempotency_key = SHA-256('reversal' || original_idempotency_key).
+
+    OwnerEscrowEventType:
+      type: string
+      enum:
+        - DEPOSIT
+        - CHARGE
+        - WITHDRAWAL
+        - REFUND
+      description: |
+        DEPOSIT   — owner funded escrow via UPI Smart Collect 2.0.
+        CHARGE    — monthly storage deduction per active file.
+        WITHDRAWAL — owner withdrew available balance to their bank account.
+        REFUND    — file deleted early; unused prepaid storage returned. (data-model.md §4.9)
 
     RepairPriority:
       type: string
       enum:
+        - EMERGENCY
         - PERMANENT_DEPARTURE
         - PRE_WARNING
       description: |
-        PERMANENT_DEPARTURE jobs drain before PRE_WARNING jobs. (ADR-004, Paper 39)
+        EMERGENCY — EMERGENCY_FLOOR trigger (s=16); serviced immediately at
+                front of queue, before PERMANENT_DEPARTURE. (FR-044, ADR-004)
+        PERMANENT_DEPARTURE — SILENT/ANNOUNCED departures; drains before PRE_WARNING.
+        PRE_WARNING — fragment count at r0=24 threshold; lowest priority. (ADR-004, Paper 39)
 
     RepairTriggerType:
       type: string
@@ -268,26 +283,42 @@ components:
     Error:
       type: object
       required:
-        - code
+        - error_code
         - message
+        - request_id
       properties:
-        code:
+        error_code:
           type: string
           description: Machine-readable error code. Stable across releases.
           example: "INVALID_PHONE_NUMBER"
         message:
           type: string
           description: Human-readable description for logging and debugging.
-          example: "Phone number must be in E.164 format (e.g. +919876543210)"
+        request_id:
+          type: string
+          format: uuid
+          description: |
+            UUIDv7. Matches X-Request-ID response header for distributed tracing.
+            Include in all bug reports.
+        retry_after:
+          type: integer
+          nullable: true
+          description: |
+            Seconds until retry is safe. Non-null for HTTP 429 and HTTP 503 responses
+            with a known backoff. (interface-contracts.md §3.3)
         field:
           type: string
-          description: >
-            For validation errors, the name of the offending field.
-          example: "phone_number"
+          description: For validation errors, the name of the offending field.
         details:
           type: object
-          description: Optional structured context for programmatic handling.
           additionalProperties: true
+        available_asns:
+          type: integer
+          minimum: 0
+          nullable: true
+          description: |
+            Present only when error_code = INSUFFICIENT_ASN_DIVERSITY. Current count of
+            distinct ASNs in the active provider pool. Threshold is 5. (interface-contracts.md §3.3)
 
     # ── OTP / Auth ───────────────────────────────────────────────
 
@@ -328,7 +359,7 @@ components:
       properties:
         phone_number:
           $ref: '#/components/schemas/PhoneNumber'
-        otp_code:
+        otp_error_code:
           type: string
           pattern: '^\d{6}$'
           description: 6-digit OTP sent to the phone number.
@@ -489,8 +520,10 @@ components:
           format: int64
           minimum: 0
           description: |
-            Current escrow balance computed as
-            `SUM(DEPOSIT) − SUM(RELEASE + SEIZURE)`. Always ≥ 0. (ADR-016)
+            Computes balance from the owner_escrow_events ledger as
+            SUM(DEPOSIT + REFUND) - SUM(CHARGE + WITHDRAWAL) for this owner_id.
+            Backed by mv_owner_escrow_balance (async, up to 60 s stale). (data-model.md §4.9, ADR-016)
+
         reserved_next_30d_paise:
           type: integer
           format: int64
@@ -534,7 +567,12 @@ components:
           type: string
           enum:
             - ACTIVE
+            - DELETION_PENDING
             - DELETED
+          description: |
+            ACTIVE — all chunk assignments live; owner is billed.
+            DELETION_PENDING — deletion request received; chunk GC notifications in progress. Unreachable providers will be retried on subsequent heartbeats. (FR-020)
+            DELETED — all providers confirmed deletion (or marked for retry); owner not billed.
         availability:
           type: string
           enum:
@@ -558,8 +596,31 @@ components:
           type: integer
           minimum: 1
           description: Number of 14 MB encoded segments the file was split into.
+        display_name_ciphertext:
+          type: string
+          format: byte
+          nullable: true
+          description: |
+            Optional. Base64-encoded AEAD_CHACHA20_POLY1305 ciphertext of the owner-provided
+            file name. Key = HKDF-SHA256(master_secret, salt=owner_id,
+            info="vyomanaut-filename-v1" || file_id). Stored blindly; microservice cannot
+            read the name. Required for FR-019 file list view to display names. (data-model.md §4.3)
+        display_name_nonce:
+          type: string
+          format: byte
+          nullable: true
+          description: Base64-encoded 12-byte nonce for the display_name AEAD.
+          minLength: 16
+          maxLength: 16
+        display_name_tag:
+          type: string
+          format: byte
+          nullable: true
+          description: Base64-encoded 16-byte Poly1305 tag for the display_name AEAD.
+          minLength: 24
+          maxLength: 24
 
-    EscrowTransaction:
+    OwnerEscrowTransaction:
       type: object
       required:
         - event_id
@@ -570,14 +631,14 @@ components:
         event_id:
           $ref: '#/components/schemas/UUID'
         event_type:
-          $ref: '#/components/schemas/EscrowEventType'
+          $ref: '#/components/schemas/OwnerEscrowEventType'
         amount_paise:
           $ref: '#/components/schemas/Paise'
-          description: Always positive. Sign is implied by event_type.
-        audit_period_id:
+          description: Always positive. Sign implied by event_type.
+        file_id:
           $ref: '#/components/schemas/UUID'
           nullable: true
-          description: Non-null only for RELEASE events.
+          description: Non-null for CHARGE and REFUND events.
         created_at:
           type: string
           format: date-time
@@ -874,6 +935,21 @@ components:
             re-audited on an accelerated schedule. (ADR-008, Paper 32 — 30× elevated
             failure probability after a recent uncorrectable error.)
           default: false
+        first_chunk_assignment_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: |
+            Timestamp of first chunk assignment. Null during PENDING_ONBOARDING.
+            VETTING → ACTIVE transition requires BOTH: 80 consecutive audit passes AND
+            NOW() - first_chunk_assignment_at >= 120 days. (FR-026, data-model.md §4.2)
+        vetting_eligible_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: |
+            Computed field: first_chunk_assignment_at + 120 days. Null if not yet assigned.
+            Providers can display a countdown to their earliest possible ACTIVE transition.
         p95_throughput_kbps:
           type: number
           format: float
@@ -894,10 +970,7 @@ components:
           format: date-time
           description: |
             UTC timestamp by which the provider will be back online.
-            Must be between 1 hour and 72 hours from now. The microservice will not
-            decrement the reliability score during this window. If the provider does
-            not reconnect by this timestamp, the state transitions to SILENT_DEPARTURE
-            with full escrow seizure consequences. (ADR-007, FR-032, FR-033)
+            Must be between 0 hour and 72 hours from now (FR-032). The microservice will not decrement the reliability score during this window. Passing a timestamp in the past is rejected (HTTP 400). If the provider does not reconnect by this timestamp, the state transitions to SILENT_DEPARTURE with full escrow seizure consequences. (ADR-007, FR-032, FR-033)
         reason:
           type: string
           maxLength: 200
@@ -1001,6 +1074,13 @@ components:
             (chunk_size_kb / p95_throughput_kbps) × 0.3 set `jit_flag = true`. (ADR-014)
         audit_result:
           $ref: '#/components/schemas/AuditResult'
+        address_was_stale:
+          type: boolean
+          default: false
+          description: |
+            True if the challenge was dispatched via DHT fallback because
+            providers.multiaddr_stale = true at dispatch time (missed 2+ heartbeats).
+            TIMEOUT results with this flag set do NOT reset consecutive_audit_passes and are not counted as provider-fault timeouts for scoring. (data-model.md §4.7)
         provider_sig:
           $ref: '#/components/schemas/Ed25519Signature'
           nullable: true
@@ -1109,6 +1189,22 @@ components:
           items:
             $ref: '#/components/schemas/SegmentAssignment'
           description: One entry per segment; length equals `num_segments`.
+        monthly_cost_paise:
+          type: integer
+          format: int64
+          minimum: 0
+          description: |
+            Monthly storage cost in paise computed at assignment time from the current
+            storage rate and original_size_bytes. This is the amount reserved from the
+            owner's escrow for 30 days. Display to the user before they confirm upload.
+            (FR-013, FR-014, ADR-016 — integer paise only)
+        required_escrow_paise:
+          type: integer
+          format: int64
+          minimum: 0
+          description: |
+            = monthly_cost_paise. The exact amount deducted from escrow balance.
+            Equivalent to the escrow check threshold in FR-014.
 
     ErasureParamsInfo:
       description: |
@@ -1230,6 +1326,29 @@ components:
           description: |
             Plaintext file size in bytes before AONT padding. Required to strip
             padding bytes after RS decode and AONT decryption on retrieval. (FR-008)
+        display_name_ciphertext:
+          type: string
+          format: byte
+          nullable: true
+          description: |
+            Optional. Base64-encoded AEAD_CHACHA20_POLY1305 ciphertext of the owner-provided
+            file name. Key = HKDF-SHA256(master_secret, salt=owner_id,
+            info="vyomanaut-filename-v1" || file_id). Stored blindly; microservice cannot
+            read the name. Required for FR-019 file list view to display names. (data-model.md §4.3)
+        display_name_nonce:
+          type: string
+          format: byte
+          nullable: true
+          description: Base64-encoded 12-byte nonce for the display_name AEAD.
+          minLength: 16
+          maxLength: 16
+        display_name_tag:
+          type: string
+          format: byte
+          nullable: true
+          description: Base64-encoded 16-byte Poly1305 tag for the display_name AEAD.
+          minLength: 24
+          maxLength: 24
         schema_version:
           type: integer
           enum: [1]
@@ -1284,6 +1403,29 @@ components:
           type: integer
           format: int64
           description: Returned for UI display; strip padding to this length after decode.
+        display_name_ciphertext:
+          type: string
+          format: byte
+          nullable: true
+          description: |
+            Optional. Base64-encoded AEAD_CHACHA20_POLY1305 ciphertext of the owner-provided
+            file name. Key = HKDF-SHA256(master_secret, salt=owner_id,
+            info="vyomanaut-filename-v1" || file_id). Stored blindly; microservice cannot
+            read the name. Required for FR-019 file list view to display names. (data-model.md §4.3)
+        display_name_nonce:
+          type: string
+          format: byte
+          nullable: true
+          description: Base64-encoded 12-byte nonce for the display_name AEAD.
+          minLength: 16
+          maxLength: 16
+        display_name_tag:
+          type: string
+          format: byte
+          nullable: true
+          description: Base64-encoded 16-byte Poly1305 tag for the display_name AEAD.
+          minLength: 24
+          maxLength: 24
 
     # ── Pricing ──────────────────────────────────────────────────
 
@@ -1557,6 +1699,7 @@ components:
       type: object
       required:
         - total_queued
+        - emergency_queued
         - permanent_departure_queued
         - pre_warning_queued
         - jobs
@@ -1566,6 +1709,11 @@ components:
           minimum: 0
           description: |
             Total QUEUED repair jobs. Alert fires when > 1,000. (NFR-027)
+        emergency_queued:
+          type: integer
+          minimum: 0
+          description: |
+            EMERGENCY priority jobs (fragment count at s=16 reconstruction floor). Alert fires immediately on any non-zero value — these represent files that may be unrecoverable if one more provider fails. (FR-044, ADR-004)
         permanent_departure_queued:
           type: integer
           minimum: 0
@@ -1715,17 +1863,17 @@ components:
           examples:
             InvalidPhone:
               value:
-                code: INVALID_PHONE_NUMBER
+                error_code: INVALID_PHONE_NUMBER
                 message: "Phone number must be in E.164 format (e.g. +919876543210)"
                 field: phone_number
             NonIntegerPaise:
               value:
-                code: INVALID_AMOUNT
+                error_code: INVALID_AMOUNT
                 message: "amount_paise must be a positive integer. Floating-point is not permitted."
                 field: amount_paise
             InvalidNonce:
               value:
-                code: INVALID_CHALLENGE_NONCE
+                error_code: INVALID_CHALLENGE_NONCE
                 message: "challenge_nonce must be 66 hex characters (33 bytes: 1 version byte + 32-byte HMAC). Got 64."
                 field: challenge_nonce
 
@@ -1736,7 +1884,7 @@ components:
           schema:
             $ref: '#/components/schemas/Error'
           example:
-            code: UNAUTHORIZED
+            error_code: UNAUTHORIZED
             message: "JWT is missing, expired, or has an invalid Ed25519 signature."
 
     403Forbidden:
@@ -1748,15 +1896,15 @@ components:
           examples:
             DepartedProvider:
               value:
-                code: PROVIDER_DEPARTED
+                error_code: PROVIDER_DEPARTED
                 message: "Provider account is inactive. Re-joining requires a new registration."
             WrongRole:
               value:
-                code: WRONG_ROLE
+                error_code: WRONG_ROLE
                 message: "This endpoint requires role=provider. Your token has role=owner."
             InvalidBodySig:
               value:
-                code: INVALID_BODY_SIGNATURE
+                error_code: INVALID_BODY_SIGNATURE
                 message: "provider_sig does not verify against the registered Ed25519 public key."
 
     404NotFound:
@@ -1766,7 +1914,7 @@ components:
           schema:
             $ref: '#/components/schemas/Error'
           example:
-            code: NOT_FOUND
+            error_code: NOT_FOUND
             message: "file_id 01944a6e-8f3c-7000-b000-d4e5f6a7b8c9 not found or has been deleted."
 
     409Conflict:
@@ -1778,15 +1926,15 @@ components:
           examples:
             DuplicateNonce:
               value:
-                code: DUPLICATE_CHALLENGE_NONCE
+                error_code: DUPLICATE_CHALLENGE_NONCE
                 message: "An audit receipt with this challenge_nonce already exists. Idempotent retry: the existing countersignature is returned."
             InsufficientEscrow:
               value:
-                code: INSUFFICIENT_ESCROW_BALANCE
+                error_code: INSUFFICIENT_ESCROW_BALANCE
                 message: "Escrow balance is insufficient to cover 30 days of storage for this file."
             PhoneAlreadyRegistered:
               value:
-                code: PHONE_ALREADY_REGISTERED
+                error_code: PHONE_ALREADY_REGISTERED
                 message: "This phone number is already associated with an owner account."
 
     503ServiceUnavailable:
@@ -1803,7 +1951,7 @@ components:
                     format: uri
                     description: Check this endpoint for per-condition status.
           example:
-            code: NETWORK_NOT_READY
+            error_code: NETWORK_NOT_READY
             message: "Upload rejected: only 42 of 56 required active vetted providers are available."
             readiness_url: "https://api.vyomanaut.com/api/v1/admin/readiness"
 
@@ -1871,7 +2019,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
               example:
-                code: OTP_RATE_LIMITED
+                error_code: OTP_RATE_LIMITED
                 message: "Too many OTP requests for this phone number. Try again in 10 minutes."
 
   /api/v1/auth/otp/verify:
@@ -1905,7 +2053,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
               example:
-                code: INVALID_OTP
+                error_code: INVALID_OTP
                 message: "OTP is incorrect or has expired."
 
   # ────────────────────────────
@@ -2361,11 +2509,11 @@ paths:
               examples:
                 AlreadyActive:
                   value:
-                    code: DOWNTIME_ALREADY_ACTIVE
+                    error_code: DOWNTIME_ALREADY_ACTIVE
                     message: "A promised downtime window is already active until 2026-04-28T06:00:00Z."
                 ProviderDeparted:
                   value:
-                    code: PROVIDER_DEPARTED
+                    error_code: PROVIDER_DEPARTED
                     message: "Provider account is DEPARTED. Downtime declarations are not accepted."
 
   /api/v1/provider/depart:
@@ -2398,6 +2546,35 @@ paths:
                 $ref: '#/components/schemas/ProviderDepartResponse'
         "400":
           $ref: '#/components/responses/400BadRequest'
+        "401":
+          $ref: '#/components/responses/401Unauthorized'
+        "403":
+          $ref: '#/components/responses/403Forbidden'
+
+  /api/v1/provider/downtime:
+    get:
+      tags: [Providers]
+      summary: Get active promised downtime window (if any)
+      operationId: getActiveDowntime
+      responses:
+        "200":
+          description: Active downtime window or null if none active.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [active]
+                properties:
+                  active:
+                    type: boolean
+                  promised_return_at:
+                    type: string
+                    format: date-time
+                    nullable: true
+                  penalty_fires_at:
+                    type: string
+                    format: date-time
+                    nullable: true
         "401":
           $ref: '#/components/responses/401Unauthorized'
         "403":
@@ -2448,9 +2625,40 @@ paths:
           $ref: '#/components/responses/409Conflict'
         "503":
           description: |
-            Network readiness gate not satisfied. Includes the URL of
-            `GET /api/v1/admin/readiness` for diagnostics.
-          $ref: '#/components/responses/503ServiceUnavailable'
+            Two distinct causes:
+            1. Network readiness gate not satisfied (error_code: NETWORK_NOT_READY).
+              retry_after: 60 seconds. Check /api/v1/admin/readiness for details.
+            2. Cannot place 56 shards with ≥5 distinct ASNs for this specific upload
+              (error_code: INSUFFICIENT_ASN_DIVERSITY).
+              retry_after: 300 seconds. available_asns field shows current count.
+              Surface to user: "Upload paused — not enough provider diversity.
+              Retry will happen automatically when the network recovers." (FR-009)
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Error'
+                  - type: object
+                    properties:
+                      available_asns:
+                        type: integer
+                        minimum: 0
+                        nullable: true
+              examples:
+                NetworkNotReady:
+                  value:
+                    error_code: NETWORK_NOT_READY
+                    message: "Upload rejected: only 42 of 56 required active vetted providers."
+                    request_id: "01944a6e-8f3c-7000-b000-d4e5f6a7b8c9"
+                    retry_after: 60
+                    readiness_url: "https://api.vyomanaut.com/api/v1/admin/readiness"
+                InsufficientASN:
+                  value:
+                    error_code: INSUFFICIENT_ASN_DIVERSITY
+                    message: "Cannot place 56 shards across ≥5 ASNs. Current distinct ASNs: 3."
+                    request_id: "01944a6e-8f3c-7000-b000-d4e5f6a7b8c9"
+                    retry_after: 300
+                    available_asns: 3
 
   /api/v1/file/register:
     post:
@@ -2583,7 +2791,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
               example:
-                code: FILE_ALREADY_DELETED
+                error_code: FILE_ALREADY_DELETED
                 message: "File 01944a6e-8f3c-7000-b000-d4e5f6a7b8c9 is already in DELETED status."
 
   # ────────────────────────────
@@ -2620,6 +2828,62 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/PricingEstimateResponse'
+        "400":
+          $ref: '#/components/responses/400BadRequest'
+    
+  /api/v1/pricing/provider-estimate:
+    get:
+      tags: [Pricing]
+      summary: Estimate provider monthly earnings (pre-registration)
+      description: |
+        Returns gross/net earnings estimate for a storage provider. No authentication
+        required — powers the installer welcome screen and marketing site. (FR-057)
+      security: []
+      operationId: getProviderEarningsEstimate
+      parameters:
+        - name: storage_gb
+          in: query
+          required: true
+          schema:
+            type: integer
+            minimum: 10
+            maximum: 100000
+        - name: uptime_target_pct
+          in: query
+          required: true
+          schema:
+            type: number
+            minimum: 0
+            maximum: 100
+          description: Provider's declared uptime percentage (e.g. 95.0).
+      responses:
+        "200":
+          description: Earnings estimate.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - storage_rate_paise_per_gb_per_month
+                  - gross_monthly_paise
+                  - estimated_escrow_hold_vetting_paise
+                  - estimated_net_paise_vetting
+                  - estimated_net_paise_post_vetting
+                properties:
+                  storage_rate_paise_per_gb_per_month:
+                    $ref: '#/components/schemas/Paise'
+                  gross_monthly_paise:
+                    $ref: '#/components/schemas/Paise'
+                    description: storage_gb × rate × (uptime_target_pct / 100)
+                  estimated_escrow_hold_vetting_paise:
+                    $ref: '#/components/schemas/Paise'
+                    description: 30% hold during vetting period (4-6 months). (ADR-024, FR-051)
+                  estimated_net_paise_vetting:
+                    $ref: '#/components/schemas/Paise'
+                    description: gross × 0.50 release cap during vetting. (FR-051)
+                  estimated_net_paise_post_vetting:
+                    $ref: '#/components/schemas/Paise'
+                    description: gross × release_multiplier (1.00 at ≥0.95 score). (ADR-024)
         "400":
           $ref: '#/components/responses/400BadRequest'
 
@@ -2670,45 +2934,6 @@ paths:
           $ref: '#/components/responses/403Forbidden'
         "404":
           $ref: '#/components/responses/404NotFound'
-
-  /api/v1/audit/receipt:
-    post:
-      tags: [Audit]
-      summary: Submit a signed audit receipt (providers only)
-      description: |
-        **Revalute the need for this route. Remove or repurpose it **
-        The microservice opens a QUIC stream to the provider, sends ChallengeRequest, receives ChallengeResponse on the same stream, and the receipt is complete. This is a request-response over a single stream. The microservice:
-        1. Verifies `provider_sig` against the registered `ed25519_public_key` (receipt fields).
-        2. Executes the crash-safe two-phase write: INSERT PENDING → UPDATE to PASS/FAIL.
-        3. Returns the `service_sig` countersignature. Daemon stores this as payment evidence.
-
-        **Idempotent:** duplicate submissions with the same `challenge_nonce` return the
-        existing countersignature without re-processing. (ADR-015, FR-039)
-
-        `challenge_nonce` MUST be 66 hex characters (33 bytes). Submissions with 64-character
-        nonces are rejected with HTTP 400. (ADR-027, requirements.md §9.3)
-      operationId: submitAuditReceipt
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/AuditReceiptSubmitRequest'
-      responses:
-        "200":
-          description: |
-            Receipt recorded. Returns PASS or FAIL with the microservice countersignature.
-            The provider must store `service_sig` as payment evidence. (ADR-015); idempotent: true
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/AuditReceiptSubmitResponse'
-        "400":
-          $ref: '#/components/responses/400BadRequest'
-        "401":
-          $ref: '#/components/responses/401Unauthorized'
-        "403":
-          $ref: '#/components/responses/403Forbidden'
 
   # ────────────────────────────
   # Admin
@@ -2837,6 +3062,42 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/RepairQueueResponse'
+        "401":
+          $ref: '#/components/responses/401Unauthorized'
+
+  /api/v1/admin/repair/trigger:
+    post:
+      tags: [Admin]
+      summary: Manually enqueue a repair job (admin)
+      security:
+        - AdminApiKey: []
+      operationId: triggerRepair
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [chunk_id, segment_id, trigger_type]
+              properties:
+                chunk_id:
+                  $ref: '#/components/schemas/ChunkId'
+                segment_id:
+                  $ref: '#/components/schemas/UUID'
+                trigger_type:
+                  $ref: '#/components/schemas/RepairTriggerType'
+                provider_id:
+                  $ref: '#/components/schemas/UUID'
+                  nullable: true
+      responses:
+        "202":
+          description: Repair job enqueued.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RepairJobItem'
+        "400":
+          $ref: '#/components/responses/400BadRequest'
         "401":
           $ref: '#/components/responses/401Unauthorized'
 
