@@ -277,6 +277,9 @@ All error responses from the microservice REST API use a standard JSON body.
 | 503 | INSUFFICIENT_ASN_DIVERSITY | Cannot place 56 shards across ≥ 5 ASNs; retry_after = 300 |
 | 503 | RAZORPAY_UNAVAILABLE | Razorpay API call failed; payment path only |
 | 500 | INTERNAL_ERROR | All other server-side failures |
+| 500 | VETTING_CAP_EXCEEDED | synthetic chunk cap reached for this provider; assignment service will retry when existing chunks are retired. |
+| 500 | REAL_SHARD_ON_VETTING_PROVIDER | attempt to assign a real shard to a VETTING provider; internal error; never surfaced to clients. |
+
 
 **Error propagation from Razorpay failures:**
 - Razorpay 4xx (bad request from microservice side): log at ERROR, surface as INTERNAL_ERROR
@@ -284,7 +287,7 @@ All error responses from the microservice REST API use a standard JSON body.
 - Razorpay 5xx or timeout: surface as RAZORPAY_UNAVAILABLE with retry_after.
 - Never forward Razorpay error bodies to API callers; they may contain PII or keys.
 
-The error_code INSUFFICIENT_ASN_DIVERSITY must include an additional field:
+The error_code `INSUFFICIENT_ASN_DIVERSITY` must include an additional field:
   "available_asns": int  // current count; helps operators diagnose readiness issues
 
 ---

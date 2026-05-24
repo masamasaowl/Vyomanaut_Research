@@ -318,7 +318,7 @@ components:
           nullable: true
           description: |
             Present only when error_code = INSUFFICIENT_ASN_DIVERSITY. Current count of
-            distinct ASNs in the active provider pool. Threshold is 5. (interface-contracts.md §3.3)
+            distinct ASNs in the active provider pool. Threshold is 5. (interface-contracts.md §3.3) 
 
     # ── OTP / Auth ───────────────────────────────────────────────
 
@@ -950,6 +950,30 @@ components:
           description: |
             Computed field: first_chunk_assignment_at + 120 days. Null if not yet assigned.
             Providers can display a countdown to their earliest possible ACTIVE transition.
+        vetting_chunks_assigned:
+          type: integer
+          minimum: 0
+          nullable: true
+          description: |
+            Number of active synthetic vetting chunks currently assigned to this provider.
+            Non-null only when status = 'VETTING'. Null for ACTIVE and DEPARTED providers.
+            Used by the operator dashboard to monitor vetting storage allocation. (ADR-030)
+        vetting_chunk_cap:
+          type: integer
+          minimum: 0
+          nullable: true
+          description: |
+            Maximum synthetic chunks this provider may hold during vetting:
+            floor(declared_storage_gb × 400) — equivalent to 10% of declared storage at 256 KB/chunk.
+            Null for non-VETTING providers. (ADR-030, FR-062)
+        vetting_gc_pending:
+          type: boolean
+          nullable: true
+          description: |
+            True when this provider has transitioned to ACTIVE but the vetting GC instruction
+            has not yet been fully acknowledged (some synthetic chunk_assignments remain in
+            'PENDING_DELETION' status). Null when status != 'ACTIVE' or GC is complete.
+            Operators can use this to identify providers where GC delivery is stuck. (ADR-030)
         p95_throughput_kbps:
           type: number
           format: float
@@ -1053,6 +1077,11 @@ components:
         file_id:
           $ref: '#/components/schemas/UUID'
           description: Pseudonymous file handle. (ADR-017, NFR-032)
+          nullable: true
+          description: |
+            Pseudonymous file handle. NULL for audits of synthetic vetting chunks
+            (is_vetting_chunk = TRUE on the corresponding chunk_assignment).
+            Non-null for all real shard audits. (ADR-030, ADR-017, NFR-032)
         challenge_nonce:
           $ref: '#/components/schemas/ChallengeNonce'
         server_challenge_ts:
@@ -1771,6 +1800,22 @@ components:
           type: boolean
         frozen:
           type: boolean
+        vetting_chunks_assigned:
+          type: integer
+          minimum: 0
+          nullable: true
+          description: Active synthetic vetting chunk count. Non-null for VETTING providers only.
+        vetting_chunk_cap:
+          type: integer
+          minimum: 0
+          nullable: true
+          description: |
+            floor(declared_storage_gb × 400). Cap on synthetic chunks during vetting.
+        vetting_gc_pending:
+          type: boolean
+          nullable: true
+          description: |
+            True if ACTIVE transition has occurred but GC instruction delivery is incomplete.
         departed_at:
           type: string
           format: date-time
@@ -1849,6 +1894,47 @@ components:
           description: Receipts with corruption error code. Alert fires if > 0 in 7-day window. (NFR-027)
         jit_flags_raised:
           type: integer
+
+    VettingStatusSummary:
+      type: object
+      description: |
+        Vetting progress summary for the provider. Returned by the provider status endpoint
+        and the admin providers list when status = 'VETTING'. (ADR-030, ADR-005)
+      required:
+        - chunks_assigned
+        - chunk_cap
+        - cap_utilisation_pct
+        - chunks_pending_gc
+      properties:
+        chunks_assigned:
+          type: integer
+          minimum: 0
+          description: |
+            Current count of ACTIVE synthetic vetting chunk assignments.
+            Equivalent to the live query:
+            SELECT COUNT(*) FROM chunk_assignments
+            WHERE provider_id = $1 AND is_vetting_chunk = TRUE AND status = 'ACTIVE'
+        chunk_cap:
+          type: integer
+          minimum: 0
+          description: |
+            Maximum permitted synthetic chunks: floor(declared_storage_gb × 400).
+        cap_utilisation_pct:
+          type: number
+          format: float
+          minimum: 0
+          maximum: 100
+          description: |
+            (chunks_assigned / chunk_cap) × 100. When this reaches 100%, no further
+            synthetic chunks are assigned until existing ones are retired.
+        chunks_pending_gc:
+          type: integer
+          minimum: 0
+          description: |
+            Count of synthetic chunk_assignments in 'PENDING_DELETION' status.
+            Non-zero indicates a GC instruction delivery is in progress or stalled.
+            These chunks are not being challenged (audit scheduler skips PENDING_DELETION).
+
 
   # ── Reusable responses ─────────────────────────────────────────
 
@@ -1936,6 +2022,21 @@ components:
               value:
                 error_code: PHONE_ALREADY_REGISTERED
                 message: "This phone number is already associated with an owner account."
+    
+    500InternalError:
+      description: The website's server encountered an unexpected internal issue and cannot fulfill your request
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          examples:
+            VettingCapExceeded:
+              value:
+                error_code: VETTING_CAP_EXCEEDED
+                message: "Provider vetting storage cap reached. Retry after existing synthetic chunks are retired."
+                request_id: "01944a6e-8f3c-7000-b000-d4e5f6a7b8c9"
+                retry_after: 3600
+
 
     503ServiceUnavailable:
       description: Network readiness gate is not satisfied or service is temporarily unavailable.
@@ -3149,6 +3250,13 @@ paths:
           in: query
           schema:
             type: string
+        - name: vetting_gc_pending
+          in: query
+          schema:
+            type: boolean
+          description: |
+            If true, filter to providers with chunks_pending_gc > 0. These are ACTIVE
+            providers whose synthetic chunk cleanup is incomplete. (ADR-030)
       responses:
         "200":
           description: Provider list.
@@ -3196,6 +3304,149 @@ paths:
               schema:
                 $ref: '#/components/schemas/AuditStatsResponse'
         "400":
+          $ref: '#/components/responses/400BadRequest'
+        "401":
+          $ref: '#/components/responses/401Unauthorized'
+    
+  /api/v1/admin/vetting/status:
+    get:
+      tags: [Admin]
+      summary: Vetting cohort status — synthetic chunk allocation and GC progress
+      description: |
+        Returns aggregate vetting statistics across all VETTING providers, plus per-provider
+        detail for providers with non-zero `chunks_pending_gc`. Used by operations to detect
+        stalled GC delivery and verify the vetting storage cap is not being violated.
+        (ADR-030, FR-062, FR-063, FR-064)
+      security:
+        - AdminApiKey: []
+      operationId: getVettingStatus
+      parameters:
+        - name: include_gc_pending_only
+          in: query
+          schema:
+            type: boolean
+            default: false
+          description: |
+            If true, return only providers with chunks_pending_gc > 0.
+            Useful for triaging stalled GC deliveries after mass ACTIVE transitions.
+      responses:
+        "200":
+          description: Vetting cohort status.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - total_vetting_providers
+                  - total_synthetic_chunks_active
+                  - total_synthetic_chunks_pending_gc
+                  - providers
+                properties:
+                  total_vetting_providers:
+                    type: integer
+                    minimum: 0
+                    description: |
+                      COUNT(providers WHERE status = 'VETTING'). Vetting providers do not
+                      contribute to the network readiness gate (which requires ACTIVE providers);
+                      this count is purely operational.
+                  total_synthetic_chunks_active:
+                    type: integer
+                    format: int64
+                    minimum: 0
+                    description: |
+                      Total synthetic chunk assignments in ACTIVE status across all VETTING
+                      providers. This is real disk usage on provider machines.
+                  total_synthetic_chunks_pending_gc:
+                    type: integer
+                    minimum: 0
+                    description: |
+                      Total synthetic chunks awaiting GC confirmation (PENDING_DELETION status).
+                      Non-zero means some providers have transitioned to ACTIVE but their
+                      synthetic data has not yet been cleaned up.
+                  providers:
+                    type: array
+                    items:
+                      type: object
+                      required:
+                        - provider_id
+                        - status
+                        - vetting_summary
+                      properties:
+                        provider_id:
+                          $ref: '#/components/schemas/UUID'
+                        status:
+                          $ref: '#/components/schemas/ProviderStatus'
+                        consecutive_audit_passes:
+                          type: integer
+                          minimum: 0
+                        vetting_summary:
+                          $ref: '#/components/schemas/VettingStatusSummary'
+                        last_heartbeat_ts:
+                          type: string
+                          format: date-time
+                          nullable: true
+        "401":
+          $ref: '#/components/responses/401Unauthorized'
+
+  /api/v1/admin/vetting/gc/retry:
+    post:
+      tags: [Admin]
+      summary: Manually retry stalled vetting GC instruction delivery
+      description: |
+        Triggers an immediate retry of the vetting GC instruction for a specific provider.
+        Used when `chunks_pending_gc > 0` for a provider that has been ACTIVE for more than
+        24 hours — indicating the automatic retry has not succeeded.
+
+        The microservice will attempt to connect to the provider's last known multiaddrs and
+        deliver the GC instruction list. If the provider is still offline, the endpoint
+        returns 200 with `delivery_attempted: false` and the background retry continues.
+        (ADR-030, FR-064)
+      security:
+        - AdminApiKey: []
+      operationId: retryVettingGC
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [provider_id]
+              properties:
+                provider_id:
+                  $ref: '#/components/schemas/UUID'
+                  description: Must identify a provider with status = 'ACTIVE' and chunks_pending_gc > 0.
+      responses:
+        "200":
+          description: GC retry initiated (or skipped if provider offline).
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - provider_id
+                  - delivery_attempted
+                  - chunks_pending_gc_before
+                  - chunks_pending_gc_after
+                properties:
+                  provider_id:
+                    $ref: '#/components/schemas/UUID'
+                  delivery_attempted:
+                    type: boolean
+                    description: |
+                      True if a libp2p connection was established and the GC instruction stream was opened.
+                      False if the provider was not reachable.
+                  chunks_pending_gc_before:
+                    type: integer
+                    minimum: 0
+                  chunks_pending_gc_after:
+                    type: integer
+                    minimum: 0
+                    description: |
+                      0 indicates full GC success. Any non-zero value means partial failure;
+                      the automatic retry will continue.
+        "400":
+          description: |
+            Provider is not in ACTIVE status, has no pending GC, or provider_id not found.
           $ref: '#/components/responses/400BadRequest'
         "401":
           $ref: '#/components/responses/401Unauthorized'
