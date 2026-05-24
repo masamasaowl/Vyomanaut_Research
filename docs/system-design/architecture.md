@@ -33,6 +33,7 @@
 | **lf** | Fragment (chunk) size. Fixed at 256 KB (262,144 bytes) in V2. |
 | **Master secret** | `Argon2id(passphrase, owner_id)`. The root of the data owner's key hierarchy. Never written to disk or transmitted. |
 | **MTTF** | Mean Time To Failure. For V2 desktop providers: target 300 days, minimum acceptable 180 days. |
+| **NetworkProfile** | The `internal/config.NetworkProfile` struct that contains all parameters differing between demo and production mode (erasure coding parameters, time windows, Argon2id cost, payment mode, infrastructure thresholds). Constructed once at startup from either `config.ProductionProfile` or `config.DemoProfile` based on `VYOMANAUT_MODE`. (ADR-031) |
 | **Pointer file** | A per-file metadata structure containing provider IDs, chunk content addresses, and erasure parameters. Encrypted with AEAD_CHACHA20_POLY1305. Stored as ciphertext by the microservice (which cannot decrypt it). |
 | **PN-counter CRDT** | A conflict-free replicated data type for counters that support both increment and decrement. The escrow ledger uses this pattern. |
 | **Qpeek** | Burst repair bandwidth: total network transfer required when one provider fails. At N=1,000, 50 GB/provider: ~793 GB. |
@@ -162,6 +163,7 @@ These are the non-functional requirements that drove architectural decisions. Th
 | Digital signatures | Ed25519 | Sub-millisecond key generation; used for audit receipts and pointer file integrity |
 | Payment gateway | Razorpay (Route + Smart Collect 2.0 + RazorpayX Payouts) | India-first; UPI; no per-transaction fee for P2P transfers |
 | Secrets management | HashiCorp Vault / AWS SSM / GCP Secret Manager | For cluster audit secret distribution across microservice replicas |
+| Network Profile | `internal/config.NetworkProfile` | Single source of truth for all parameters that differ between demo and production mode. Constructed once at startup, passed via dependency injection to every subsystem. No subsystem reads `VYOMANAUT_MODE` directly. (ADR-031) |
 
 ---
 
@@ -254,13 +256,15 @@ The system refuses upload requests until all of the following conditions are sim
 
 Upload requests return HTTP 503 ("Network not ready") until all conditions are met.
 
+**Mode-variable thresholds.** All numeric thresholds in the readiness gate (≥ 56 providers, ≥ 5 ASNs, ≥ 3 regions, ≥ 3 relays, etc.) are read from the active `NetworkProfile` rather than being hardcoded. In `VYOMANAUT_MODE=demo` the thresholds drop to the demo values specified in ADR-031. The gate logic is identical in both modes; only the threshold values differ.
+
 **Scale validation at 1,000,000 providers (analytical):** The Giroire BWavg formula scales as D/N (total data / provider count). For fixed per-provider storage, BWavg stays at ~39 Kbps regardless of provider count. LossRate is similarly scale-invariant for fixed D/N. The erasure parameters are valid at any scale with consistent D/N ratios.
 
 ---
 
 ## 9. Core Design Principles
 
-These seven principles governed every architectural decision. When a new engineering choice comes up during the build, check it against these before deciding.
+These eight principles governed every architectural decision. When a new engineering choice comes up during the build, check it against these before deciding.
 
 **Lazy everything.** Work is deferred until necessary. Repair fires only when fragment count drops to a threshold, not immediately on every departure. This single decision reduces repair bandwidth by ~38× compared to eager repair. ([ADR-004](../decisions/ADR-004-repair-protocol.md))
 
@@ -275,6 +279,10 @@ These seven principles governed every architectural decision. When a new enginee
 **Fail closed on cryptographic operations.** If the cluster audit secret cannot be loaded, a microservice replica does not start. If a chunk's content hash fails verification at read time, the audit result is FAIL — never a wrong hash. Unknown is always worse than a known failure.
 
 **Data plane and control plane are separate.** File data never flows through the microservice. The microservice knows about data (which chunk is where, who holds it) but never holds the data itself. This separation is not a performance optimisation — it is the mechanism by which zero-knowledge storage holds even if the microservice is compromised.
+
+**Profile-driven configuration.** All parameters that differ between a live demo and production (erasure coding parameters, time windows, infrastructure thresholds, Argon2id cost, payment mode) live exclusively in the `NetworkProfile` struct (ADR-031). Business logic never branches on the mode string directly. Switching from demo to production is a change to the active profile instance and the addition of three infrastructure dependencies (secrets manager, Razorpay live, relay nodes) — no logic changes, no Go function modifications, no schema changes beyond two parameterised CHECK constraint values.
+
+The following parameters are **not** in `NetworkProfile` because they must be identical in both modes: `ShardSize` (262,144 bytes — a compile-time constant), the 33-byte challenge nonce length, all cipher identities, Poly1305 constant-time tag comparison, row security policies on `audit_receipts` and `escrow_events`, and the single-writer vLog goroutine requirement.
 
 ---
 
@@ -870,6 +878,8 @@ If the availability service fails to republish a provider's DHT record within th
 
 ## 24. Deployment Topology
 
+**Mode selection.** The deployment topology described in this section is the production topology. In `VYOMANAUT_MODE=demo`, the entire system runs on a single machine or a local area network: five provider daemon instances (physical laptops or `--sim-count=5` on one machine), one microservice replica with quorum checks disabled, no relay nodes, and a mock payment provider. The binary is identical; only the `NetworkProfile` values differ. See ADR-031 for the complete demo topology specification.
+
 **Cloud provider.** AWS or GCP — operator's choice at deployment time. Both are acceptable. The architecture has no dependency on cloud-provider-specific features; managed Postgres (RDS or Cloud SQL) and standard VM instances are the only cloud primitives used. The remainder of this section gives AWS names in parentheses as a concrete reference; substitute GCP equivalents if deploying there.
 
 **Coordination microservice.** Three VM instances (e.g. AWS EC2 `t3.medium` or equivalent: **2 vCPU, 4 GB RAM**), one per availability zone in `ap-south-1` (Mumbai). Each runs the microservice binary. They share a managed Postgres primary in the same region with two read replicas across AZs. Gossip membership connects all three replicas directly. External administrative traffic routes through a load balancer; audit challenge dispatch and assignment calls bypass the load balancer via client-driven direct routing.
@@ -938,3 +948,4 @@ These are explicit design decisions, each with a documented reason and a V3 path
 | Provider heartbeat (4-hour address update) | [ADR-028](../decisions/ADR-028-provider-heartbeat.md) |
 | Bootstrap minimum viable network (7 conditions) | [ADR-029](../decisions/ADR-029-bootstrap-minimum-viable-network.md) |
 | Synthetic vetting chunks (repair-safe provider assessment) | [ADR-030](../decisions/ADR-030-synthetic-vetting-chunks.md) |
+| Demo / production mode: NetworkProfile, mode flag, demo specifications | ADR-031 |

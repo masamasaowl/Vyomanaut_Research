@@ -51,6 +51,8 @@ to a query pattern in this document must be dropped.
 migration or application code path. Migrations that would break an invariant are
 rejected at review time, not at runtime.
 
+**Profile rule.** Two CHECK constraints in this document (`chunk_assignments.shard_index` and `repair_jobs.available_shard_count`) show production values in their comments but are actually parameterised from `NetworkProfile` at migration generation time via `migrations/generator.go`. In `VYOMANAUT_MODE=demo` the values differ. All other constraints, column types, and row security policies are identical in both modes. (ADR-031)
+
 ---
 
 ## 2. Entity-Relationship Diagram
@@ -234,6 +236,9 @@ version prefix is what allows any replica to load the correct `server_secret_vN`
 (ADR-027, requirements.md §9.3)
 
 **Invariant 6 — No real shard on vetting providers; no repair for synthetic chunks.** `chunk_assignments` rows where `is_vetting_chunk = FALSE` must have a non-null `segment_id` (referencing a real data owner segment) and must never be assigned to a provider whose `status = 'VETTING'`. Rows where `is_vetting_chunk = TRUE` must have `segment_id = NULL`. The repair scheduler must never create a `repair_jobs` row for a chunk where `is_vetting_chunk = TRUE`. These invariants are enforced by CHECK constraints in the schema and as pre-conditions in `internal/repair.EnqueueJob`. (ADR-030, NFR-034)
+
+**Invariant 7 — ShardSize is a compile-time constant in both modes.**`ShardSize = 262,144` (256 KB) is never a field in `NetworkProfile` and never appears in
+any CHECK constraint generated at runtime. All CHECK constraints that reference shard count (shard_index range, available_shard_count range) are parameterised from `NetworkProfile.TotalShards` and `NetworkProfile.DataShards` via `migrations/generator.go`, but shard size itself is hardcoded. A compiler-enforced test (`TestProfileShardSizeIsConstant`) verifies that `DemoProfile.ShardSize == ProductionProfile.ShardSize == 262144` on every commit. (ADR-031)
 
 ---
 
@@ -590,10 +595,15 @@ CREATE TABLE chunk_assignments (
     -- NOT NULL when is_vetting_chunk = FALSE (enforced by constraint below).
     -- Used by the repair scheduler to find surviving holders for RS decode.
 
-    shard_index     SMALLINT            CHECK (shard_index BETWEEN 0 AND 55),
+    shard_index     SMALLINT            CHECK (shard_index BETWEEN 0 AND 55 OR shard_index IS NULL),
     -- NULL when is_vetting_chunk = TRUE (no RS scheme applies to synthetic chunks).
     -- NOT NULL when is_vetting_chunk = FALSE (enforced by constraint below).
     -- Shards 0–15 are AONT systematic codewords; shards 16–55 are RS parity (ADR-022).
+    -- Upper bound (55) is TotalShards-1 = 56-1 in production.
+    -- In VYOMANAUT_MODE=demo (TotalShards=5) this bound is 4.
+    -- The actual constraint value is emitted by migrations/generator.go from
+    -- NetworkProfile.TotalShards-1 at migration generation time, not hardcoded here.
+    -- This comment shows the production value. (ADR-031)
 
     provider_id     UUID                NOT NULL REFERENCES providers (provider_id),
 
@@ -1046,6 +1056,11 @@ CREATE TABLE repair_jobs (
     -- because at s=16 an EMERGENCY_FLOOR job immediately supersedes any pending
     -- THRESHOLD_WARNING job for the same chunk. Maximum is 56 (all shards present
     -- but a departure is imminent — for SILENT/ANNOUNCED triggers).
+    -- Range [DataShards, TotalShards] = [16, 56] in production.
+    -- In VYOMANAUT_MODE=demo (DataShards=3, TotalShards=5) the range is [3, 5].
+    -- The actual constraint is emitted by migrations/generator.go from
+    -- NetworkProfile.DataShards and NetworkProfile.TotalShards at generation time.
+    -- This comment shows the production values. (ADR-031)
 
     created_at              TIMESTAMPTZ         NOT NULL DEFAULT NOW(),
 
@@ -1420,6 +1435,14 @@ FROM (
     GROUP BY provider_id
 ) sub;
 
+-- NOTE: The interval literals ('24 hours', '7 days', '30 days') in this view
+-- are generated at microservice startup from NetworkProfile.ScoreWindow{Short,Medium,Long},
+-- not hardcoded here. The view is DROPPED and RECREATED on every microservice restart.
+-- In VYOMANAUT_MODE=demo the intervals are '2 minutes', '6 minutes', '20 minutes'.
+-- This DDL shows the production values for reference only. (ADR-031)
+-- Additionally: include NOW() AS scores_as_of in the SELECT so consumers can verify
+-- the view age before using scores for payment decisions.
+
 CREATE UNIQUE INDEX ON mv_provider_scores (provider_id);
 -- Required for concurrent refresh without locking.
 
@@ -1676,11 +1699,23 @@ prevents a job from being recorded as completed before it was started.
 
 ---
 
-### 8.21 `chunk_assignments.shard_index` (change from NOT NULL)
+### 8.22 `chunk_assignments.shard_index` (change from NOT NULL)
 
 **Null means:** This chunk assignment is for a synthetic vetting chunk. No RS shard slot applies — synthetic chunks are not part of any RS(16,56) scheme. The CHECK constraint ensures `shard_index IS NULL` only when `is_vetting_chunk = TRUE`. The partial unique index `idx_chunk_assignments_one_active_per_shard` correctly excludes synthetic chunks (`WHERE is_vetting_chunk = FALSE`).
 
 **Cannot use NOT NULL:** No meaningful shard index exists for a random block that is not part of any erasure-coded file. (ADR-030)
+
+---
+
+### 8.23 Profile-parameterised CHECK bounds
+
+The `shard_index` upper bound and `available_shard_count` range in `chunk_assignments` and
+`repair_jobs` respectively vary between production (TotalShards=56, DataShards=16) and demo
+(TotalShards=5, DataShards=3). These bounds are not nullable columns; they are
+profile-parameterised constraints emitted by `migrations/generator.go`. The migration
+generator must be invoked with the active `NetworkProfile` before any migration is applied to
+a new database. Applying the wrong profile's bounds to a database causes all shard assignments
+to fail constraint checks silently. (ADR-031)
 
 ---
 
@@ -1727,6 +1762,19 @@ NOW() AS scores_as_of   -- consumers must check age before using for payment dec
 - [ ]  New indexes `idx_chunk_assignments_vetting_provider_active` and `idx_chunk_assignments_vetting_provider` created.
 - [ ]  Nightly data integrity query documented: `SELECT COUNT(*) FROM audit_receipts ar JOIN chunk_assignments ca ON ca.chunk_id = ar.chunk_id AND ca.provider_id = ar.provider_id WHERE ar.file_id IS NULL AND ca.is_vetting_chunk = FALSE` must return 0.
 - [ ]  Invariant 6 added to code review checklist and pre-deployment validation suite.
+- [ ] Schema generated against the correct NetworkProfile:
+      run `migrations/generator.go --profile=prod` for production databases,
+      `migrations/generator.go --profile=demo` for demo databases.
+      Never apply a demo schema (shard_index BETWEEN 0 AND 4) to a production database
+      or vice versa. (ADR-031)
+- [ ] mv_provider_scores view regenerated at first startup of the target environment —
+      it is dropped and recreated from NetworkProfile scoring window values, not applied
+      as a migration. Verify by checking `scores_as_of` after first startup.
+- [ ] Both databases (demo_db and prod_db) are completely separate instances with
+      separate connection strings. Demo data must never enter the production database.
+      (ADR-031)
+- [ ] TestProfileShardSizeIsConstant passes in CI, confirming DemoProfile.ShardSize
+      == ProductionProfile.ShardSize == 262144. (ADR-031)
 
 ---
 

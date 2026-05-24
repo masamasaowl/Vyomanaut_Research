@@ -133,6 +133,9 @@ flowchart LR
     RZ -- "HTTPS webhook POST\n(payment.captured,\npayout.reversed,\naccount.created)" --> MS
 ```
 
+**Demo topology.** In `VYOMANAUT_MODE=demo`, the relay node box and the secrets manager box are absent from the physical topology (MinRelayNodes=0, RequireSecretsManager=false). The logical communication links they represent still exist in the code; they are simply not exercised. The mock PaymentProvider replaces the Razorpay box. The diagram above shows the production topology. (ADR-031)
+
+
 ### Cross-reference: diagram links to ADRs
 
 | Link | Protocol | ADR |
@@ -279,6 +282,8 @@ All error responses from the microservice REST API use a standard JSON body.
 | 500 | INTERNAL_ERROR | All other server-side failures |
 | 500 | VETTING_CAP_EXCEEDED | synthetic chunk cap reached for this provider; assignment service will retry when existing chunks are retired. |
 | 500 | REAL_SHARD_ON_VETTING_PROVIDER | attempt to assign a real shard to a VETTING provider; internal error; never surfaced to clients. |
+| 500 | DEMO_MODE_REAL_PAYMENT | Startup guard: demo mode + live Razorpay endpoint detected; process refuses to start |
+| 500 | PROD_MODE_ENV_SECRET | Startup guard: prod mode + VYOMANAUT_CLUSTER_MASTER_SEED env var detected; process refuses to start |
 
 
 **Error propagation from Razorpay failures:**
@@ -296,23 +301,26 @@ The error_code `INSUFFICIENT_ASN_DIVERSITY` must include an additional field:
 
 The readiness gate is a prerequisite check enforced by the assignment service on every
 upload request and re-evaluated every 60 seconds. It is exposed externally at:
-  GET /api/v1/admin/readiness
+  `GET /api/v1/admin/readiness`
 
 All seven conditions must be simultaneously true for uploads to be permitted. If any is
-false, POST /api/v1/upload/assign returns HTTP 503 with error_code NETWORK_NOT_READY
-and retry_after = 60.
+false, `POST /api/v1/upload/assign` returns `HTTP 503` with error_code `NETWORK_NOT_READY`
+and `retry_after = 60`.
 
 **Condition evaluation contract:**
 
-| Condition | Data source | Evaluation |
-|---|---|---|
-| ≥ 56 active vetted providers | providers WHERE status IN ('VETTING','ACTIVE') | COUNT(*) |
-| ≥ 5 distinct ASNs | providers WHERE status IN ('VETTING','ACTIVE') | COUNT(DISTINCT asn) |
-| ≥ 3 distinct metro regions | providers WHERE status IN ('VETTING','ACTIVE') | COUNT(DISTINCT region) |
-| Full (3,2,2) quorum | Microservice cluster gossip membership | min(healthy_replicas) >= 3 |
-| ≥ 56 Razorpay Linked Accounts with cooling complete | providers WHERE razorpay_cooling_until IS NOT NULL AND razorpay_cooling_until < NOW() | COUNT(*) — LIVE QUERY; not cached |
-| ≥ 3 relay nodes deployed | Relay node heartbeat table (operator-managed) | COUNT(*) WHERE last_seen > NOW() - INTERVAL '5 minutes' |
-| Cluster audit secret loaded | In-memory on all replicas | Boolean flag set at startup |
+| Condition | Data source | Production threshold | Demo threshold | Source |
+| --- | --- | --- | --- | --- |
+| Active vetted providers | `providers WHERE status IN ('VETTING','ACTIVE')` | ≥ 56 | ≥ 5 | `NetworkProfile.MinActiveProviders` |
+| Distinct ASNs | `providers WHERE status IN ('VETTING','ACTIVE')` | ≥ 5 | ≥ 5 | `NetworkProfile.MinDistinctASNs` |
+| Distinct metro regions | `providers WHERE status IN ('VETTING','ACTIVE')` | ≥ 3 | ≥ 1 | `NetworkProfile.MinMetroRegions` |
+| Full quorum | Gossip membership | 3 healthy replicas | 1 instance (quorum disabled) | `NetworkProfile.RequireQuorum` |
+| Razorpay accounts with cooling | `providers WHERE razorpay_cooling_until < NOW()` | ≥ 56 — LIVE QUERY | ≥ 5 (mock, cooling = 0 s) | `NetworkProfile.MinCooledAccounts` |
+| Relay nodes | Relay heartbeat table | ≥ 3 | 0 | `NetworkProfile.MinRelayNodes` |
+| Cluster audit secret | In-memory on all replicas | Loaded from secrets manager | Loaded from env var | `NetworkProfile.RequireSecretsManager` |
+
+**GET /api/v1/admin/readiness response.** The `"required_value"` field in each condition
+object is populated from the active `NetworkProfile.Min*` field, not from a hardcoded constant. Consumers of this endpoint must not assume the value is always 56 for the provider count condition — in demo mode it is 5.
 
 The cooling_complete count is a live query per ADR-029. The assignment service MUST NOT
 cache this value between evaluations — it must re-query each 60-second cycle.
@@ -363,6 +371,8 @@ traversal (AutoNAT → DCUtR → Circuit Relay v2) are governed by
    field precedes the payload. The maximum frame size for each protocol is specified below.
    A frame exceeding the maximum must cause the receiving side to reset the stream with error
    code `0x01` (FRAME_TOO_LARGE).
+
+6. **Mode-invariant wire formats.** All frame sizes, field layouts, and protocol ID strings defined in §4 are identical in `VYOMANAUT_MODE=demo` and `VYOMANAUT_MODE=prod`. Demo mode only affects time windows, shard counts, and infrastructure dependencies — never the bytes on the wire. (ADR-031)
 
 ---
 
@@ -732,18 +742,25 @@ func DerivePointerEncKey(masterSecret, ownerID, fileID []byte) [32]byte
 func DeriveKeystoreEncKey(masterSecret, ownerID []byte) [32]byte
 
 // DeriveMasterSecret derives the 32-byte master secret from the owner's passphrase
-// using Argon2id with parameters t=3, m=65536, p=4.
-// The master secret must NEVER be written to disk or transmitted over any network.
+// using Argon2id. The cost parameters (time, memory, parallelism) are supplied by the
+// caller from the active NetworkProfile rather than being hardcoded, so that demo mode
+// can use reduced parameters without changing the code path.
 //
 // Pre-conditions:
 //   - len(passphrase) >= 8     (panic in debug if violated)
 //   - len(ownerID) == 16       (UUID bytes, used as Argon2id salt)
+//   - argon2Time >= 1          (minimum 1 iteration)
+//   - argon2Memory >= 4096     (minimum 4 MB; production uses 65536 KiB)
+//   - argon2Threads >= 1
 // Post-conditions:
 //   - returns a 32-byte master secret, deterministic for the given inputs.
-//   - execution time >= 200ms on any supported hardware (budgeted in NFR-010).
+//   - execution time is governed by the supplied Argon2id parameters.
+//     Production: >= 200ms. Demo: ~20-50ms.
 // Error semantics: no errors returned; pre-condition violations panic.
 // Goroutine-safe: yes (pure function).
-func DeriveMasterSecret(passphrase, ownerID []byte) [32]byte
+func DeriveMasterSecret(passphrase, ownerID []byte, argon2Time uint32, argon2Memory uint32, argon2Threads uint8) [32]byte
+// Caller responsibility. The microservice and provider daemon must pass profile.Argon2Time, profile.Argon2Memory, and profile.Argon2Threads from the active NetworkProfile. They must never hardcode Argon2id parameters inline. (ADR-031)
+
 
 // EncryptPointerFile encrypts the serialised pointer file plaintext using
 // AEAD_CHACHA20_POLY1305 (RFC 8439, ADR-019).
@@ -857,41 +874,48 @@ Provides Reed-Solomon RS(s=16, r=40) encode and decode over GF(2^8). Implemented
 `github.com/klauspost/reedsolomon`. All functions are **goroutine-safe**.
 
 ```go
-// Package erasure implements Reed-Solomon RS(16, 56) encode and decode.
-// Parameters s=16, r=40, n=56 are fixed constants; they may not be overridden
-// at runtime. (ADR-003)
+// Package erasure implements Reed-Solomon erasure coding.
+// The data, parity, and total shard counts are NOT package-level constants —
+// they are injected from the active NetworkProfile via NewEngine(profile).
+// This allows demo mode (DataShards=3, TotalShards=5) and production mode
+// (DataShards=16, TotalShards=56) to use identical code paths. (ADR-031)
+//
+// ShardSize (262,144 bytes) IS a package-level constant and must not change between
+// modes. A compiler-enforced test verifies this.
 package erasure
 
-const (
-    DataShards   = 16   // s — reconstruction threshold
-    ParityShards = 40   // r — parity fragments
-    TotalShards  = 56   // n = s + r
-    ShardSize    = 262144 // lf — 256 KB per shard in bytes
-)
+const ShardSize = 262144 // lf — 256 KB; fixed in both modes; never profile-variable
 
-// EncodeSegment splits an AONT package into 56 shards of 256 KB each.
-// The first 16 shards are the systematic (identity-mapped) AONT codewords.
-// Shards 16–55 are Reed-Solomon parity.
+// Engine is the erasure coding instance parameterised by NetworkProfile.
+// Create with NewEngine; do not use DataShards/TotalShards constants directly.
+type Engine struct {
+    DataShards   int // s — from NetworkProfile
+    ParityShards int // r — from NetworkProfile
+    TotalShards  int // n — from NetworkProfile
+}
+
+// NewEngine constructs an erasure Engine from the active NetworkProfile.
 //
 // Pre-conditions:
-//   - len(aontPackage) == DataShards * ShardSize exactly
-//     (caller pads the segment to exactly 4 MB = 16 * 256 KB before AONT)
+//   - profile.DataShards >= 1
+//   - profile.TotalShards == profile.DataShards + profile.ParityShards
+//   - profile.ShardSize == ShardSize (compile-time constant; verified by test)
+func NewEngine(profile config.NetworkProfile) (*Engine, error)
+
+// EncodeSegment splits an AONT package into e.TotalShards shards of ShardSize bytes.
+// Pre-conditions:
+//   - len(aontPackage) == e.DataShards * ShardSize exactly
 // Post-conditions:
-//   - returns exactly TotalShards byte slices, each of length ShardSize
-//   - shards[0:DataShards] are the systematic shards (equal to the input words)
-//   - shards[DataShards:TotalShards] are the parity shards
-//   - any DataShards of the returned shards can reconstruct the original aontPackage
+//   - returns exactly e.TotalShards byte slices, each of length ShardSize
+//   - any e.DataShards of the returned shards can reconstruct the original package
 // Error semantics: returns error only if the underlying GF arithmetic fails (fatal).
 // Goroutine-safe: yes (no shared mutable state).
-func EncodeSegment(aontPackage []byte) ([][]byte, error)
+func (e *Engine) EncodeSegment(aontPackage []byte) ([][]byte, error)
 
-// DecodeSegment reconstructs an AONT package from any DataShards (16) of the
-// 56 shards. Absent shards are represented as nil slices.
-//
+// DecodeSegment reconstructs an AONT package from any e.DataShards of the e.TotalShards shards.
 // Pre-conditions:
-//   - len(shards) == TotalShards
-//   - at least DataShards entries in shards are non-nil
-//   - every non-nil shard has len == ShardSize
+//   - len(shards) == e.TotalShards
+//   - at least e.DataShards entries are non-nil
 // Post-conditions:
 //   - returns the reconstructed AONT package of length DataShards * ShardSize
 //   - all nil entries in shards are filled in-place (the caller's slice is modified)
@@ -900,7 +924,7 @@ func EncodeSegment(aontPackage []byte) ([][]byte, error)
 //   - ErrShardSize: a non-nil shard has the wrong length
 //   - Other errors from klauspost/reedsolomon: treat as fatal.
 // Goroutine-safe: yes.
-func DecodeSegment(shards [][]byte) ([]byte, error)
+func (e *Engine) DecodeSegment(shards [][]byte) ([]byte, error)
 
 var (
     ErrTooFewShards = errors.New("erasure: fewer than 16 non-nil shards provided")
@@ -1359,6 +1383,15 @@ func DeleteVettingChunksOnDeparture(ctx context.Context, db *sql.DB,
 // Goroutine-safe: yes.
 func MarkJobComplete(ctx context.Context, db *sql.DB, jobID uuid.UUID, success bool) error
 
+// RepairPromotionTimeout returns the duration after which a PRE_WARNING job
+// is promoted to PERMANENT_DEPARTURE priority if not yet serviced.
+// The value comes from NetworkProfile.RepairPromotionTimeout (6 h in production,
+// 3 min in demo). The scheduler must call this rather than reading a constant.
+// (ADR-031, FR-043)
+func RepairPromotionTimeout(profile config.NetworkProfile) time.Duration {
+    return profile.RepairPromotionTimeout
+}
+
 // RepairJob is the in-memory representation of a dequeued job.
 type RepairJob struct {
     JobID               uuid.UUID
@@ -1679,6 +1712,12 @@ the database layer; the contracts here document the intent for application-layer
 | UPDATE `status` to `'DELETED'` for synthetic chunks | `vyomanaut_app` | After successful GC confirmation from the daemon via the vetting GC protocol (§4.5). |
 | DELETE `segments` | **Prohibited** | Segments are immutable references |
 | Repair job creation for `is_vetting_chunk = TRUE` rows | Prohibited for all roles | Any code path that calls `repair.EnqueueJob` for a synthetic chunk is a bug. Invariant 6. `IsVettingChunk()` must be called before any EnqueueJob invocation in the departure handler and threshold monitor. |
+
+**Demo-mode shard_index range.** The `shard_index BETWEEN 0 AND 55` CHECK shown in the
+schema DDL reflects the production value (`TotalShards-1 = 55`). In demo mode
+(`TotalShards=5`), the generated constraint is `shard_index BETWEEN 0 AND 4`. The row
+security policy and all DML permissions are identical in both modes; only the CHECK bound
+differs. (ADR-031, `migrations/generator.go`)
 
 ### `audit_receipts`
 
@@ -2016,25 +2055,23 @@ coordination across the affected components before deployment**.
 ### libp2p Protocol Strings
 
 - **Protocol IDs are semver strings** embedded in the protocol ID (e.g.
-  `/vyomanaut/chunk-upload/1.0.0`). The version suffix must be incremented whenever the wire
-  format changes in any backwards-incompatible way.
-- **Old and new protocol versions must coexist** for at least one full release cycle. Both
-  responders (providers) and initiators (clients, microservice) must negotiate via
-  multistream-select and handle both the old and new protocol for the overlap period.
+  `/vyomanaut/chunk-upload/1.0.0`). The version suffix must be incremented whenever the wire format changes in any backwards-incompatible way.
+- **Old and new protocol versions must coexist** for at least one full release cycle. Both responders (providers) and initiators (clients, microservice) must negotiate via multistream-select and handle both the old and new protocol for the overlap period.
 - **Never change the framing without a version bump.** Changing the `length` field encoding
   or a message field's byte offset is always a breaking change.
 - `/vyomanaut/vetting-gc/1.0.0` — initial version. The GC instruction frame format (VettingGCRequest / VettingGCResponse) must increment the version string if any of the following change: the `chunk_count` field encoding, the batch size limit, the failure bitmap format, or the response status byte semantics. The protocol must remain in the daemon binary indefinitely: an `ACTIVE provider` that received GC instructions years earlier may need to re-run GC after a crash (the `PENDING_DELETION` rows will retrigger delivery on reconnect). Removing the protocol handler from the daemon requires a coordinated network-wide migration.
+- **Protocol strings are mode-invariant.** All libp2p protocol IDs (`/vyomanaut/chunk-upload/1.0.0`, `/vyomanaut/audit-challenge/1.0.0`, etc.) are identical in demo and production. The wire format, frame sizes, and 0-RTT policies documented in §4 apply in both modes. A demo provider daemon can interoperate with a production microservice at the protocol layer (though the readiness gate will prevent uploads until production conditions are met). (ADR-031)
+
 
 ### Internal Go Package Interfaces
 
 - **Additive changes** (new exported functions, new optional parameters via a new overloaded
   function name): allowed within a milestone without coordination.
-- **Breaking changes** (changing an exported function's signature, changing pre/post-conditions,
-  changing error sentinel values): require a new milestone entry in
-  [`mvp.md`](./mvp.md) identifying all affected call sites. Changes must be made atomically —
-  the PR that changes the interface must also update all call sites.
-- **Sentinel error identity.** Exported `var Err... = errors.New(...)` values must never be
-  renamed; callers use `errors.Is()` for matching. Adding a new sentinel is additive and safe.
+- **Breaking changes** (changing an exported function's signature, changing pre/post-conditions, changing error sentinel values): require a new milestone entry in [`mvp.md`](./mvp.md) identifying all affected call sites. Changes must be made atomically — the PR that changes the interface must also update all call sites.
+- **Sentinel error identity.** Exported `var Err... = errors.New(...)` values must never be renamed; callers use `errors.Is()` for matching. Adding a new sentinel is additive and safe.
+- **NetworkProfile fields.** A new `NetworkProfile` field is not a versioned interface change
+— it is a configuration change. However, adding a field requires simultaneous values in both `ProductionProfile` and `DemoProfile` in the same PR. The Go struct-literal syntax enforces this at compile time: an omitted field is a compile error, not a silent zero-value default. If a new field's zero value is a valid production setting (e.g. `false`), add a comment explaining why the zero value is intentional; otherwise the intent is ambiguous to future engineers. (ADR-031)
+
 
 ### PostgreSQL Schema
 

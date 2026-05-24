@@ -54,6 +54,14 @@ info:
     Every constraint in this spec traces to an ADR or NFR. The relevant citation appears
     in the field description (e.g. "ADR-017") or in the endpoint description block.
 
+    ## Demo vs Production mode
+    When `VYOMANAUT_MODE=demo` is active, the microservice uses a reduced
+    `NetworkProfile` (DataShards=3, TotalShards=5, 2-minute polling, mock payment
+    provider, etc.). All API endpoints behave identically; only threshold values and
+    time windows differ. The `/api/v1/admin/readiness` response includes a `"mode"` field
+    identifying the active profile. Clients must not cache readiness threshold values —
+    always read them from the response. (ADR-031)
+
   contact:
     name: Masamasaowl
     url: https://github.com/masamasaowl/Vyomanaut_Research
@@ -745,6 +753,19 @@ components:
             20% ASN cap — no single ASN may hold more than 20% of any file's 56 shards.
             (ADR-014, ADR-003) In simulation mode, use "SIM-AS1" through "SIM-AS5".
           example: "AS24560"
+        demo_asn:
+          type: string
+          pattern: '^SIM-AS\d+$'
+          maxLength: 16
+          nullable: true
+          description: |
+            Optional. Only accepted when VYOMANAUT_MODE=demo. If supplied, this value
+            overrides the `asn` field for the provider record and is used to satisfy the
+            MinDistinctASNs=5 requirement with synthetic ASN identifiers (SIM-AS1 … SIM-AS5).
+            If omitted in demo mode, the microservice auto-assigns the next available
+            synthetic ASN from the pool. This field is silently ignored in production.
+            (ADR-031, FR-068)
+          example: "SIM-AS3"
         initial_multiaddrs:
           type: array
           items:
@@ -982,6 +1003,14 @@ components:
             95th-percentile upload throughput measured from audit response latencies.
             Drives the per-provider audit response deadline:
             `deadline_ms = (chunk_size_kb / p95_throughput_kbps) × 1500`. (ADR-014)
+        network_mode:
+          type: string
+          enum: [demo, prod]
+          description: |
+            The active NetworkProfile mode at the time this response was generated.
+            Included so provider dashboards can display a clear 'DEMO MODE' warning
+            when operators are running a demonstration network. (ADR-031)
+          example: "prod"
 
     ProviderDowntimeRequest:
       type: object
@@ -1629,6 +1658,22 @@ components:
           type: integer
           minimum: 0
           description: Threshold that must be met or exceeded for this condition to pass.
+        demo_value:
+          type: integer
+          minimum: 0
+          nullable: true
+          description: |
+            The threshold value that applies in VYOMANAUT_MODE=demo for this condition.
+            Null when the system is running in production mode. Included to help operators
+            distinguish demo readiness from production readiness at a glance. (ADR-031)
+          example: 5
+        mode:
+          type: string
+          enum: [demo, prod]
+          description: |
+            The active mode of the microservice that produced this readiness response.
+            Always 'prod' in production deployments. (ADR-031)
+          example: "prod"
 
     ReadinessResponse:
       type: object
@@ -1636,6 +1681,7 @@ components:
         - all_conditions_met
         - evaluated_at
         - conditions
+        - mode
       properties:
         all_conditions_met:
           type: boolean
@@ -1646,6 +1692,13 @@ components:
           type: string
           format: date-time
           description: When this status was last evaluated (refreshed every 60 seconds).
+        mode:
+          type: string
+          enum: [demo, prod]
+          description: |
+            The active NetworkProfile mode. All threshold values in `conditions` reflect
+            this mode. 'demo' thresholds are lower; the gate logic is identical. (ADR-031)
+          example: "prod"
         conditions:
           type: object
           required:
@@ -1659,25 +1712,44 @@ components:
           properties:
             active_vetted_providers:
               $ref: '#/components/schemas/ReadinessCondition'
-              description: "Threshold: ≥ 56. (ADR-003, ADR-029)"
+              description: |
+                Threshold from NetworkProfile.MinActiveProviders.
+                Production: ≥ 56. Demo: ≥ 5. (ADR-003, ADR-029, ADR-031)
             distinct_asns:
               $ref: '#/components/schemas/ReadinessCondition'
-              description: "Threshold: ≥ 5. Fewer makes the 20% ASN cap unenforceable. (ADR-014, ADR-029)"
+              description: |
+                Threshold from NetworkProfile.MinDistinctASNs.
+                Production: ≥ 5. Demo: ≥ 5 (unchanged — required to satisfy the 20% ASN
+                cap with TotalShards=5; see ADR-031 §5 for the corrected value).
+                (ADR-014, ADR-029, ADR-031)
             distinct_metro_regions:
               $ref: '#/components/schemas/ReadinessCondition'
-              description: "Threshold: ≥ 3 distinct Indian metro regions. (ADR-029)"
+              description: |
+                Threshold from NetworkProfile.MinMetroRegions.
+                Production: ≥ 3. Demo: ≥ 1. (ADR-029, ADR-031)
             microservice_quorum:
               $ref: '#/components/schemas/ReadinessCondition'
-              description: "Threshold: 3 healthy replicas (full (3,2,2) quorum). (ADR-025)"
+              description: |
+                Threshold from NetworkProfile.RequireQuorum.
+                Production: 3 healthy replicas (full (3,2,2) quorum).
+                Demo: 1 instance (quorum disabled via RequireQuorum=false). (ADR-025, ADR-031)
             razorpay_accounts_ready:
               $ref: '#/components/schemas/ReadinessCondition'
-              description: "Threshold: ≥ 56 providers with Linked Account created and 24-hour cooling elapsed. (Paper 35)"
+              description: |
+                Threshold from NetworkProfile.MinCooledAccounts.
+                Production: ≥ 56 with 24 h cooling elapsed (LIVE QUERY — not cached).
+                Demo: ≥ 5 with 0 s cooling (instant, mock accounts). (ADR-024, Paper 35, ADR-031)
             relay_nodes_deployed:
               $ref: '#/components/schemas/ReadinessCondition'
-              description: "Threshold: ≥ 3 relay nodes. (ADR-021, Q30-1)"
+              description: |
+                Threshold from NetworkProfile.MinRelayNodes.
+                Production: ≥ 3. Demo: 0 (relay infrastructure not required on LAN). (ADR-021, Q30-1, ADR-031)
             cluster_audit_secret_loaded:
               $ref: '#/components/schemas/ReadinessCondition'
-              description: "All microservice replicas have loaded server_secret_vN. (ADR-027)"
+              description: |
+                All microservice replicas have loaded server_secret_vN.
+                Production: loaded from secrets manager. Demo: loaded from VYOMANAUT_CLUSTER_MASTER_SEED
+                env var. (ADR-027, ADR-031)
 
     RepairJobItem:
       type: object
@@ -2036,6 +2108,11 @@ components:
                 message: "Provider vetting storage cap reached. Retry after existing synthetic chunks are retired."
                 request_id: "01944a6e-8f3c-7000-b000-d4e5f6a7b8c9"
                 retry_after: 3600
+            DemoModeRealPayment:
+              value:
+                error_code: DEMO_MODE_REAL_PAYMENT
+                message: "Startup refused: VYOMANAUT_MODE=demo but live Razorpay endpoint configured. Demo mode must not move real money."
+                request_id: "00000000-0000-0000-0000-000000000000"
 
 
     503ServiceUnavailable:
@@ -2410,6 +2487,10 @@ paths:
 
         The daemon generates its Ed25519 key pair at first launch and stores it encrypted
         under the daemon-local keystore. The private key never leaves the device. (ADR-021)
+        In VYOMANAUT_MODE=demo, the optional `demo_asn` field may be used to assign
+        a synthetic ASN (SIM-AS1 … SIM-AS5). If omitted, the microservice auto-assigns
+        the next available synthetic ASN to satisfy NetworkProfile.MinDistinctASNs=5.
+        In production, `demo_asn` is silently ignored. (ADR-031, FR-068)
       operationId: registerProvider
       requestBody:
         required: true
@@ -3068,6 +3149,7 @@ paths:
                   summary: Network is ready for uploads
                   value:
                     all_conditions_met: true
+                    mode: "prod"
                     evaluated_at: "2026-04-27T10:00:00Z"
                     conditions:
                       active_vetted_providers:
@@ -3116,8 +3198,58 @@ paths:
                         satisfied: false
                         current_value: 42
                         required_value: 56
+                DemoReady:
+                  summary: Network ready in demo mode
+                  value:
+                    all_conditions_met: true
+                    mode: "demo"
+                    evaluated_at: "2026-04-27T10:00:00Z"
+                    conditions:
+                      active_vetted_providers:
+                        name: "Active vetted providers"
+                        satisfied: true
+                        current_value: 5
+                        required_value: 5
+                        demo_value: 5
+                      distinct_asns:
+                        name: "Distinct ASNs"
+                        satisfied: true
+                        current_value: 5
+                        required_value: 5
+                        demo_value: 5
+                      distinct_metro_regions:
+                        name: "Distinct metro regions"
+                        satisfied: true
+                        current_value: 1
+                        required_value: 1
+                        demo_value: 1
+                      microservice_quorum:
+                        name: "Microservice quorum"
+                        satisfied: true
+                        current_value: 1
+                        required_value: 1
+                        demo_value: 1
+                      razorpay_accounts_ready:
+                        name: "Razorpay Linked Accounts (cooling elapsed)"
+                        satisfied: true
+                        current_value: 5
+                        required_value: 5
+                        demo_value: 5
+                      relay_nodes_deployed:
+                        name: "Relay nodes deployed"
+                        satisfied: true
+                        current_value: 0
+                        required_value: 0
+                        demo_value: 0
+                      cluster_audit_secret_loaded:
+                        name: "Cluster audit secret loaded on all replicas"
+                        satisfied: true
+                        current_value: 1
+                        required_value: 1
+                        demo_value: 1
         "401":
           $ref: '#/components/responses/401Unauthorized'
+        
 
   /api/v1/admin/repair/queue:
     get:

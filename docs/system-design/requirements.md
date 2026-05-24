@@ -142,6 +142,8 @@ first quarter post-launch). Every P0 requirement is a launch blocker.
 | FR-064 | If the provider is offline at the time of the ACTIVE transition, the GC instruction must be queued and delivered on the provider's next successful heartbeat connection. Until the GC instruction is delivered and acknowledged, the synthetic chunk rows must remain in `status = 'PENDING_DELETION'` and must not be issued further audit challenges. The audit scheduler must skip `PENDING_DELETION` rows. | P0 | ADR-030 — prevents auditing chunks the provider is in the process of discarding |
 | FR-065 | When a provider with `status = VETTING` crosses the 72-hour departure threshold, the departure handler must enqueue **zero** repair jobs. All synthetic chunk assignments for that provider must be soft-deleted (`status = 'DELETED'`, `deleted_at = NOW()`). The standard escrow seizure and DEPARTED status transition still apply. | P0 | ADR-030 — the entire point of synthetic chunks is to eliminate repair bandwidth for vetting departures |
 | FR-066 | The repair scheduler must check `chunk_assignments.is_vetting_chunk` before enqueueing any repair job. A departure handler or threshold monitor that identifies a chunk where `is_vetting_chunk = TRUE` must not call `EnqueueJob` for that chunk. This check is enforced at the application layer AND as a pre-condition in the `internal/repair` package interface. | P0 | ADR-030 |
+| FR-068 | In `VYOMANAUT_MODE=demo`, if a registering provider does not supply an ASN, the microservice must auto-assign the next available synthetic ASN from the pool `SIM-AS1` … `SIM-AS{N}`, where N = `NetworkProfile.MinDistinctASNs`. This ensures the 20% ASN cap is satisfiable from the first upload. In production, ASN is resolved from the provider's IP address via a GeoIP/ASN database and must not be auto-assigned. | P0 | ADR-031, ADR-014 |
+| FR-069 | The microservice must refuse to start if `VYOMANAUT_MODE=prod` AND the `VYOMANAUT_CLUSTER_MASTER_SEED` environment variable is present. The microservice must refuse to start if `VYOMANAUT_MODE=demo` AND the process is configured to connect to the live Razorpay API endpoint (not mock or test). These are fatal startup guard rails. | P0 | ADR-031 |
 
 ### 4.6 Provider — Operation
 
@@ -235,6 +237,7 @@ first quarter post-launch). Every P0 requirement is a launch blocker.
 | NFR-002 | The 20% ASN cap (FR-009) is a co-requisite for NFR-001. Disabling the cap invalidates the durability guarantee regardless of erasure parameters. | Durability | Non-negotiable | ADR-003, ADR-014 |
 | NFR-003 | The system must tolerate the simultaneous departure of any 40 of 56 fragment holders for any file without data loss or reconstruction failure. | Durability | 40-fault tolerance | ADR-003 |
 | NFR-034 | No real data owner file shard may ever be assigned to a provider in VETTING status. The assignment service must enforce this at INSERT time for chunk_assignments. A vetting provider departure must produce zero repair jobs and zero impact on any data owner's file durability. | Durability | Zero data owner impact from vetting departures | ADR-030 |
+| NFR-036 | In `VYOMANAUT_MODE=demo`, all durability guarantees scale proportionally to the demo RS(3,5) parameters. The fault tolerance is 2-of-5 simultaneous provider failures (not 40-of-56). The annual loss rate formula still applies; the result is lower because n and r are smaller. Demo data must not be treated as durably stored for any real use case. | Durability | Proportional to demo parameters | ADR-031 |
 
 ### 5.2 Availability
 
@@ -256,6 +259,7 @@ first quarter post-launch). Every P0 requirement is a launch blocker.
 | NFR-012 | Steady-state repair bandwidth per provider must not exceed 100 Kbps at the target MTTF of 300 days and a network of 1,000 providers each storing 50 GB. At these parameters, BWavg ≈ 39 Kbps/peer per the Giroire formula. | Performance | ≤ 100 Kbps/provider | ADR-003, ADR-004 |
 | NFR-013 | Write amplification in the provider storage engine must not exceed 1.1× at 256 KB chunk size, meaning a provider storing 50 GB of chunks must write no more than 55 GB to their storage device in total. | Performance | Write amplification ≤ 1.1× | ADR-023 |
 | NFR-035 | The total repair bandwidth attributable to vetting provider departures must be zero. At any N, a vetting provider departure must not increment the repair queue depth or consume BWavg budget. | Performance | 0 Kbps repair per vetting departure. | ADR-030 |
+| NFR-037 | In `VYOMANAUT_MODE=demo`, the Argon2id master secret derivation uses t=1, m=4096 KiB, p=1. The session-start latency target is p50 ≤ 50 ms on any modern laptop. The reduced parameters weaken offline brute-force resistance; this is an accepted trade-off for demo sessions where no real data is stored. | Performance | p50 ≤ 50 ms in demo | ADR-031 
 
 ### 5.4 Security and Privacy
 
@@ -309,6 +313,38 @@ first quarter post-launch). Every P0 requirement is a launch blocker.
 
 ---
 
+### 5.10 Mode Requirements
+
+The following table maps each `NetworkProfile` field to the functional or non-functional requirement it governs. In demo mode (`VYOMANAUT_MODE=demo`) the threshold value is overridden; the requirement logic is unchanged.
+
+| NetworkProfile field | Governs | Production value | Demo value |
+| --- | --- | --- | --- |
+| `DataShards`, `ParityShards`, `TotalShards` | NFR-001, NFR-003, NFR-034 | 16, 40, 56 | 3, 2, 5 |
+| `ShardSize` | Wire format constant — **not in NetworkProfile** | 262,144 B | 262,144 B |
+| `LazyRepairR0` | FR-042, ADR-004 | 8 | 1 |
+| `MinActiveProviders` | FR-053, ADR-029 | 56 | 5 |
+| `MinDistinctASNs` | FR-053, ADR-014, ADR-029 | 5 | 5 (see §7.1 note) |
+| `MinMetroRegions` | FR-053, ADR-029 | 3 | 1 |
+| `MinRelayNodes` | FR-053, ADR-029 | 3 | 0 |
+| `HeartbeatInterval` | FR-027, ADR-028 | 4 h | 30 s |
+| `PollingInterval` | FR-037, ADR-006 | 24 h | 2 min |
+| `DepartureThreshold` | FR-035, ADR-006, ADR-007 | 72 h | 10 min |
+| `VettingMinPasses` | FR-026, ADR-005 | 80 | 5 |
+| `VettingMinDuration` | FR-026, ADR-005 | 120 days | 5 min |
+| `EscrowHoldWindow` | FR-049, ADR-024 | 30 days | 1 min |
+| `ReleaseComputationInterval` | FR-048, ADR-024 | Calendar (23rd) | 2 min ticker |
+| `Argon2Time`, `Argon2Memory`, `Argon2Threads` | FR-002, NFR-010 | 3, 64 MB, 4 | 1, 4 MB, 1 |
+| `RequireSecretsManager` | NFR-018, ADR-027 | true | false (env var substitute) |
+| `RequireQuorum` | NFR-005, ADR-025 | true | false (single instance) |
+| `PaymentMode` | FR-006, FR-047, ADR-011 | `razorpay_live` | `mock` |
+| `SkipMnemonicConfirm` | FR-003 | false | true |
+| `RazorpayCoolingPeriod` | FR-025, ADR-024 | 24 h | 0 s |
+| `ScoreWindowShort/Medium/Long` | ADR-008 | 24 h / 7 d / 30 d | 2 / 6 / 20 min |
+
+**Adding a new mode-variable parameter.** Any new parameter that differs between demo and production must be added to `NetworkProfile` with explicit values in both `ProductionProfile` and `DemoProfile`. The Go struct-literal syntax enforces this at compile time — an omitted field is a compile error, not a silent zero-value default.
+
+---
+
 ## 6. UX Considerations
 
 ### 6.1 Critical UX Moments
@@ -322,6 +358,7 @@ data permanently. The UI must:
 - Block progression until the owner correctly enters at least two randomly selected words.
 - Never offer to store the mnemonic in the app, email it, or copy it to the clipboard
   automatically.
+- **Demo mode exception.** When `VYOMANAUT_MODE=demo`, `NetworkProfile.SkipMnemonicConfirm = true`. The mnemonic is displayed but the two-word confirmation step is skipped. This is acceptable only because demo sessions store no real data. Production must always require confirmation.
 
 **Storage cost transparency (FR-013):** Providers see a storage rate in paise per GB per
 month. Data owners see a monthly cost in rupees. Both must be derived from the same
@@ -370,6 +407,7 @@ can surface this state to any operator monitoring tool.
   with `on_hold` is the only available partial-hold primitive. (Paper 35)
 - All amounts must be integer paise. Float arithmetic in the payment path is a correctness
   violation, not just a style concern. (ADR-016)
+- **ShardSize is a compile-time constant in both modes.** `ShardSize = 262,144` (256 KB) must not appear in the `NetworkProfile` struct. It is the only erasure coding parameter that does not vary between demo and production, because changing it would simultaneously break vLog entry sizing, the audit challenge wire framing, and the RocksDB index assumptions. A compiler-enforced test (`TestProfileShardSizeIsConstant`) verifies this on every commit. (ADR-031)
 
 ### 7.2 Key External Dependencies
 
@@ -492,6 +530,7 @@ These target quarters are planning references, not commitments.
 | Provider pool does not reach 56 before anticipated launch | High | Critical | (1) Recruit providers through private beta before enabling data owner uploads; FR-053 enforces the gate. (2) Simulation mode (FR-055) allows full system verification and data owner testing with 56 virtual providers before any real provider is recruited; the internal phase can complete entirely without real providers. |
 | Data owner loses passphrase and mnemonic simultaneously | Low per user, certain at scale | High | Disclosed clearly at onboarding (FR-005); no support path exists by design |
 | Vetting GC instruction not delivered before provider begins receiving real assignments | Low | Medium | FR-064 enforces PENDING_DELETION status blocks new real assignments; real assignment query filters `WHERE status = 'ACTIVE' AND is_vetting_chunk = FALSE` |
+| Demo mode used with real data | Low | Critical | The `[STARTUP] mode=DEMO` log line and the live-Razorpay guard rail (refuse to start if DEMO + live endpoint) are the primary mitigations. Operators must treat any data stored under `VYOMANAUT_MODE=demo` as non-durable and not confidential (Argon2id parameters are weakened). |
 
 ### 9.4 Rollback Plan
 
