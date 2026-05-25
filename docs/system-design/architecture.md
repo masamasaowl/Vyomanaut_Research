@@ -77,8 +77,9 @@
 22. [Error Handling](#22-error-handling)
 23. [Observability](#23-observability)
 24. [Deployment Topology](#24-deployment-topology)
-25. [Known Limitations and V3 Scope](#25-known-limitations-and-v3-scope)
-26. [ADR Reference Index](#26-adr-reference-index)
+25. [Accepted Trade-offs](#25-accepted-trade-offs)
+26. [Known Limitations and V3 Scope](#26-known-limitations-and-v3-scope)
+27. [ADR Reference Index](#27-adr-reference-index)
 
 ---
 
@@ -164,6 +165,14 @@ These are the non-functional requirements that drove architectural decisions. Th
 | Payment gateway | Razorpay (Route + Smart Collect 2.0 + RazorpayX Payouts) | India-first; UPI; no per-transaction fee for P2P transfers |
 | Secrets management | HashiCorp Vault / AWS SSM / GCP Secret Manager | For cluster audit secret distribution across microservice replicas |
 | Network Profile | `internal/config.NetworkProfile` | Single source of truth for all parameters that differ between demo and production mode. Constructed once at startup, passed via dependency injection to every subsystem. No subsystem reads `VYOMANAUT_MODE` directly. (ADR-031) |
+| Repository layout | Single Go module (`github.com/masamasaowl/vyomanaut`) | Three binaries share `internal/crypto` and `internal/erasure`; split repos would duplicate security-critical code or require publishing internal packages as external modules, reintroducing version-skew across consumers |
+| Build system | `go build ./cmd/<binary>` per binary; no custom build tags | Conditional cipher selection (ChaCha20 vs AES-CTR) is a runtime CPUID check, not a compile-time flag. No Makefile magic needed. |
+| Dependency management | Module proxy + pinned `go.sum`; `go-libp2p` vendored on validator failure | `TestDHTKeyValidatorPersists` is the gate: if a `go-libp2p` upgrade resets the custom DHT key namespace, the dependency is vendored until the upstream fix lands. Vendoring decision is recorded in `repo-structure.md §1.3`. |
+| CI enforcement | `golangci-lint` strict mode + four mandatory grep-fail checks | Four patterns fail the pipeline unconditionally: `challenge_nonce BYTEA(32)`, `float64\|\float32` in payment context, `ADR-039` (non-existent ADR reference), UPI Collect API calls |
+
+### RocksDB CGo build note
+
+RocksDB (`linxGnu/grocksdb`) is a CGo dependency requiring a pre-built shared library. The CI pipeline uses a pinned Docker image with the correct `librocksdb` version pre-installed. The exact image tag and RocksDB version are specified in `.github/workflows/ci.yml` and must be updated together when the Go binding version changes. A mismatch produces a link-time failure, not a runtime failure — this is detectable in CI.
 
 ---
 
@@ -896,7 +905,127 @@ If the availability service fails to republish a provider's DHT record within th
 
 ---
 
-## 25. Known Limitations and V3 Scope
+### 25. Accepted Trade-offs
+
+These trade-offs are settled. Every entry records what was chosen, what was rejected, what was gained, and what was consciously accepted as a cost. To revisit one, open a new ADR and cite this section. Do not quietly build around a trade-off you dislike.
+
+Every entry follows the pattern: **We chose X over Y. We gain A. We accept B.** The gain is the reason the decision exists. The acceptance is the cost that must be managed, not eliminated.
+
+### Storage and Durability
+
+**Reed-Solomon RS(16,56) over three-way replication.** We gain 2.5× storage overhead instead of 3×, and approximately 38× less aggregate repair bandwidth under steady-state lazy repair (Blake & Rodrigues). We accept that reconstruction requires contacting k=16 fragment holders and that the lazy window leaves a file at reduced redundancy between the trigger and repair completion.
+
+**Wide stripe n=56 over standard n≤20.** We gain 40 parity fragments of fault tolerance — the file survives simultaneous loss of any 40 of 56 providers. We accept that MSR regenerating codes are computationally intractable at this stripe width, leaving RS as the only feasible code family, and that the ASN cap is a non-optional co-requisite (Nath et al., Paper 38 — large-m erasure schemes can be strictly worse than simpler schemes under unbounded correlated failures).
+
+**r=40 as the fixed redundancy level.** We gain the unique r that minimises repair bandwidth at s=16, r0=8 per Giroire Formula 4 — any other r increases bandwidth. We accept 3.5× storage overhead (56/16). This is not an engineering preference; it is a mathematical saddle point.
+
+**The 20% ASN cap as both a security and a durability constraint.** We gain two independent guarantees from one mechanism: the Honest Geppetto adversarial attack is bounded at ~11 shards per correlated group, and real-world correlated failure amplification (Nath et al.) is structurally prevented. We accept that the assignment service must track ASN per provider and enforce the cap at write time.
+
+**WiscKey key-value separation over standard RocksDB.** We gain write amplification of approximately 1.0 at 256 KB values (vs 10–14× in standard RocksDB). We accept the single-writer vLog goroutine requirement, vLog GC on chunk deletion, and a crash recovery tail-scan at startup.
+
+### Network and Peer Discovery
+
+**Hybrid microservice + Kademlia over pure DHT.** We gain admission control, reliable audit scheduling, and a stable authority for payment computation. Pure Kademlia DHT discovery fails operationally below ~100 peers and is vulnerable to Eclipse attacks without an admission gate. Storj v3.1 removed their DHT entirely — we retain it for data-plane chunk lookup only. We accept that the microservice is a dependency and that its failure halts new uploads and pauses audit scheduling, though the data plane continues.
+
+**Centralised audit scoring over distributed reputation (EigenTrust, PeerTrust).** We gain correctness: the Shelby proof (Paper 37, Proposition 1) formally demonstrates that peer-to-peer audit reports without a trusted backstop collapse to universal dishonesty as the unique Nash equilibrium. Centralising the scorer is the only architecture that produces honest outcomes. We accept that this is a non-I-confluent operation that cannot be distributed.
+
+**(3,2,2) microservice quorum over a single-node microservice.** We gain single-replica fault tolerance. We accept gossip membership overhead and the operational complexity of a three-node cluster.
+
+**libp2p + QUIC over raw QUIC or gRPC.** We gain production-proven three-tier NAT traversal (AutoNAT → DCUtR → Circuit Relay v2), connection migration, independent stream delivery, and Kademlia DHT — tested at IPFS and Filecoin scale. We accept a significant external dependency on the libp2p release cycle and the need to maintain a custom DHT key validator across upgrades.
+
+**Circuit Relay v2 fallback for symmetric NAT over excluding symmetric-NAT providers.** We gain access to approximately 30% of Indian home desktop operators behind CGNAT. We accept ~50 ms relay overhead per audit interaction and the operational cost of maintaining at minimum 3 relay nodes.
+
+**HMAC-pseudonymised DHT keys over plaintext content IDs.** We gain DHT privacy: a monitoring node cannot correlate lookup requests with file identity without the owner's master secret (closes DSN Challenge 3 from the SoK survey, Paper 07). We accept a custom Kademlia key validator that must survive every `go-libp2p` upgrade — `TestDHTKeyValidatorPersists` is a CI required check precisely because a silent namespace reset would break all chunk lookups.
+
+**Provider heartbeat every 4 hours over relying on DHT republication.** We gain reliable audit challenge delivery despite DHCP lease rotations. Indian residential ISPs commonly rotate addresses on 24-hour cycles; the DHT record can be stale by up to 12 hours. We accept that providers accumulate stale-address TIMEOUT audit results if they shut their machine down without the daemon running.
+
+### Encryption and Key Management
+
+**AONT-RS over encrypt-then-code or code-then-encrypt.** We gain elimination of external key management: AONT key K is embedded in the erasure-coded data and recoverable only when k=16 shards are assembled. No key server, no per-file AES key to store or rotate. We accept that the pointer file is the sole retrieval credential — its loss combined with loss of the master secret means permanent, unrecoverable data loss. This must be disclosed clearly at onboarding.
+
+**ChaCha20-256 as the default AONT cipher over AES-256.** We gain a constant-time cipher requiring no hardware acceleration — on Indian desktops without AES-NI, ChaCha20 is 3× faster than software AES and free of cache-timing vulnerabilities. We accept two code paths in the daemon and CPUID detection at startup.
+
+**Master-secret-derived key hierarchy over per-file random keys.** We gain a single backup surface: one passphrase recovers all files on any device. We accept that the master secret is a single point of failure — loss of both the passphrase and the mnemonic means permanent loss of all files with no support path.
+
+**0-RTT disabled for audit interactions over enabling it for all reconnects.** We gain protection against replay attacks on audit responses. We accept one additional round trip per audit reconnect after a provider's nightly absence.
+
+### Payment and Incentives
+
+**Held-earnings escrow over pre-committed collateral.** We gain zero entry barrier — any Indian home desktop owner with a UPI-linked bank account can join without staking capital. We accept that new providers have limited escrow at risk in the first few days. The vetting period (60-day hold, 50% release cap) partially compensates.
+
+**Payment per audit passed over payment per GB stored or per GB transferred.** We gain decoupling of the payment layer from the P2P transfer layer — a microservice outage accumulates no credit liability, and transfer failures do not interrupt audit scoring. We eliminate the delete-and-restore attack and the bandwidth-as-currency failure mode that destroyed Swarm's SWAP protocol. We accept that providers earn equally for storing popular data and data never retrieved.
+
+**Fiat escrow via Razorpay over cryptocurrency.** We gain zero crypto-wallet friction for Indian providers and data owners, instant UPI settlement, and zero per-transaction merchant fee. We accept India-only operation at launch. The `PaymentProvider` interface is designed so that Stripe Connect or another international gateway can be added without rewriting payment logic.
+
+**Razorpay Route `on_hold` over Razorpay Escrow+.** We gain full programmatic hold/release/seizure via standard REST APIs with no NBFC registration required. We accept that Route is a settlement hold on a payment transfer, not a legally regulated tri-party escrow account. All escrow logic lives in the microservice's internal ledger. The legal exposure of this distinction is a product-level open question.
+
+**Deterministic pricing over auction pricing.** We gain predictability for both providers and data owners — contracted cold storage with month-long SLAs is incompatible with fluctuating pricing. We accept that the storage rate may diverge from market rate over time and must be revisited empirically.
+
+**Non-transferable escrow over transferable earnings.** We gain deterrence against identity-cycling attacks. We accept this must be enforced as a hard rule at the payment service level with no exceptions.
+
+### Proof of Storage and Auditing
+
+**PoR Merkle challenges over PoRep + PoSt.** We gain compatibility with commodity desktop hardware — Filecoin's PoRep requires 256 GB RAM and a GPU with at least 11 GB VRAM, eliminating every provider in Vyomanaut's target demographic. We accept a weaker cryptographic guarantee. Three co-requisite mitigations close the gaps: registration gating (Sybil), response deadline (outsourcing), and randomised challenge timing (JIT retrieval).
+
+**Timing-based outsourcing prevention over cryptographic sealing.** We gain a mechanism that works on any hardware. We accept a weaker guarantee — the deadline is timing-based, not cryptographically enforced. The 20% ASN cap limits co-located provider attacks.
+
+**INSERT-only audit receipts over mutable audit records.** We gain tamper-evidence at the database row security policy level, not merely in application code. Both provider and microservice sign every receipt. We accept monotonically growing table size requiring periodic archival.
+
+**V2 signed receipt exchange over immediate public audit verifiability.** We gain operational simplicity at launch. We accept that data owners must trust the microservice's countersignature in V2. The V3 Transparent Merkle Log is the explicit upgrade path, not an afterthought.
+
+### Operational Constraints
+
+**72-hour departure threshold over shorter or longer windows.** We gain safety against false-positive repair triggers from normal weekend absences — Bolosky's bimodal distribution (Paper 09) shows 99.7% of weekend absences resolve within 70 hours; 72 hours is the first safe value above this peak. We accept up to 72 hours of reduced redundancy before a permanently departed provider's chunks begin repair.
+
+**24-hour polling interval over shorter or adaptive intervals.** We gain approximately 30× bandwidth savings over an instant timeout (Blake & Rodrigues). Daily challenges are sufficient for a write-once cold storage workload. We accept that a provider can delete their chunks and go undetected for up to 24 hours.
+
+**Desktop-only providers in V2 over including mobile.** We gain a single parameter set that works for all V2 providers. Mobile at MTTF ~30–90 days pushes per-provider BWavg to ~130 Kbps, exceeding the 100 Kbps budget and burdening every desktop provider. We accept a smaller launch-day provider pool.
+
+**Minimum viable network gate over allowing early uploads.** We gain the guarantee that no file is ever stored with insufficient redundancy from the moment the network opens. A file stored with only 30 providers fails RS(16,56) — an impossible state to recover from cleanly. We accept that launch day is gated on provider recruitment.
+
+### What this architecture is not trying to do
+
+It is not trying to eliminate server trust in V2. Public verifiability is a V3 goal. It is not trying to use blockchain — the three functions blockchain provides (immutable log, payment trigger, dispute resolution) are replicated by specific non-blockchain mechanisms, and Indian regulatory uncertainty around cryptocurrency makes blockchain a liability for the India-first market. It is not trying to make storage cheap by accepting lower durability — 10⁻¹⁵ per year is the target, r=40 is its analytical consequence, and reducing r to save storage would push the loss rate into observable territory. It is not trying to abstract away correlated failure — the 20% ASN cap is the structural bound; there are no exceptions for well-known or trusted providers. It is not trying to serve hot data in V2.
+
+### Trade-off decision registry
+
+| Trade-off | ADR | Research source |
+| --- | --- | --- |
+| RS over replication | ADR-003 | Papers 06, 10 |
+| Wide stripe (n=56) | ADR-003 | Papers 19, 22, 38 |
+| Lazy repair over eager | ADR-004 | Papers 06, 10, 39 |
+| 20% ASN cap (dual purpose) | ADR-014 | Papers 07, 20, 38 |
+| WiscKey over standard RocksDB | ADR-023 | Papers 25, 26, 27, 32 |
+| Hybrid microservice + DHT | ADR-001 | Papers 02, 03, 05, 07 |
+| Centralised audit scoring | ADR-008 | Papers 24, 31, 37, 40 |
+| (3,2,2) quorum | ADR-025 | Paper 12 |
+| libp2p + QUIC | ADR-021 | Papers 13, 14, 30 |
+| Circuit Relay v2 fallback | ADR-021 | Paper 30 |
+| HMAC-pseudonymised DHT keys | ADR-001 | Papers 04, 07 |
+| 4-hour heartbeat | ADR-028 | Papers 20, 28, 30 |
+| AONT-RS encoding | ADR-022 | Papers 15, 16 |
+| ChaCha20 as default cipher | ADR-019 | Paper 17 |
+| Master-secret key hierarchy | ADR-020 | Papers 17, 18 |
+| 0-RTT disabled for audit | ADR-021 | Paper 14 |
+| Held-earnings escrow | ADR-024 | Papers 05, 29, 33 |
+| Payment per audit passed | ADR-012 | Papers 05, 07, 33 |
+| Fiat over cryptocurrency | ADR-011 | Papers 07, 33, 35 |
+| Route over Escrow+ | ADR-011 | Paper 35 |
+| Deterministic pricing | ADR-024 | Paper 33 |
+| Non-transferable escrow | ADR-024 | Papers 33, 37 |
+| PoR over PoRep | ADR-002 | Papers 05, 07, 29 |
+| Timing-based outsourcing prevention | ADR-014 | Papers 29, 37 |
+| INSERT-only audit receipts | ADR-015 | Papers 07, 11 |
+| V2 signed receipts over public verifiability | ADR-015 | Paper 07 |
+| 72-hour departure threshold | ADR-006, ADR-007 | Papers 08, 09, 12 |
+| 24-hour polling interval | ADR-006 | Papers 06, 08 |
+| Desktop-only V2 | ADR-010 | Papers 05, 06, 08, 10 |
+| Minimum viable network gate | ADR-029 | Papers 10, 36, 38 |
+| India-only at launch | ADR-011 | Papers 33, 35 |
+
+---
+
+## 26. Known Limitations and V3 Scope
 
 These are explicit design decisions, each with a documented reason and a V3 path.
 
@@ -914,7 +1043,7 @@ These are explicit design decisions, each with a documented reason and a V3 path
 
 ---
 
-## 26. ADR Reference Index
+## 27. ADR Reference Index
 
 | Component | ADRs |
 |---|---|
