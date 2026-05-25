@@ -66,7 +66,7 @@ As the table grows into billions of rows, index lookups become progressively slo
 
 3. Row-Level Security (RLS)
 
-RLS policies are enabled on the table.
+RLS policies are enabled on the table..
 
 Although lightweight individually, policy evaluation adds overhead to every row operation.
 
