@@ -25,8 +25,8 @@
 5. [How to Toggle Each Feature](#5-how-to-toggle-each-feature)
 6. [Switching Mode Requirements and Repercussions](#6-switching-mode-requirements-and-repercussions)
 7. [Viability Fact-Check: Every Demo Value Verified](#7-viability-fact-check-every-demo-value-verified)
-8. [Build Order Recommendation](#8-build-order-recommendation)
-9. [Document Update Plan](#9-document-update-plan)
+8. [Repository Foundation](#8-repository-foundation)
+9. [Build Order Recommendation](#9-build-order-recommendation)
 
 ---
 
@@ -732,14 +732,163 @@ logic — the DB constraint is the enforcement. ✓
 
 ---
 
-## 8. Build Order Recommendation
+## 8. Repository Foundation
 
-### 8.1 The question
+This section is the authoritative reference for the repository structure, package layout, file inventories, ownership boundaries, and the list of code patterns that must never be introduced. It was previously maintained as a standalone `repo-structure.md` — that document is deprecated; this section is its canonical successor.
+
+### 8.1 Top-level directory map
+
+```tree
+
+├── cmd/
+│   ├── microservice/          # Coordination microservice entrypoint — wiring only, no business logic
+│   ├── provider/              # Provider daemon; supports --sim-count and --sim-asn-count
+│   └── client/                # Data owner CLI
+│
+├── internal/
+│   ├── config/                # NetworkProfile struct, ProductionProfile, DemoProfile (§5.2)
+│   ├── crypto/                # AONT cipher, HKDF, Argon2id, pointer file AEAD, BIP-39, Ed25519 helpers
+│   ├── erasure/               # Reed-Solomon RS encode/decode via klauspost/reedsolomon
+│   ├── storage/               # WiscKey: RocksDB chunk index + append-only vLog
+│   ├── p2p/                   # libp2p host, QUIC/TCP transports, DHT, NAT traversal, heartbeat
+│   ├── audit/                 # Challenge generation, dispatch, receipt two-phase write, cluster secret
+│   ├── scoring/               # Three-window reliability score, consecutive-pass counter, EWMA RTO
+│   ├── repair/                # Departure detector, repair job queue, repair executor
+│   ├── payment/               # PaymentProvider interface, Razorpay implementation, escrow ledger
+│   └── client/
+│       ├── account/           # Registration, BIP-39 mnemonic, session key derivation, keystore
+│       ├── upload/            # Upload orchestrator: encode + assignment + parallel transfer
+│       ├── retrieve/          # Retrieval orchestrator: pointer file + shard download + decode
+│       └── manage/            # File list, delete, escrow balance view
+│
+├── migrations/                # Numbered SQL DDL; one .sql per forward migration, one .down.sql per destructive migration
+│
+├── deployments/
+│   ├── production/            # Terraform / Kubernetes manifests for production
+│   ├── staging/               # Mirrors production at reduced scale
+│   └── dev/                   # docker-compose.yml for local development
+│
+├── scripts/                   # Developer tooling: lint, test, simulation runner, benchmarks
+│
+├── runbooks/                  # Operational runbooks (must all exist before M8 closes)
+│
+├── docs/
+│   ├── decisions/             # ADR-001 through ADR-031+
+│   ├── research/              # Paper notes, reading list, open/answered questions, benchmarking protocol
+│   └── system-design/         # The six canonical documents + sequence-diagrams/
+│       └── api/               # openapi.yaml
+│
+├── .github/
+│   ├── workflows/             # ci.yml, release.yml
+│   └── CODEOWNERS
+│
+├── go.mod                     # module github.com/masamasaowl/vyomanaut
+└── go.sum
+```
+
+### 8.2 Package file inventories
+
+Each package's file list is the contract between the repository structure and the interface definitions in `interface-contracts.md §5`. Adding a file is additive and safe. Renaming or splitting a file that exports a frozen symbol (listed in `interface-contracts.md §12`) requires updating §12 in the same PR.
+
+- `internal/config/**network_profile.go` — `NetworkProfile` struct (§5.2 of this document), `ProductionProfile` and `DemoProfile` vars. `profiles_test.go` — `TestProfileShardSizeIsConstant`, `TestProfileBothFullySpecified` (Go struct-literal compiler enforcement).
+
+- `internal/crypto/**hkdf.go`, `argon2.go`, `aont.go`, `aont_canary.go` (fixed `[16]byte` const, never a var), `bip39.go` (mnemonic generation and `TwoWordConfirmationGate`), `chacha20poly1305.go`, `aesni.go` (CPUID, `//go:build amd64`), `aesni_other.go` (stub, returns false), `errors.go` (`ErrTagMismatch`, `ErrCanaryMismatch`), `*_test.go` including cross-platform known-answer vectors and fuzz targets.
+
+- `internal/erasure/**params.go` (exported constants `DataShards`, `ParityShards`, `TotalShards`, `ShardSize`), `engine.go` (`NewEngine(profile)`, `EncodeSegment`, `DecodeSegment`), `errors.go`, `engine_test.go` (round-trip, any-k-shards, shard-size).
+
+- `internal/storage/**store.go` (`ChunkStore` interface, `NewChunkStore`), `vlog.go` (append, read, GC, crash-recovery tail-scan), `index.go` (RocksDB wrapper: Bloom filter, lookup, insert, delete), `rotational.go` (HDD/SSD detection, `//go:build linux`), `rotational_other.go` (stub, assume SSD), `errors.go`, `store_test.go`, `single_writer_test.go` (`TestSingleWriterGoroutine` with 100-goroutine contention — deadlock, not data corruption, is the detectable failure mode).
+
+- `internal/p2p/**host.go` (0-RTT policy enforcement per protocol ID suffix), `dht.go` (custom HMAC key validator), `dht_namespace.go` (`const dhtKeyNamespace = "/vyomanaut/dht-key/1.0.0"` — sole definition in the entire repo), `nat.go` (`maxHolePunchRetries = 1`), `heartbeat.go` (4-hour signed heartbeat), `identity.go` (Ed25519 key pair generation and keystore persistence), `errors.go`, `dht_test.go` (`TestDHTKeyValidator`, `TestDHTKeyValidatorPersists` — CI required check).
+
+- `internal/audit/**challenge.go` (`ChallengeNonce` — always 33 bytes), `validate.go` (`ValidateResponse`), `receipt.go` (`WriteReceiptPhase1`, `WriteReceiptPhase2`), `secret.go` (`ClusterSecretCache`, 5-minute TTL, fail-closed on expiry), `secrets_iface.go` (`SecretsManagerClient` interface), `jit.go` (JIT threshold computation and `jit_flag` evaluation), `errors.go`, `audit_test.go` (two-phase crash safety, idempotent retry, cross-replica nonce validation).
+
+- `internal/scoring/**score.go` (`GetScore`, `GetScoreFromPrimary` — monthly release multiplier must use primary), `passes.go` (`IncrementConsecutivePasses`, `ResetConsecutivePasses`), `rto.go` (EWMA for `avg_rtt_ms`, `var_rtt_ms`, `p95_throughput_kbps`), `errors.go`, `score_test.go` (dual-window flag, VETTING→ACTIVE transition race guard).
+
+- `internal/repair/**departure.go` (departure detector loop, seizure + repair enqueue in one transaction), `queue.go` (`EnqueueJob`, `DequeueNextJob`, `MarkJobComplete`, `IsVettingChunk`, `DeleteVettingChunksOnDeparture`), `executor.go` (download 16 shards → RS decode → re-encode → upload to replacements), `assignment.go` (Power of Two Choices + ASN cap enforcement for replacement selection), `errors.go`, `repair_test.go` (priority ordering, ASN cap, emergency floor, vetting exclusion).
+
+- `internal/payment/**provider.go` (`PaymentProvider` interface), `razorpay.go` (Razorpay implementation), `mock.go` (mock implementation for demo mode), `ledger.go` (`InsertEscrowEvent`, `EscrowEventType` constants including `EscrowReversal`), `balance.go` (`GetBalance`), `release.go` (monthly release computation, release multiplier table, dual-window flag check), `seizure.go` (escrow seizure on departure, Razorpay Route reversal), `paise.go` (`PaiseAmount int64` type with custom JSON unmarshaller that rejects fractional values), `rbi_holidays.go` (`LastWorkingDayOfMonth`), `errors.go`, `payment_test.go` (`TestNoFloatArithmetic` — CI required check), `razorpay_test.go` (webhook handler tests for all three events).
+
+- `internal/client/account/**register.go`, `master_secret.go` (UI gate before upload), `mnemonic.go` (BIP-39 generation and `TwoWordConfirmationGate` — skipped in demo when `profile.SkipMnemonicConfirm = true`), `keystore.go` (encrypted keystore: Ed25519 key + pointer file nonce counter), `recover.go` (passphrase and mnemonic recovery paths), `account_test.go`.
+
+- `internal/client/upload/**orchestrator.go`, `session.go` (FR-060 crash recovery: `file_id`, `chunk_ids`, `ack_status[TotalShards]`, persisted to disk), `assign.go` (assignment request, HTTP 503 handling), `transfer.go` (parallel libp2p shard upload, receipt collection, progress callback), `pointer.go` (pointer file construction, AEAD encryption, microservice registration), `upload_test.go`.
+
+- `internal/client/retrieve/**orchestrator.go`, `pointer.go` (fetch, derive key, constant-time tag verify, decrypt), `download.go` (parallel 56-provider dial, cancel after 16 valid shards, content-address verification per shard), `decode.go` (RS decode, AONT decode, K recovery, canary check, padding strip, buffer zeroing on canary fail), `retrieve_test.go`.
+
+- `internal/client/manage/**files.go`, `delete.go`, `escrow.go`.
+
+### 8.3 `cmd/` entrypoint flags
+
+**`cmd/provider/main.go` flags:**
+
+| Flag | Default | Description |
+| --- | --- | --- |
+| `--microservice-url` | — | Required. HTTPS base URL of the coordination microservice. |
+| `--data-dir` | `$HOME/.vyomanaut` | Persistent data directory. |
+| `--sim-count` | 0 | Simulation instances in a single process. 0 = normal mode. |
+| `--sim-base-port` | 4001 | Base libp2p listen port for simulation instances. |
+| `--sim-data-dir` | `/tmp/vyomanaut-sim` | Root directory for simulation instance data. |
+| `--sim-asn-count` | 5 | Synthetic ASN count for simulation mode. |
+| `--relay-addrs` | — | Comma-separated relay node multiaddrs. |
+| `--declared-storage-gb` | — | Required in normal mode. |
+
+**`cmd/client/main.go` subcommands:**
+
+| Subcommand | Description | Package |
+| --- | --- | --- |
+| `register` | Account creation, Argon2id derivation, mnemonic display | `internal/client/account` |
+| `recover` | New-device recovery via passphrase or mnemonic | `internal/client/account` |
+| `upload <path>` | Encode and upload a file | `internal/client/upload` |
+| `retrieve <file_id>` | Download and decode a file | `internal/client/retrieve` |
+| `ls` | List files with availability status | `internal/client/manage` |
+| `rm <file_id>` | Delete a file | `internal/client/manage` |
+| `balance` | Show escrow balance | `internal/client/manage` |
+| `deposit` | Initiate UPI Intent deposit | `internal/client/manage` |
+
+### 8.4 CI pipeline structure
+
+All checks in this section are required — a PR may not be merged if any of them fail. CI changes must not remove any required check; such a PR is automatically rejected by CODEOWNERS.
+
+```go
+.github/workflows/ci.yml triggers on every PR:
+  1. go build ./...           — zero warnings, strict mode
+  2. go vet ./...
+  3. golangci-lint run        — .golangci.yml configured with exhaustive, errcheck, godot, gomnd
+  4. go test ./... -race      — race detector enabled
+  5. TestDHTKeyValidatorPersists        — separate required check; blocks merge if failing
+  6. TestNoFloatArithmetic              — blocks merge if internal/payment/ contains any float type
+  7. Migration apply + rollback         — against CI Postgres instance with btree_gist installed
+  8. Grep fail: challenge_nonce BYTEA(32) in any file
+  9. Grep fail: float64|float32|FLOAT|DECIMAL|NUMERIC in internal/payment/ context
+  10. Grep fail: ADR-039 or any non-existent ADR reference
+  11. Grep fail: UPI Collect API endpoint string
+  12. Mermaid render check (all .md files in docs/system-design/)
+  13. Hyperlink check (markdown-link-check)
+  14. TestProfileShardSizeIsConstant
+  15. TestProfileBothFullySpecified`
+```
+
+`.golangci.yml` mandatory linters: `gofmt`, `govet`, `errcheck` (every error handled or explicitly ignored with a comment), `exhaustive` (every switch on `AuditResult`, `ProviderStatus`, `EscrowEventType`, `RepairPriority` must handle all cases), `godot` (all exported doc comments end with a period), `gomnd` (catches magic numbers that should be `NetworkProfile` fields).
+
+### 8.5 Infrastructure directory conventions
+
+**`migrations/`** — see `data-model.md §9` for the complete naming convention and ordering requirements.
+
+**`deployments/dev/docker-compose.yml`** — must include: one microservice replica, one Postgres instance with `btree_gist` pre-installed, one relay node (can be the microservice itself in relay mode for dev), and one provider daemon in `--sim-count=5 --sim-asn-count=5` mode. The dev compose file should reach a passing readiness gate automatically within ~10 seconds of startup.
+
+**`runbooks/`** — these eight files must all exist before M8 (private beta) closes: `microservice-failover.md`, `postgres-failover.md`, `relay-node-replacement.md`, `secrets-manager-outage.md`, `razorpay-api-outage.md`, `provider-mass-departure.md`, `rbi-holiday-table-update.md`, `audit-secret-rotation.md`. Grafana alert runbook links point to these files by name.
+
+**`scripts/benchmarks/`** — four benchmark scripts must produce a passing result on minimum-spec hardware (dual-core, no AES-NI, 2 GB RAM, 7200 RPM HDD) before any launch milestone closes: `aont_encode.sh` (Q16-1), `argon2id.sh` (Q18-1), `rocksdb_ssd.sh` (Q27-1 SSD variant), `rocksdb_hdd.sh` (Q27-1 HDD variant). These are the launch gates defined in `requirements.md §7.4`.
+
+---
+
+## 9. Build Order Recommendation
+
+### 9.1 The question
 
 > Should we complete the build to PROD, then add the DEMO flags, or create the DEMO version
 > as the base, run it, test it, and then continue with full PROD development?
 
-### 8.2 Recommendation: Build DEMO first, extend to PROD
+### 9.2 Recommendation: Build DEMO first, extend to PROD
 
 Build the entire system against the `NetworkProfile` abstraction with `DemoProfile` as the
 active configuration. Get the full end-to-end lifecycle working (register → vet → upload →
@@ -747,7 +896,7 @@ audit → repair → pay → depart) in a 30-minute session. Then flip `VYOMANAU
 address the infrastructure differences (secrets manager, Razorpay live, relay nodes, full
 quorum). No logic changes; only infrastructure wiring.
 
-### 8.3 Why DEMO first is the correct choice
+### 9.3 Why DEMO first is the correct choice
 
 **1. DEMO is the full system, not a subset.**
 
@@ -791,7 +940,7 @@ Simulation mode explicitly requires that it satisfies the same readiness gate as
 Demo mode extends this: it is simulation mode with a NetworkProfile. The design already
 assumes this build order.
 
-### 8.4 Recommended build sequence
+### 9.4 Recommended build sequence
 
 ```
 Phase 0: Scaffold (1–2 days)
@@ -834,7 +983,7 @@ Phase 4: Production hardening (ongoing)
 └── ✅ Milestone: Private beta launch
 ```
 
-### 8.5 What would go wrong with PROD-first
+### 9.5 What would go wrong with PROD-first
 
 If you build against ProductionProfile from day one:
 
@@ -852,27 +1001,5 @@ None of these problems exist in the demo-first approach.
 
 ---
 
-## 9. Document Update Plan
-
-The mode-switching mechanism affects every system document. This section specifies exactly
-what must change in each, and what does not need to change.
-
-| Document | Change type | Scope |
-|---|---|---|
-| ADR-031 (new) | New document | Full specification of the mode system |
-| architecture.md | Additive | Two paragraphs + one table row |
-| requirements.md | Additive | One new subsection + two notes |
-| data-model.md | Modification | Two CHECK constraint comments + materialised view note + two migration checklist items |
-| interface-contracts.md | Modification | Four section notes + one versioning clause |
-| openapi.yaml | Modification | Two field descriptions + one optional request field |
-| All existing ADRs (001–030) | **No change** | Their logic stands; ADR-031 overrides values, not decisions |
-
-No existing ADR is superseded. The `--dev-mode` clause in ADR-029 is functionally superseded
-by demo mode for demonstration purposes, but the ADR text remains valid for CI simulation
-use. ADR-031 should note this distinction.
-
----
-
 *Repository: https://github.com/masamasaowl/Vyomanaut_Research*  
-*Authoritative companion: `docs/decisions/ADR-031-demo-mode-network-profile.md` (to be created)*  
-*Pre-ADR analysis: `docs/system-design/demo-prod-parameter-analysis.md`*
+*Authoritative companion: `docs/decisions/ADR-031-demo-mode-network-profile.md`*  
