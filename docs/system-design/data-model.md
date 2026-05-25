@@ -1760,7 +1760,7 @@ NOW() AS scores_as_of   -- consumers must check age before using for payment dec
 - [ ] files.display_name_ciphertext/nonce/tag columns present (required for FR-019)
 - [ ] p95_throughput_kbps and avg_rtt_ms default to NULL, not 0/2000
 - [ ] Add REVERSAL to escrow_event_type ENUM.
-- - [ ]  `chunk_assignments.is_vetting_chunk BOOLEAN NOT NULL DEFAULT FALSE` column added.
+- [ ]  `chunk_assignments.is_vetting_chunk BOOLEAN NOT NULL DEFAULT FALSE` column added.
 - [ ]  `chunk_assignments.segment_id` changed from `NOT NULL` to nullable. Verify no existing rows have `segment_id = NULL` before migration (there should be none in a fresh deployment; migration scripts for existing deployments must confirm this).
 - [ ]  `chunk_assignments.shard_index` changed from `NOT NULL` to nullable. Same verification applies.
 - [ ]  CHECK constraint `chunk_assignments_segment_and_shard_null_iff_vetting` added.
@@ -1783,7 +1783,15 @@ NOW() AS scores_as_of   -- consumers must check age before using for payment dec
 - [ ] TestProfileShardSizeIsConstant passes in CI, confirming DemoProfile.ShardSize
       == ProductionProfile.ShardSize == 262144. (ADR-031)
 
+**Migration file naming convention.** Files are named `NNN_short_description.sql` where NNN is zero-padded to three digits and sequential with no gaps. If migration 003 is abandoned, 004 is still named 004. The `short_description` uses underscores, lowercase, no special characters, and describes the change rather than the ticket number. A migration that only adds nullable columns or columns with defaults does not require a rollback file. A migration that changes a column type, removes a column, or alters a constraint requires a corresponding `NNN_short_description.down.sql`.
+
+**Migration ordering.** The M0 migration (`001_initial_schema.sql`) must apply statements in this order to satisfy PostgreSQL dependency requirements: (1) `CREATE EXTENSION IF NOT EXISTS btree_gist`, (2) all `CREATE TYPE` statements, (3) all `CREATE TABLE` statements, (4) all `CREATE INDEX` and `CREATE UNIQUE INDEX` statements (note: the partial unique index on `chunk_assignments` is a standalone `CREATE UNIQUE INDEX`, not an inline table constraint — inline `WHERE` on UNIQUE is invalid syntax), (5) all `ALTER TABLE ENABLE ROW LEVEL SECURITY` and `CREATE POLICY` statements, (6) all `CREATE MATERIALIZED VIEW` statements and their unique indexes.
+
+**Never edit a committed migration.** Write a new one. A migration number, once committed, is permanent. The migration runner records the last-applied migration number in a `schema_migrations` table and applies migrations in numeric order; out-of-order application is rejected.
+
+**Two-engineer rule.** No migration may be merged with fewer than two reviewers from separate engineering ownership tracks. This is enforced in `.github/CODEOWNERS` — the `/migrations/` directory requires three reviewers, meaning at least two must approve.
+
 ---
 
 *Repository: https://github.com/masamasaowl/Vyomanaut_Research*
-*Authoritative companion documents: `docs/decisions/` (ADRs), `docs/system-design/architecture.md`, `docs/system-design/requirements.md` *
+*Authoritative companion documents: `docs/decisions/` (ADRs), `docs/system-design/architecture.md`, `docs/system-design/requirements.md`*
