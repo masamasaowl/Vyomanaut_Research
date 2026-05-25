@@ -79,7 +79,8 @@
 24. [Deployment Topology](#24-deployment-topology)
 25. [Accepted Trade-offs](#25-accepted-trade-offs)
 26. [Known Limitations and V3 Scope](#26-known-limitations-and-v3-scope)
-27. [ADR Reference Index](#27-adr-reference-index)
+27. [Capacity planning](#27-capacity-planning)
+28. [ADR Reference Index](#28-adr-reference-index)
 
 ---
 
