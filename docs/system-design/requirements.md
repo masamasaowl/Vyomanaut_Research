@@ -10,6 +10,59 @@
 
 ---
 
+## Table of Contents
+
+1. [Overview](#1-overview)
+2. [Problem Statement](#2-problem-statement)
+3. [Goals and Non-Goals](#3-goals-and-non-goals)
+4. [Functional Requirements](#4-functional-requirements)
+   - [4.1 Data Owner — Registration and Onboarding](#41-data-owner--registration-and-onboarding)
+   - [4.2 Data Owner — File Upload](#42-data-owner--file-upload)
+   - [4.3 Data Owner — File Retrieval](#43-data-owner--file-retrieval)
+   - [4.4 Data Owner — File Management](#44-data-owner--file-management)
+   - [4.5 Provider — Installation and Registration](#45-provider--installation-and-registration)
+   - [4.6 Provider — Operation](#46-provider--operation)
+   - [4.7 Provider — Exit and Departure](#47-provider--exit-and-departure)
+   - [4.8 Audit System](#48-audit-system)
+   - [4.9 Repair System](#49-repair-system)
+   - [4.10 Payment System](#410-payment-system)
+   - [4.11 Network Readiness Gate](#411-network-readiness-gate)
+   - [4.12 Provider Daemon — Simulation Mode](#412-provider-daemon--simulation-mode)
+   - [4.13 Provider — Pre-Registration Earnings Calculator](#413-provider--pre-registration-earnings-calculator)
+   - [4.14 Data Owner — Escrow Management and Upload Resume](#414-data-owner--escrow-management-and-upload-resume)
+5. [Non-Functional Requirements](#5-non-functional-requirements)
+   - [5.1 Durability](#51-durability)
+   - [5.2 Availability](#52-availability)
+   - [5.3 Performance](#53-performance)
+   - [5.4 Security and Privacy](#54-security-and-privacy)
+   - [5.5 Reliability and Correctness](#55-reliability-and-correctness)
+   - [5.6 Observability and Operability](#56-observability-and-operability)
+   - [5.7 Compliance and Payments](#57-compliance-and-payments)
+   - [5.8 Privacy](#58-privacy)
+   - [5.9 End-to-End Latency](#59-end-to-end-latency)
+6. [UX Considerations](#6-ux-considerations)
+   - [6.1 Critical UX Moments](#61-critical-ux-moments)
+   - [6.2 Edge States](#62-edge-states)
+7. [Technical Considerations](#7-technical-considerations)
+   - [7.1 Hard Constraints](#71-hard-constraints)
+   - [7.2 Key External Dependencies](#72-key-external-dependencies)
+   - [7.3 Data Model Implications](#73-data-model-implications)
+   - [7.4 Benchmark Requirements Before Shipping](#74-benchmark-requirements-before-shipping)
+8. [Analytics and Instrumentation](#8-analytics-and-instrumentation)
+   - [8.1 Primary Metric](#81-primary-metric)
+   - [8.2 Provider Primary Metric](#82-provider-primary-metric)
+   - [8.3 Key Events](#83-key-events)
+   - [8.4 Guardrail Metrics (must not worsen)](#84-guardrail-metrics-must-not-worsen)
+9. [Launch Plan](#9-launch-plan)
+   - [9.1 Phases](#91-phases)
+   - [9.2 Feature Flags](#92-feature-flags)
+   - [9.3 Risk Factors and Mitigations](#93-risk-factors-and-mitigations)
+   - [9.4 Rollback Plan](#94-rollback-plan)
+10. [Open Questions](#10-open-questions)
+11. [Appendix](#11-appendix)
+
+---
+
 ## 1. Overview
 
 This document formalises what Vyomanaut V2 must do and how well it must do it, in a form

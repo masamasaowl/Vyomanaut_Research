@@ -50,8 +50,11 @@ Where this document conflicts with an ADR, the ADR wins. Where it conflicts with
    - [7.2 `payout.reversed`](#72-payoutreversed)
    - [7.3 `account.created`](#73-accountcreated)
 8. [Secrets Manager Contract](#8-secrets-manager-contract)
-9. [DHT Key Contract](#9-dht-key-contract)
-10. [Versioning and Backwards Compatibility Rules](#10-versioning-and-backwards-compatibility-rules)
+9. [Package Import Constraints](#9-package-import-constraints)
+10. [Naming Conventions](#10-naming-conventions)
+11. [Forbidden Code Patterns](#11-forbidden-code-patterns)
+12. [DHT Key Contract](#12-dht-key-contract)
+13. [Versioning and Backwards Compatibility Rules](#13-versioning-and-backwards-compatibility-rules)
 
 ---
 
@@ -1940,7 +1943,85 @@ var (
 
 ---
 
-## 9. DHT Key Contract
+## 9. Package Import Constraints
+
+The following import directions are **prohibited**. A PR that introduces any prohibited import must be rejected at review regardless of the stated justification. These constraints exist because the packages involved are either security-critical (no business-logic dependency allowed) or architecturally separated (payment must not depend on repair to avoid cycles through the departure handler).
+
+| Package | Must NOT import |
+| --- | --- |
+| `internal/crypto` | Any other `internal/` package. This package is purely functional — no shared state, no I/O, no dependency on the data layer. Any utility needed here (e.g. byte comparison) uses the standard library only. |
+| `internal/erasure` | Any other `internal/` package. RS encoding takes bytes in and produces bytes out. It has no knowledge of the storage engine, the network, or the payment system. |
+| `internal/storage` | `internal/payment`, `internal/scoring`, `internal/repair`. The storage engine is unaware of economics or network topology. |
+| `internal/payment` | `internal/repair`, `internal/p2p`. The payment system does not initiate repair or open network connections. It receives instructions from the microservice entrypoint. |
+| `internal/scoring` | `internal/repair`, `internal/payment`. Score computation is read-only against the audit receipt history. It does not trigger repairs or move money. |
+| `internal/audit` | `internal/scoring`, `internal/repair`, `internal/payment`. The audit package handles challenge generation and receipt writing only. Score updates and repair triggers are the caller's responsibility (the microservice entrypoint orchestrates these after the audit result is written). |
+| Any `internal/client/*` | `cmd/`. Client packages are imported by the CLI entrypoint; they do not import the CLI. |
+
+The permitted dependency graph flows in one direction: `cmd/*` → `internal/client/*` → (`internal/crypto`, `internal/erasure`, `internal/p2p`) → no further `internal/` imports. The microservice entrypoint wires `internal/audit`, `internal/scoring`, `internal/repair`, and `internal/payment` together; none of these four packages imports any of the others directly.
+
+**Enforcement.** `go build ./...` catches circular imports. `go vet ./...` with the import-graph analyser catches prohibited non-circular imports. Both are CI required checks. A PR that disables or modifies the import-graph check must be rejected.
+
+---
+
+## 10. Naming Conventions
+
+### Exported Go symbol names
+
+Exported function and type names must match exactly the names specified in §5 of this document. Renaming an exported symbol requires updating both the implementation and §5 in the same PR. No silent renames.
+
+The following names are frozen — changing them breaks cross-package references, static analysis checks, or Grafana dashboard configurations that reference them by string:
+
+`AONTEncodeSegment`, `AONTDecodePackage` — crypto package; referenced in security boundary documentation. `ChunkStore`, `AppendChunk`, `LookupChunk`, `DeleteChunk` — storage engine interface; used in vetting GC path. `InsertEscrowEvent`, `EscrowEventType` — ledger functions; referenced in `TestNoFloatArithmetic` static check. `ChallengeNonce` — must always produce a 33-byte slice; referenced in nonce-length CI grep. `PaiseAmount` — monetary amount type; renaming breaks the float-prevention static analysis.
+
+### Error sentinel names
+
+Exported sentinel errors (`var Err... = errors.New(...)`) must never be renamed after first commit. Callers use `errors.Is()` for matching — renaming breaks all callers silently. Adding a new sentinel is additive and safe. Removing or renaming one is a breaking change requiring a search across all call sites before merging.
+
+### Prometheus metric names
+
+All metrics must follow the pattern `vyomanaut_{subsystem}_{name}_{unit}`. The subsystem matches the `internal/` package name (e.g. `audit`, `repair`, `storage`, `payment`). Unit suffixes use the OpenMetrics standard: `_total` for counters, `_seconds` for timing histograms, `_bytes` for size gauges. Metric names defined in NFR-025 and NFR-026 are frozen — changing them requires updating Grafana dashboard JSON and alert rules in the same PR.
+
+### Migration files
+
+`NNN_short_description.sql` where NNN is zero-padded to three digits, sequential with no gaps. See `data-model.md §9` for the full convention.
+
+### Simulation mode paths
+
+The simulation instance data path is `/tmp/vyomanaut-sim/{instance_id}/` where `instance_id` is the zero-padded instance index (e.g. `0000`, `0001`). Sub-directories: `keys/` (Ed25519 key pair), `db/` (RocksDB instance), `vlog/chunks.vlog` (value log file). This path is used verbatim in CI test scripts and the `--sim-data-dir` default; changing it requires updating both in the same PR.
+
+### Runbook filenames
+
+Must use the exact topic names from `architecture.md §23`: `microservice-failover`, `postgres-failover`, `relay-node-replacement`, `secrets-manager-outage`, `razorpay-api-outage`, `provider-mass-departure`, `rbi-holiday-table-update`, `audit-secret-rotation`. Format: `{topic-name}.md`. Grafana alert runbook links reference these names.
+
+---
+
+## 11. Forbidden Code Patterns
+
+The following categories are prohibited from the repository. A PR introducing any of the items below must be rejected at review and must not be merged.
+
+**Secrets and credentials.** No private keys of any kind (Ed25519, TLS, SSH) even in encrypted or base64-encoded form. The `VYOMANAUT_CLUSTER_MASTER_SEED` value must live in the secrets manager only — the environment variable name may appear in code and documentation; the value may never appear. Razorpay live API keys (`rzp_live_*`) must live in the secrets manager. Test keys (`rzp_test_*`) may appear only in CI environment variables via GitHub Actions secrets, never as literals in source files. BIP-39 mnemonic words for any real account must never appear — test vectors from RFC documents with fixed entropy are acceptable.
+
+**Float arithmetic in `internal/payment/`.** `float64`, `float32`, `FLOAT`, `DECIMAL`, `NUMERIC` in any form within `internal/payment/`. The `TestNoFloatArithmetic` CI check enforces this. Disabling or weakening this test is itself a prohibited change.
+
+**Deprecated UPI Collect endpoint calls.** UPI Collect was deprecated by NPCI on 28 February 2026. Any call to the Razorpay Collect API path must be rejected. All deposit flows use UPI Intent per NFR-029.
+
+**`challenge_nonce` as a 32-byte field.** The `challenge_nonce` column is always `BYTEA(33)`. A migration or schema change introducing `BYTEA(32)` for this field is rejected. The CI grep check enforces this.
+
+**Business logic in `cmd/`.** `cmd/` is wiring only — flag parsing, dependency construction, signal handling. Any function with testable behaviour belongs in `internal/`. An engineer who needs to test a `cmd/` function should move it to an `internal/` package first.
+
+**Prohibited cross-package imports.** See §11. Any import violating the table in §11 must be rejected regardless of stated justification.
+
+**Convergent encryption or K reuse.** Each AONT key K is fresh random per segment by design. Any code path that reuses K across files or segments violates the zero-knowledge property and is a correctness violation.
+
+**References to non-existent ADRs.** References to ADR numbers above the current highest assigned number (currently ADR-031) must fail the CI reference check. Stale ADR references create false confidence in decisions that have not been made.
+
+**Hardcoded RBI bank holiday data outside `internal/payment/rbi_holidays.go`.** Holiday dates hardcoded in test files, migration scripts, or deployment configuration bypass the annual update procedure documented in `runbooks/rbi-holiday-table-update.md`.
+
+**Vendoring `go-libp2p` without documenting the decision.** If `TestDHTKeyValidatorPersists` fails after an upgrade and the dependency must be vendored, the vendoring decision must be recorded in `architecture.md §4.1` with the version and reason. Silent vendoring is prohibited.
+
+---
+
+## 12. DHT Key Contract
 
 Every key stored in the Kademlia DHT by a Vyomanaut provider daemon or retrieved by the data
 owner client must satisfy this contract. The custom key validator registered with libp2p
@@ -2020,7 +2101,7 @@ constant survives the upgrade by running `TestDHTKeyValidatorPersists`.
 
 ---
 
-## 10. Versioning and Backwards Compatibility Rules
+## 13. Versioning and Backwards Compatibility Rules
 
 This section governs when and how breaking changes are permitted across each interface class.
 The general principle: **additive changes are always safe; breaking changes require explicit

@@ -62,6 +62,27 @@ info:
     identifying the active profile. Clients must not cache readiness threshold values —
     always read them from the response. (ADR-031)
 
+    ## Prometheus metrics
+
+    All server-side metrics exposed at `/metrics` (Prometheus scrape endpoint, not
+    defined in this spec — it is a monitoring interface, not an application API) follow
+    the naming pattern `vyomanaut_{subsystem}_{name}_{unit}`. Subsystems match the
+    `internal/` package names. Unit suffixes follow OpenMetrics conventions: `_total`
+    for counters, `_seconds` for timing histograms, `_bytes` for size gauges.
+    The exact metric names are fixed in `requirements.md NFR-025 and NFR-026`.
+    Grafana dashboard JSON and alert rules reference them by exact string;
+    do not rename a metric without updating all dashboards and alerts in the same PR.
+
+    ## AuditReceiptSubmitRequest and AuditReceiptSubmitResponse schemas
+
+    These schemas are defined in this file as wire-format reference material only.
+    There is no corresponding HTTP path — audit challenge/response is conducted entirely
+    over libp2p streams (protocol `/vyomanaut/audit-challenge/1.0.0`). The microservice
+    opens the stream to the provider, sends `ChallengeRequest`, receives
+    `ChallengeResponse`, and writes the receipt directly to `audit_receipts`.
+    No HTTP POST from the provider is involved. See `interface-contracts.md §4.2`.
+    Code generators should treat these schemas as informational types, not endpoint models.
+
   contact:
     name: Masamasaowl
     url: https://github.com/masamasaowl/Vyomanaut_Research
