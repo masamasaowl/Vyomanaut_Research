@@ -1043,8 +1043,9 @@ CREATE TABLE repair_jobs (
 
     priority                repair_priority     NOT NULL,
     
+    -- This column belongs in the scheduler's dequeue query, not the schema
     -- Dequeue: EMERGENCY first, then PERMANENT_DEPARTURE, then PRE_WARNING. Within each priority tier: FIFO on created_at. (ADR-004) 
-    ORDER BY priority ASC, created_at ASC
+    -- ORDER BY priority ASC, created_at ASC
     -- (ENUM ordering: EMERGENCY < PERMANENT_DEPARTURE < PRE_WARNING alphabetically — verify ENUM order)
 
     status                  repair_job_status   NOT NULL DEFAULT 'QUEUED',
@@ -1078,7 +1079,7 @@ CREATE TABLE repair_jobs (
         (trigger_type IN ('SILENT_DEPARTURE', 'ANNOUNCED_DEPARTURE')
             AND priority = 'PERMANENT_DEPARTURE')
         OR
-        (trigger_type IN ('THRESHOLD_WARNING', 'EMERGENCY_FLOOR')
+        (trigger_type IN ('THRESHOLD_WARNING')
             AND priority = 'PRE_WARNING')
     ),
     -- Priority is derived from trigger_type; this constraint prevents them
@@ -1090,7 +1091,7 @@ CREATE TABLE repair_jobs (
     -- A job cannot be completed before it was started.
 
     CONSTRAINT repair_jobs_no_duplicate_departure
-    UNIQUE (chunk_id, provider_id, trigger_type)
+    -- The UNIQUE (chunk_id, provider_id, trigger_type) constraint has been removed to avoid confusion
     -- For threshold-triggered repairs (provider_id IS NULL), deduplication must be
     -- at the application layer (check for existing QUEUED/IN_PROGRESS job for the
     -- same chunk_id before inserting).
@@ -1295,6 +1296,10 @@ CREATE INDEX idx_repair_jobs_provider
 CREATE UNIQUE INDEX idx_repair_jobs_threshold_no_dup
     ON repair_jobs (chunk_id, trigger_type)
     WHERE provider_id IS NULL AND status IN ('QUEUED', 'IN_PROGRESS');
+
+-- Review required: Does this query belong here?
+-- Dequeue: EMERGENCY first, then PERMANENT_DEPARTURE, then PRE_WARNING. Within each priority tier: FIFO on created_at. (ADR-004) 
+-- ORDER BY priority ASC, created_at ASC
 ```
 
 ---
@@ -1469,6 +1474,8 @@ CREATE UNIQUE INDEX ON mv_provider_escrow_balance (provider_id);
 
 
 -- ── Escrow balance per owner ────────────────────────────────────────────────
+
+-- Add GREATEST(..., 0) to the view to enforce to ensure no negative values exist
 CREATE MATERIALIZED VIEW mv_owner_escrow_balance AS
 SELECT
     owner_id,

@@ -420,7 +420,7 @@ Maximum frame payload: 262180 bytes. A frame with `length > 262180` is a FRAME_T
 |---|---|---|---|
 | `length` | uint32 big-endian | 4 B | Payload length. Success: 1 + 64 = 65 bytes. Error: 1 byte. |
 | `status` | uint8 | 1 B | `0x00` = OK. `0x01` = FRAME_TOO_LARGE. `0x02` = CHUNK_ID_MISMATCH (SHA-256 of received data does not match `chunk_id`). `0x03` = NOT_ASSIGNED (provider is not the assigned holder for this chunk_id). `0x04` = STORAGE_FULL (provider has reached `declared_storage_gb` cap). `0x05` = INTERNAL_ERROR (vLog write or RocksDB insert failed). `0x06` = ALREADY_STORED (the microservice treats this identically to `0x00` — the chunk is durably stored. The initiator should proceed with collecting upload receipts from other providers without retrying this one). |
-| `provider_sig` | bytes | 64 B + 16 B = 80 B | Ed25519 signature by the provider over `SHA-256(chunk_id ‖ shard_index ‖ provider_id_bytes ‖ timestamp_unix_ms)`. Present only when `status = 0x00`. This is the upload receipt that the initiator must retain as proof of acknowledged storage. |
+| `provider_sig` | bytes | 64 B | Ed25519 signature by the provider over `SHA-256(chunk_id ‖ shard_index ‖ provider_id_bytes ‖ timestamp_unix_ms)`. Present only when `status = 0x00`. This is the upload receipt that the initiator must retain as proof of acknowledged storage. |
 
 **Timeout:** The initiator must receive `UploadResponse` within 5,000 ms of sending
 `UploadRequest`. If no response is received within this window, the initiator resets the stream
@@ -1161,20 +1161,6 @@ func ChallengeNonce(serverSecretVN []byte, versionByte uint8,
 // LIMITATION: The microservice CANNOT verify that responseHash == SHA-256(chunkData ‖ challengeNonce) because it never holds chunkData. The correctness of responseHash depends on economic deterrence (incorrect hash → audit FAIL → score penalty → escrow risk) and the JIT detection mechanism (ADR-014 Defence 3). This is a stated design property, not a gap to be closed by adding verification code.
 // What this function verifies: signature validity and nonce format only.
 // What this function does NOT verify: that responseHash encodes the correct chunk content.
-
-// Pre-conditions:
-//   - len(challengeNonce) == 33
-//   - challengeNonce[0] must identify a currently-valid server secret version
-//   - len(responseHash) == 32
-//   - len(providerSig) == 64
-//   - len(providerPubKey) == 32 (Ed25519 public key)
-// Post-conditions (on nil error):
-//   - responseHash == SHA-256(chunkData || challengeNonce) as verified externally
-//     (the caller performs the hash recomputation; this function verifies the signature)
-//   - providerSig is a valid Ed25519 signature by providerPubKey over the signed fields
-// Error semantics:
-//   - ErrInvalidSignature: the Ed25519 signature is wrong
-//   - ErrNonceLength: len(challengeNonce) != 33
 // Goroutine-safe: yes.
 func ValidateResponse(challengeNonce [33]byte, responseHash [32]byte,
     providerSig [64]byte, providerPubKey [32]byte) error
@@ -1492,6 +1478,7 @@ const (
     EscrowDeposit  EscrowEventType = "DEPOSIT"
     EscrowRelease  EscrowEventType = "RELEASE"
     EscrowSeizure  EscrowEventType = "SEIZURE"
+    EscrowSeizure  EscrowEventType = "REVERSAL"
 )
 
 var (

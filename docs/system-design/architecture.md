@@ -309,7 +309,7 @@ Before any data leaves the data owner's device, it passes through a four-stage p
 
 ### Segmentation
 
-Files larger than 4 MB are split into multiple segments before encoding. Each segment is at most 4 MB (56 × 256 KB). Every segment is processed independently through Stages 1–4 below. The pointer file contains one entry per segment, including the provider list and chunk IDs for that segment's 56 fragments. Retrieval reconstructs each segment independently and concatenates them in order to rebuild the original file. There is no cross-segment state — losing all 56 fragments of one segment does not affect any other segment's recoverability.
+Each plaintext segment is at most 4 MB (16 data shards × 256 KB). After AONT encoding and RS coding, each segment produces 56 × 256 KB = 14 MB of encoded fragments. Every segment is processed independently through Stages 1–4 below. The pointer file contains one entry per segment, including the provider list and chunk IDs for that segment's 56 fragments. Retrieval reconstructs each segment independently and concatenates them in order to rebuild the original file. There is no cross-segment state — losing all 56 fragments of one segment does not affect any other segment's recoverability.
 
 ### Stage 1 — AONT encryption
 

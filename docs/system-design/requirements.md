@@ -424,9 +424,6 @@ can surface this state to any operator monitoring tool.
   `challenge_nonce` for idempotent retry. `audit_result` column must accept NULL (in-flight
   state). `abandoned_at` column for GC of stale PENDING rows. Schema version must be **33
   bytes** for `challenge_nonce` (32-byte HMAC + 1-byte version prefix per ADR-027).
-  **Cross-document note:** `architecture.md` Section 14 (Audit System) currently shows
-  `challenge_nonce BYTEA(32)` in the receipt schema table — this is incorrect and must be
-  updated to `BYTEA(33)` before the schema is implemented.
 - `providers`: `last_known_multiaddrs JSONB`, `last_heartbeat_ts TIMESTAMPTZ`,
   `multiaddr_stale BOOLEAN` added per ADR-028.
 - `escrow_events`: INSERT-only, idempotency_key UNIQUE, amount_paise BIGINT only.
