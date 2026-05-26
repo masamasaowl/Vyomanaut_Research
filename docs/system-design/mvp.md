@@ -792,7 +792,7 @@ Each package's file list is the contract between the repository structure and th
 
 - `internal/config/**network_profile.go` — `NetworkProfile` struct (§5.2 of this document), `ProductionProfile` and `DemoProfile` vars. `profiles_test.go` — `TestProfileShardSizeIsConstant`, `TestProfileBothFullySpecified` (Go struct-literal compiler enforcement).
 
-- `internal/crypto/**hkdf.go`, `argon2.go`, `aont.go`, `aont_canary.go` (fixed `[16]byte` const, never a var), `bip39.go` (mnemonic generation and `TwoWordConfirmationGate`), `chacha20poly1305.go`, `aesni.go` (CPUID, `//go:build amd64`), `aesni_other.go` (stub, returns false), `errors.go` (`ErrTagMismatch`, `ErrCanaryMismatch`), `*_test.go` including cross-platform known-answer vectors and fuzz targets.
+- `internal/crypto/**hkdf.go`, `argon2.go`, `aont.go`, `aont_canary.go` (fixed `[16]byte` const, never a var), `bip39.go` (MasterSecretToMnemonic, MnemonicToMasterSecret, SelectConfirmationWords (see interface-contracts.md §5.1 for full signatures)), `chacha20poly1305.go`, `aesni.go` (CPUID, `//go:build amd64`), `aesni_other.go` (stub, returns false), `errors.go` (`ErrTagMismatch`, `ErrCanaryMismatch`), `*_test.go` including cross-platform known-answer vectors and fuzz targets.
 
 - `internal/erasure/**params.go` (exported constants `DataShards`, `ParityShards`, `TotalShards`, `ShardSize`), `engine.go` (`NewEngine(profile)`, `EncodeSegment`, `DecodeSegment`), `errors.go`, `engine_test.go` (round-trip, any-k-shards, shard-size).
 

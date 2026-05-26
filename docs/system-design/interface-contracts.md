@@ -210,9 +210,32 @@ as a fallback when `multiaddr_stale = true` (after 2+ missed heartbeats).
 **Effect on departure detection:** `providers.last_heartbeat_ts` is updated. The departure
 detector compares this value to `NOW() - INTERVAL '72 hours'`.
 
-**Refer:** ([`ADR-028`](../decisions/ADR-028-provider-heartbeat.md))
+**Token refresh integration with the heartbeat goroutine:**
 
----
+The provider daemon must check the JWT remaining TTL on every heartbeat cycle.
+Pseudocode for the heartbeat goroutine:
+
+```go
+func heartbeatLoop(profile NetworkProfile) {
+      ticker := time.NewTicker(profile.HeartbeatInterval)
+      for range ticker.C {
+          // Refresh token if less than 24 hours remaining.
+          if tokenExpiresIn() < 24*time.Hour {
+              if err := refreshToken(); err != nil {
+                  log.Error("token refresh failed; will retry next cycle", err)
+              }
+          }
+          sendHeartbeat()
+      }
+  }
+```
+
+On first startup after a cold-storage absence (e.g. daemon was stopped for >7 days),
+the daemon may hold an expired token. It must attempt token refresh before sending the
+heartbeat. If the token is beyond the 1-hour grace period and refresh fails, the daemon
+must prompt re-registration (full OTP flow) on its local status interface.
+
+**Refer:** ([`ADR-028`](../decisions/ADR-028-provider-heartbeat.md))
 
 ### 3.2 Ed25519 Signing Conventions
 
@@ -409,20 +432,54 @@ Initiator                          Responder
 **Frame 1 — UploadRequest:**
 
 | Field | Type | Size | Description |
-|---|---|---|---|
-| `length` | uint32 big-endian | 4 B | Total payload length of this frame (not including the 4-byte length field itself). Must equal 32 + 4 + 262144 = 262180 bytes. |
+| --- | --- | --- | --- |
+| `length` | uint32 big-endian | 4 B | Total payload length: `32 + 4 + 72 + 262144 = 262252` bytes. |
 | `chunk_id` | bytes | 32 B | SHA-256(chunk_data). Content address. Used as the RocksDB lookup key. |
-| `shard_index` | uint32 big-endian | 4 B | Which of the 56 RS output shards this is (0–55). Validated against the assignment service record. |
-| `chunk_data` | bytes | 262144 B | Raw 256 KB AONT-RS encoded shard. No additional encryption at the transport layer — TLS 1.3 handles confidentiality. |
+| `shard_index` | uint32 big-endian | 4 B | Which of the `TotalShards` RS output shards this is (0 … TotalShards-1). |
+| `capability_token` | bytes | 72 B | 8-byte `expiry_unix_ms` (int64 big-endian) \|\| 64-byte Ed25519 signature. See token format below. |
+| `chunk_data` | bytes | 262144 B | Raw 256 KB AONT-RS encoded shard. |
 
-Maximum frame payload: 262180 bytes. A frame with `length > 262180` is a FRAME_TOO_LARGE error.
+Maximum frame payload: **262252 bytes** (updated from 262180). A frame with `length > 262252` is a FRAME_TOO_LARGE error.
+
+**Capability token format:**
+
+```go
+signing_input = SHA-256(
+    "vyomanaut-chunk-upload-cap-v1"   // domain-separation prefix
+    || chunk_id          (32 bytes)
+    || provider_id       (16 bytes, UUID bytes, big-endian)
+    || file_id           (16 bytes, UUID bytes, big-endian)
+    || expiry_unix_ms    (8 bytes, int64 big-endian)
+)
+
+capability_token = expiry_unix_ms (8 B) || Ed25519_sign(microservice_signing_key, signing_input)
+```
+
+The microservice signing key is the same key used to sign JWTs and `service_sig` on audit
+receipts. Its public key is available at `GET /.well-known/jwks.json`.
+
+Token lifetime: `NOW() + 3600 seconds` (1 hour). Chosen to exceed the maximum expected
+upload duration for a 100 MB file on a 5 Mbps connection (~3 minutes per segment × many
+segments), with generous headroom for retries.
+
+**Provider verification steps (before writing anything to disk):**
+
+1. `len(capability_token) == 72` — reject with `0x03` immediately if wrong.
+2. Parse `expiry_unix_ms` from token bytes 0–7.
+3. Check `expiry_unix_ms > NOW_unix_ms - 30_000` (30-second clock-skew grace). Reject with
+`0x03` if expired. Use `0x07 CAPABILITY_EXPIRED` as the status byte (new code, see below).
+4. Verify Ed25519 signature (token bytes 8–71) over `signing_input` using the cached
+microservice public key. Reject with `0x03 NOT_ASSIGNED` if signature is invalid.
+5. The `chunk_id` in the signing input is implicitly verified because the provider
+re-derives `signing_input` using the `chunk_id` received in the frame header. A mismatch
+causes signature verification to fail (step 4), which returns `0x03`.
 
 **Frame 2 — UploadResponse:**
 
 | Field | Type | Size | Description |
 |---|---|---|---|
 | `length` | uint32 big-endian | 4 B | Payload length. Success: 1 + 64 = 65 bytes. Error: 1 byte. |
-| `status` | uint8 | 1 B | `0x00` = OK. `0x01` = FRAME_TOO_LARGE. `0x02` = CHUNK_ID_MISMATCH (SHA-256 of received data does not match `chunk_id`). `0x03` = NOT_ASSIGNED (provider is not the assigned holder for this chunk_id). `0x04` = STORAGE_FULL (provider has reached `declared_storage_gb` cap). `0x05` = INTERNAL_ERROR (vLog write or RocksDB insert failed). `0x06` = ALREADY_STORED (the microservice treats this identically to `0x00` — the chunk is durably stored. The initiator should proceed with collecting upload receipts from other providers without retrying this one). |
+| `status` | uint8 | 1 B | `0x00` = OK, chunk stored durably. `0x01` = FRAME_TOO_LARGE. `0x02` = CHUNK_ID_MISMATCH (SHA-256 of received data does not match `chunk_id`). `0x03` = NOT_ASSIGNED (provider is not the assigned holder for this chunk_id). `0x04` = STORAGE_FULL (provider has reached `declared_storage_gb` cap). `0x05` = INTERNAL_ERROR (vLog write or RocksDB insert failed). `0x06` = ALREADY_STORED — idempotent; treat as 0x00. `0x07` CAPABILITY_EXPIRED — token `expiry_unix_ms` is in the past. Data owner must request a fresh assignment from the microservice. |
 | `provider_sig` | bytes | 64 B | Ed25519 signature by the provider over `SHA-256(chunk_id ‖ shard_index ‖ provider_id_bytes ‖ timestamp_unix_ms)`. Present only when `status = 0x00`. This is the upload receipt that the initiator must retain as proof of acknowledged storage. |
 
 **Timeout:** The initiator must receive `UploadResponse` within 5,000 ms of sending
@@ -858,6 +915,64 @@ func DeriveDHTOwnerKey(masterSecret, ownerID, fileID []byte) [32]byte
 //   - len(fileOwnerKey) == 32  (output of DeriveDHTOwnerKey)
 // Goroutine-safe: yes.
 func DeriveDHTKey(chunkHash, fileOwnerKey [32]byte) [32]byte
+
+// Addtions made for the BIP-39 functions
+
+// MasterSecretToMnemonic encodes the 32-byte master secret as a BIP-39 24-word
+// mnemonic phrase. The mnemonic IS the master secret expressed as English words
+// — it is not derived from the master secret; it encodes it directly.
+//
+// The encoding uses 32 bytes of entropy (256 bits) → 24 words with an 8-bit
+// checksum appended, per BIP-39 §Generating the mnemonic.
+//
+// The BIP-39 English wordlist (2048 words) is the only permitted wordlist.
+// Vyomanaut never uses passphrases on top of the mnemonic (BIP-39 §From mnemonic
+// to seed is not used; the mnemonic itself IS the master secret, not a seed input).
+//
+// Pre-conditions:
+//   - len(masterSecret) == 32  (panic in debug if violated)
+// Post-conditions:
+//   - returns exactly 24 lowercase English words from the BIP-39 wordlist
+//   - MnemonicToMasterSecret(result) == masterSecret (round-trip identity)
+// Error semantics: returns error only if the BIP-39 wordlist is missing or corrupt
+//   (treat as fatal startup condition).
+// Goroutine-safe: yes (pure function).
+func MasterSecretToMnemonic(masterSecret [32]byte) ([]string, error)
+
+// MnemonicToMasterSecret recovers the 32-byte master secret from a 24-word
+// BIP-39 mnemonic. This is the recovery path for owners who have lost their
+// passphrase but retained their mnemonic backup. (FR-004)
+//
+// Pre-conditions:
+//   - len(words) == 24
+//   - all words are lowercase entries in the BIP-39 English wordlist
+// Post-conditions (on nil error):
+//   - returned masterSecret is the 32-byte value encoded by this mnemonic
+//   - MasterSecretToMnemonic(result) == words (round-trip identity)
+// Error semantics:
+//   - ErrInvalidMnemonic: wrong word count, unknown word, or BIP-39 checksum
+//     failure. Caller must surface "Invalid recovery phrase — please check your
+//     words and try again." Do not expose which word failed (timing oracle).
+// Goroutine-safe: yes (pure function; no shared state).
+func MnemonicToMasterSecret(words []string) ([32]byte, error)
+
+// SelectConfirmationWords returns two distinct random word indices (0–23) for
+// the mnemonic confirmation gate. The UI prompts the data owner to type the
+// words at these positions before allowing the registration flow to proceed.
+// (FR-003)
+//
+// In demo mode (profile.SkipMnemonicConfirm == true), the mnemonic is displayed
+// but the caller skips prompting — this function may still be called; the caller
+// simply does not block on user input.
+//
+// Pre-conditions:
+//   - len(mnemonic) == 24  (panic in debug if violated)
+// Post-conditions:
+//   - 0 <= indexA, indexB <= 23
+//   - indexA != indexB
+//   - indices are drawn with crypto/rand (not math/rand)
+// Goroutine-safe: yes.
+func SelectConfirmationWords(mnemonic []string) (indexA, indexB int)
 ```
 
 **Sentinel errors exported by this package:**
@@ -866,6 +981,7 @@ func DeriveDHTKey(chunkHash, fileOwnerKey [32]byte) [32]byte
 var (
     ErrTagMismatch    = errors.New("crypto: Poly1305 tag verification failed")
     ErrCanaryMismatch = errors.New("crypto: AONT canary word mismatch after decode")
+    ErrInvalidMnemonic = errors.New("crypto: invalid BIP-39 mnemonic") 
 )
 ```
 
@@ -1107,10 +1223,10 @@ type Host interface {
 // DHT is the Kademlia DHT interface with the custom HMAC key validator.
 // (ADR-001 §DHT Key Contract)
 type DHT interface {
-    // PutProviderRecord announces that the local peer holds the value for the
-    // given DHT key. The key must be an HMAC-derived key
-    // (HMAC-SHA256(chunk_hash, file_owner_key)); the validator will reject any
-    // key that does not pass the HMAC format check.
+    // PutProviderRecord announces that the local peer holds the value for the given DHT key. The key must be an HMAC-derived key (HMAC-SHA256(chunk_hash, file_owner_key)); the validator will reject any key that does not pass the HMAC format check.
+    // Pre-conditions:
+    //   - len(key) == 32  (HMAC output is always 32 bytes)
+    //   - key was computed by crypto.DeriveDHTKey at upload time and is stored locally by the daemon (the daemon MUST NOT recompute it at republication time because file_owner_key is not available after upload completes)
     PutProviderRecord(ctx context.Context, key []byte) error
 
     // FindProviders returns up to maxCount peers that have announced holding
@@ -1503,6 +1619,9 @@ creation.
 package client
 
 // UploadOrchestrator manages the full upload lifecycle for one file.
+// ERRATA: Each ShardAssignment in the UploadAssignResponse includes a capability_token field. The upload orchestrator must include this token verbatim in the capability_token field of the UploadRequest frame sent to that provider. Tokens are single-use per assignment and expire 1 hour after issuance.
+// If a provider returns 0x07 (CAPABILITY_EXPIRED), the orchestrator must call POST /api/v1/upload/assign again with the same file_id to obtain fresh tokens.
+// The assignment service returns the same provider set (idempotent on file_id) but generates new tokens with a fresh expiry.
 type UploadOrchestrator interface {
     // UploadFile encodes, distributes, and registers a file.
     //
@@ -2098,6 +2217,72 @@ initialisation path (`cmd/provider/main.go`) using a configuration constant, not
 string. This ensures a global search for the string `/vyomanaut/dht-key/1.0.0` finds all
 registration points. Whenever `go-libp2p` is upgraded, the developer must verify this
 constant survives the upgrade by running `TestDHTKeyValidatorPersists`.
+
+---
+
+### 12.1 DHT Record Value Format
+
+DHT records use libp2p's standard content routing mechanism (provider records).
+When a provider daemon calls DHT.PutProviderRecord(key), the libp2p DHT implementation
+stores the calling node's peer.AddrInfo as the provider record. This implicitly contains:
+
+1. `peer.ID` — the provider's cryptographic identifier, derived from its Ed25519 public key as `multihash(ed25519_public_key)`. The data owner verifies this matches the registered `ed25519_public_key` from the microservice before using the returned addresses.
+2. `multiaddr` — the provider's current listen addresses at the time of the call.
+
+FindProviders(key) returns []peer.AddrInfo for all nodes that have announced themselves
+as providers for that key. The data owner dials these addresses as a fallback when the
+microservice's heartbeat record for the target provider is stale.
+
+---
+
+### 12.2 DHT Republication Contract (Corrected)
+
+Provider daemons are responsible for republishing their own DHT records. The daemon's
+heartbeat goroutine triggers PutProviderRecord for all currently ACTIVE chunk assignments
+at every `NetworkProfile.DHTRepublishInterval`. This is coordinated with the heartbeat cycle:
+
+```go
+func heartbeatAndRepublish(profile NetworkProfile, store ChunkStore, dht DHT) {
+      heartbeatTicker := time.NewTicker(profile.HeartbeatInterval)
+      republishTicker := time.NewTicker(profile.DHTRepublishInterval)
+      for {
+          select {
+          case <-heartbeatTicker.C:
+              sendHeartbeat()
+          case <-republishTicker.C:
+              for _, chunkID := range store.AllChunkIDs() {
+                  dhtKey := crypto.DeriveDHTKey(chunkID, fileOwnerKey)
+                  dht.PutProviderRecord(ctx, dhtKey)
+              }
+          }
+      }
+  }
+```
+
+Note: the daemon does not know `file_owner_key` for real production shards — that key belongs
+to the data owner. For DHT republication, the daemon only needs to call PutProviderRecord
+with the pre-computed dht_key that was stored alongside the chunk at upload time. The
+`dht_key` is stored in the `chunk_assignments` row and included in the upload receipt, so the
+daemon caches it locally without needing the `file_owner_key`.
+
+The `dht_key` must be persisted locally by the daemon (e.g., in RocksDB alongside the
+`vlog_offset`) so that republication does not require the data owner to be online.
+
+---
+
+## Stale Address Fallback Path
+
+The DHT is the FALLBACK path, not the primary path. The normal retrieval sequence is:
+
+1. Fetch pointer file from microservice (`pointer_ciphertext` → decrypt → provider_ids[])
+2. Fetch each provider's current multiaddrs from `providers.last_known_multiaddrs` via
+    microservice heartbeat record (fresh if `providers.multiaddr_stale = false`).
+3. Dial providers directly using multiaddrs from step 2
+4. If `multiaddr_stale = true` for a provider: fall back to `DHT.FindProviders(dht_key)`
+    to locate the provider's current address.
+
+The DHT is not used in the normal retrieval path at all. Its purpose is address discovery
+for providers whose IP has rotated since their last heartbeat.
 
 ---
 

@@ -773,7 +773,7 @@ The Kademlia DHT handles chunk-address lookup (finding which provider holds whic
 
 DHT lookup keys use: `HMAC-SHA256(chunk_hash, file_owner_key)` where `file_owner_key = HKDF(master_secret, "vyomanaut-dht-v1", file_id)`. Only the file owner can reverse-map a DHT key to its chunk. The DHT never sees real chunk hashes or file IDs.
 
-DHT records are republished every 12 hours by the microservice's availability service. Record expiry is 24 hours, providing a 12-hour buffer against delayed republication. ([ADR-006](../decisions/ADR-006-polling-interval.md))
+DHT records are republished by provider daemons at every NetworkProfile.DHTRepublishInterval (12 hours in production, 2 minutes in demo). The daemon's heartbeat goroutine triggers `PutProviderRecord` for all active chunk assignments. `The dht_key` for each chunk is cached locally in the provider's RocksDB instance alongside the vlog_offset so republication does not require the data owner to be online. See interface-contracts.md §12 for the complete republication contract. ([ADR-006](../decisions/ADR-006-polling-interval.md))
 
 ### Session resumption policy
 
