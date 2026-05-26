@@ -12,8 +12,6 @@
 - [`docs/system-design/interface-contracts.md`](./interface-contracts.md) — wire-format contracts
 - [`docs/decisions/ADR-031-demo-mode-network-profile.md`](../decisions/ADR-031-demo-mode-network-profile.md) — authoritative ADR for the mode flag
 
-> **Sync notice:** This document reflects the repository state at https://github.com/masamasaowl/Vyomanaut_Research as of May 2026. Any modification to the ADRs referenced here should trigger a review of the affected section below.
-
 ---
 
 ## Table of Contents
@@ -26,7 +24,6 @@
 6. [Switching Mode Requirements and Repercussions](#6-switching-mode-requirements-and-repercussions)
 7. [Viability Fact-Check: Every Demo Value Verified](#7-viability-fact-check-every-demo-value-verified)
 8. [Repository Foundation](#8-repository-foundation)
-9. [Build Order Recommendation](#9-build-order-recommendation)
 
 ---
 
@@ -878,126 +875,6 @@ All checks in this section are required — a PR may not be merged if any of the
 **`runbooks/`** — these eight files must all exist before M8 (private beta) closes: `microservice-failover.md`, `postgres-failover.md`, `relay-node-replacement.md`, `secrets-manager-outage.md`, `razorpay-api-outage.md`, `provider-mass-departure.md`, `rbi-holiday-table-update.md`, `audit-secret-rotation.md`. Grafana alert runbook links point to these files by name.
 
 **`scripts/benchmarks/`** — four benchmark scripts must produce a passing result on minimum-spec hardware (dual-core, no AES-NI, 2 GB RAM, 7200 RPM HDD) before any launch milestone closes: `aont_encode.sh` (Q16-1), `argon2id.sh` (Q18-1), `rocksdb_ssd.sh` (Q27-1 SSD variant), `rocksdb_hdd.sh` (Q27-1 HDD variant). These are the launch gates defined in `requirements.md §7.4`.
-
----
-
-## 9. Build Order Recommendation
-
-### 9.1 The question
-
-> Should we complete the build to PROD, then add the DEMO flags, or create the DEMO version
-> as the base, run it, test it, and then continue with full PROD development?
-
-### 9.2 Recommendation: Build DEMO first, extend to PROD
-
-Build the entire system against the `NetworkProfile` abstraction with `DemoProfile` as the
-active configuration. Get the full end-to-end lifecycle working (register → vet → upload →
-audit → repair → pay → depart) in a 30-minute session. Then flip `VYOMANAUT_MODE=prod` and
-address the infrastructure differences (secrets manager, Razorpay live, relay nodes, full
-quorum). No logic changes; only infrastructure wiring.
-
-### 9.3 Why DEMO first is the correct choice
-
-**1. DEMO is the full system, not a subset.**
-
-Every code path — AONT encoding, RS erasure, libp2p, audit challenge, two-phase receipt
-write, vLog, RocksDB, repair scheduler, scoring, payment, vetting GC — executes during a
-demo session. The only things absent from demo are infrastructure choices (secrets manager,
-Razorpay live, relay nodes). You are testing production code, just with faster clocks.
-
-**2. Feedback cycles are 10 minutes instead of 4 months.**
-
-With a 24-hour polling interval and a 120-day vetting minimum, you cannot know if the
-vetting → active transition is correct without waiting 4 months. With demo parameters, you
-know in 10 minutes. Bugs in the consecutive-pass counter, the ACTIVE transition logic, the
-vetting GC protocol, or the post-vetting payment release are found in the first hour of
-demo testing, not in the third month of production operation.
-
-**3. The NetworkProfile abstraction means PROD is zero additional logic.**
-
-Switching from demo to production is changing two struct instances and adding three pieces
-of infrastructure wiring:
-
-```
-DemoProfile → ProductionProfile
-VYOMANAUT_CLUSTER_MASTER_SEED env var → SecretsManagerClient
-MockPaymentProvider → RazorpayProvider
-No relay nodes → 3 relay VM instances + libp2p relay configuration
-```
-
-No Go function changes. No database schema changes beyond the two CHECK constraint values.
-No wire format changes. The diff is pure configuration.
-
-**4. Investors see a working product faster.**
-
-A working 5-provider network in a conference room is more persuasive than "we're building
-it, the production version will have 56 providers." Demo-first gives you the earliest
-possible date for a real demonstration.
-
-**5. ADR-029's simulation mode set this precedent.**
-
-Simulation mode explicitly requires that it satisfies the same readiness gate as production.
-Demo mode extends this: it is simulation mode with a NetworkProfile. The design already
-assumes this build order.
-
-### 9.4 Recommended build sequence
-
-```
-Phase 0: Scaffold (1–2 days)
-├── Define NetworkProfile struct (§5.1)
-├── Implement both profile instances
-├── Wire profile selection at startup
-├── Write compiler-enforced test:
-│     TestProfileShardSizeIsConstant
-│     TestProfileBothFullySpecified
-└── Set up two databases (demo_db, prod_db) — never mixed
-
-Phase 1: Core pipeline with DemoProfile (3–4 weeks)
-├── internal/crypto (AONT, HKDF, Argon2id, Ed25519)
-├── internal/erasure (RS with profile.DataShards etc.)
-├── internal/storage (WiscKey vLog + RocksDB)
-├── internal/p2p (libp2p host, DHT with custom key validator)
-├── Provider daemon: register → heartbeat → store chunk → respond to challenge
-├── Microservice: register provider → assign shards → issue challenge → record receipt
-├── Data owner client: encode → upload → retrieve
-└── ✅ Milestone: full upload/download cycle, 5 providers on one laptop, 30-minute session
-
-Phase 2: Provider lifecycle with DemoProfile (2–3 weeks)
-├── Vetting: synthetic chunks, 5-pass threshold, ACTIVE transition, GC instruction
-├── Repair: departure detection, lazy trigger, RS decode, replacement shard upload
-├── Scoring: three-window materialised view with demo intervals
-├── Payment: mock provider, escrow events, release computation, seizure on departure
-└── ✅ Milestone: full lifecycle demo — join, vet, upload, pay, depart, repair — in 35 min
-
-Phase 3: Production infrastructure (3–4 weeks)
-├── SecretsManagerClient (Vault / AWS SSM / GCP) replacing env var
-├── RazorpayProvider (Route + RazorpayX + Smart Collect 2.0)
-├── Relay nodes (3 × libp2p Circuit Relay v2, Indian AZs)
-├── (3,2,2) gossip cluster for microservice
-└── ✅ Milestone: VYOMANAUT_MODE=prod passes all readiness conditions
-
-Phase 4: Production hardening (ongoing)
-├── Benchmarks: Q16-1, Q18-1, Q27-1, HDD audit latency
-├── Razorpay integration tests (test credentials)
-├── Disaster recovery runbook
-└── ✅ Milestone: Private beta launch
-```
-
-### 9.5 What would go wrong with PROD-first
-
-If you build against ProductionProfile from day one:
-
-- The first end-to-end test requires 56 providers. You will not have 56 test providers for
-  weeks or months. You write mock providers instead — and now the mock codebase diverges
-  from the real daemon.
-- You discover vetting logic bugs after 120 days, not 10 minutes. If `consecutive_audit_passes`
-  resets incorrectly on TIMEOUT, you learn this after four months of waiting.
-- The repair scheduler bugs that only manifest with real departures take weeks to reproduce
-  because the departure threshold is 72 hours.
-- The payment release logic that fires on the 23rd of the month can only be tested once per
-  month. With demo parameters you test it every 2 minutes.
-
-None of these problems exist in the demo-first approach.
 
 ---
 

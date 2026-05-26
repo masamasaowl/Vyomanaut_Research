@@ -3,8 +3,8 @@
 **Version:** 1.0
 **Status:** Active — evolves with the build
 **Repository:** https://github.com/masamasaowl/Vyomanaut_Research
-**Derived from:** `docs/system-design/architecture.md`, `docs/system-design/data-model.md`, `docs/system-design/mvp.md`
-**Awaiting integration:** `docs/system-design/requirements.md`, `docs/system-design/interface-contracts.md`, `docs/system-design/api/openapi.yaml`
+**Derived from:** `docs/system-design/architecture.md`, `docs/system-design/data-model.md`, `docs/system-design/mvp.md`, `docs/system-design/interface-contracts.md`
+**Awaiting integration:** `docs/system-design/requirements.md`, `docs/system-design/api/openapi.yaml`
 
 > **Primary build principle (mvp.md §9.3):** Build the full system against `DemoProfile` first. Every code path must execute in a 30-minute demo session before production infrastructure is introduced. `VYOMANAUT_MODE=prod` is a configuration switch, not a code change.
 
@@ -62,7 +62,7 @@
 #### Session 0.1.2 — Create directory skeleton
 
 **Task:** Create every directory listed in `mvp.md §8.1` with a `.gitkeep` placeholder. Do not create any `.go` files yet. Directories to create:
-`cmd/microservice`, `cmd/provider`, `cmd/client`, `internal/config`, `internal/crypto`, `internal/erasure`, `internal/storage`, `internal/p2p`, `internal/audit`, `internal/scoring`, `internal/repair`, `internal/payment`, `internal/client/account`, `internal/client/upload`, `internal/client/retrieve`, `internal/client/manage`, `migrations`, `deployments/production`, `deployments/staging`, `deployments/dev`, `scripts/benchmarks`, `runbooks`, `docs/decisions`, `docs/research`, `docs/system-design/api`, `.github/workflows`.
+`cmd/microservice`, `cmd/provider`, `cmd/client`, `internal/config`, `internal/crypto`, `internal/erasure`, `internal/storage`, `internal/p2p`, `internal/audit`, `internal/scoring`, `internal/repair`, `internal/payment`, `internal/vettingchunk`, `internal/client/account`, `internal/client/upload`, `internal/client/retrieve`, `internal/client/manage`, `migrations`, `deployments/production`, `deployments/staging`, `deployments/dev`, `scripts/benchmarks`, `runbooks`, `docs/decisions`, `docs/research`, `docs/system-design/api`, `.github/workflows`.
 
 **Definition of done:** All directories exist. `find . -type d` matches the spec.
 
@@ -83,6 +83,7 @@
 **Task:** Create the CI workflow file with all 15 required checks from `mvp.md §8.4`. For checks 5–15 (which require actual code), add placeholder steps that `echo "TODO: not yet implemented — check will be enforced once target code is merged"` and exit 0. The placeholder must be replaced before the relevant milestone closes. Mark each placeholder with the milestone that owns it.
 
 Required checks to scaffold:
+
 1. `go build ./...`
 2. `go vet ./...`
 3. `golangci-lint run`
@@ -98,12 +99,34 @@ Required checks to scaffold:
 13. Hyperlink check — active from day one
 14. `TestProfileShardSizeIsConstant` — owned by M1
 15. `TestProfileBothFullySpecified` — owned by M1
+16. Import graph analyser (owned by M2, activated fully in M19): `go vet ./...` with the import-graph analyser. Must catch all six prohibited import
+directions from `interface-contracts §9`. Specifically:
+    - `internal/crypto` imports no other `internal/` package
+    - `internal/erasure` imports no other `internal/` package
+    - `internal/storage` does not import `internal/payment`, `internal/scoring`, `internal/repair`
+    - `internal/payment` does not import `internal/repair`, `internal/p2p`
+    - `internal/scoring` does not import `internal/repair`, `internal/payment`
+    - `internal/audit` does not import `internal/scoring`, `internal/repair`, `internal/payment`
+17. Frozen symbol name grep (owned by M2, activated incrementally): A grep across the codebase verifying these exported names are not renamed. They are used by
+cross-package references and Grafana dashboards per `§10`: `AONTEncodeSegment`, `AONTDecodePackage`, `ChunkStore`, `AppendChunk`, `LookupChunk`, `DeleteChunk`, `InsertEscrowEvent`, `EscrowEventType`, `ChallengeNonce`.
+18. `PaiseAmount` type grep (owned by M12): Verifies the monetary amount type is never expressed as `float64` or `float32` in payment context — enforces the `PaiseAmount` naming convention from `§10` and the float prohibition from `§11`.
+19. Convergent encryption grep (owned by M8): Scans for any code path that assigns a deterministic K per segment (AONT key reuse). The AONT K must be fresh `crypto/rand` per segment per `§11` ("each AONT key K is fresh random per segment by design").
 
-**Definition of done:** CI workflow file exists. PR triggers all 15 steps without failing.
+**Definition of done:** CI workflow file exists. PR triggers all 19 steps without failing.
 
 #### Session 0.2.2 — Create `.golangci.yml`
 
 **Task:** Create the linter configuration file with all mandatory linters from `mvp.md §8.4`: `gofmt`, `govet`, `errcheck`, `exhaustive`, `godot`, `gomnd`. Configure `exhaustive` to require switches on `AuditResult`, `ProviderStatus`, `EscrowEventType`, `RepairPriority` to handle all cases.
+
+**A Lint Rule:** `interface-contracts §10` freezes the
+following sentinel error names — renaming them after first commit breaks all `errors.Is()` callers silently: `ErrTagMismatch`, `ErrCanaryMismatch`, `ErrInvalidMnemonic`,
+`ErrChunkNotFound`, `ErrContentHashMismatch`, `ErrVLogFsync`, `ErrVLogRead`,
+`ErrRocksDBInsert`, `ErrPeerIDMismatch`, `ErrAllAddrsFailed`, `ErrDHTKeyInvalid`,
+`ErrInvalidSignature`, `ErrNonceLength`, `ErrReceiptAlreadyFinal`, `ErrProviderNotFound`,
+`ErrProviderNotVetting`, `ErrDuplicateIdempotencyKey`, `ErrProviderOffline`,
+`ErrCapExceeded`, `ErrNotVettingProvider`, `ErrSecretNotFound`, `ErrSecretManagerUnavailable`,
+`ErrSecretExpired`. Add these to the `exhaustive` switch-check list alongside the existing
+enum types.
 
 **Definition of done:** `golangci-lint run` passes on the stub `main.go` files.
 
@@ -216,11 +239,11 @@ Required checks to scaffold:
 
 #### Session 2.1.1 — Implement `internal/crypto/aesni.go` and `aesni_other.go`
 
-**Task:** Implement CPUID-based AES-NI detection in `aesni.go` with build tag `//go:build amd64`. The function signature is `HasAESNI() bool`. Create a stub `aesni_other.go` with the same signature that always returns `false` for non-amd64 platforms. The cipher selection result is read once at daemon startup and stored as a package-level constant — it is never re-checked at runtime.
+**Task:** Implement CPUID-based AES-NI detection in `aesni.go` with build tag `//go:build amd64`. The function signature is `DetectAESNI() bool`. Create a stub `aesni_other.go` with the same signature that always returns `false` for non-amd64 platforms. The cipher selection result is read once at daemon startup and stored as a package-level constant — it is never re-checked at runtime.
 
-**Doc Ref:** `arch §10 Stage 1` ("The cipher is ChaCha20-256 on hardware without AES-NI... detected at startup via CPUID and sets a global constant"), `arch §4.1` (ChaCha20 performance contract: 75 MB/s no-AES-NI; AES-256-CTR: ~900 MB/s on AES-NI)
+**Doc Ref:** `interface contract §5.1`, `arch §10 Stage 1` ("The cipher is ChaCha20-256 on hardware without AES-NI... detected at startup via CPUID and sets a global constant"), `arch §4.1` (ChaCha20 performance contract: 75 MB/s no-AES-NI; AES-256-CTR: ~900 MB/s on AES-NI)
 
-**Definition of done:** `HasAESNI()` compiles on amd64 and non-amd64. Unit test verifies the stub returns false on the CI platform.
+**Definition of done:** `DetectAESNI()` compiles on amd64 and non-amd64. Unit test verifies the stub returns false on the CI platform.
 
 ---
 
@@ -233,7 +256,7 @@ Required checks to scaffold:
 **Task:** Implement the AONT transform as described in `arch §10 Stage 1`. The five steps must map exactly to the spec:
 1. Append 16-byte canary to the segment.
 2. Generate `K = SecureRandom(256 bits)`.
-3. For each 16-byte word `d_i`: encrypt via the selected cipher path (ChaCha20 path or AES-256-CTR path based on `HasAESNI()`).
+3. For each 16-byte word `d_i`: encrypt via the selected cipher path (ChaCha20 path or AES-256-CTR path based on `DetectAESNI()`).
 4. Compute `h = SHA-256(c_0 || c_1 || ... || c_s)` (over all codewords including canary-appended segment).
 5. Append key-embedding block: `c_{s+1} = K XOR h`.
 
@@ -257,7 +280,7 @@ The ChaCha20 path uses `ChaCha20_keystream_word(K, block=⌊i/16⌋, offset=i%16
 
 #### Session 2.3.1 — Implement `internal/crypto/argon2.go`
 
-**Task:** Implement `DeriveMasterSecret(passphrase string, ownerID string, profile config.NetworkProfile) []byte`. The function uses Argon2id with parameters from the profile: `profile.Argon2Time`, `profile.Argon2Memory`, `profile.Argon2Threads`. Output: 32 bytes. The function must never log or print its output.
+**Task:** Implement `DeriveMasterSecret(passphrase, ownerID []byte, argon2Time uint32, argon2Memory uint32, argon2Threads uint8) []byte`. The function uses Argon2id with parameters from the profile: `profile.Argon2Time`, `profile.Argon2Memory`, `profile.Argon2Threads`. Output: 32 bytes. The function must never log or print its output.
 
 Production values (from `mvp.md §5.2`): t=3, m=65536 KiB, p=4.
 Demo values: t=1, m=4096 KiB, p=1.
@@ -323,13 +346,21 @@ Both `publicKey` and `signature` are fixed-size arrays, matching the BYTEA CHECK
 #### Session 2.6.1 — Implement `internal/crypto/bip39.go`
 
 **Task:** Implement:
-- `MasterSecretToMnemonic(masterSecret []byte) ([]string, error)` — returns 24 words
-- `MnemonicToMasterSecret(words []string) ([]byte, error)` — inverse
-- `SelectConfirmationWords(words []string) (indices [2]int)` — returns 2 random word indices for the production confirmation gate
 
-**[BLOCKED: exact function signatures pending `interface-contracts.md §5.1`]** — implement with the signatures above as placeholder; replace with the frozen signatures when `interface-contracts.md` is available.
+```go
+// FROZEN signatures per interface-contracts.md §5.1
+func MasterSecretToMnemonic(masterSecret [32]byte) ([]string, error)
+func MnemonicToMasterSecret(words []string) ([32]byte, error)
+func SelectConfirmationWords(mnemonic []string) (indexA, indexB int)
 
-**Doc Ref:** `arch §11` (recovery paths), `mvp.md §3.5` (`SkipMnemonicConfirm` field in `DemoProfile`)
+var ErrInvalidMnemonic = errors.New("crypto: invalid BIP-39 mnemonic")
+```
+
+**Note:** `MasterSecretToMnemonic` takes `[32]byte` (fixed array), not `[]byte`. The master
+secret is the input, not derived from it. BIP-39 passphrase extension is explicitly
+prohibited — `MnemonicToMasterSecret` returns the 32-byte value directly, not a seed.
+
+**Doc Ref:** `interface-contracts.md §5.1`, `arch §11` (recovery paths), `mvp.md §3.5` (`SkipMnemonicConfirm` field in `DemoProfile`)
 
 **Definition of done:** Round-trip test: encode master_secret → 24 words → decode → same bytes. Confirmation gate: demo mode with `SkipMnemonicConfirm=true` must skip the two-word check.
 
