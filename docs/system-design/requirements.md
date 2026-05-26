@@ -48,6 +48,7 @@
    - [7.2 Key External Dependencies](#72-key-external-dependencies)
    - [7.3 Data Model Implications](#73-data-model-implications)
    - [7.4 Benchmark Requirements Before Shipping](#74-benchmark-requirements-before-shipping)
+   - [Benchmark Procedures](#75-benchmark-procedures)
 8. [Analytics and Instrumentation](#8-analytics-and-instrumentation)
    - [8.1 Primary Metric](#81-primary-metric)
    - [8.2 Provider Primary Metric](#82-provider-primary-metric)
@@ -58,8 +59,14 @@
    - [9.2 Feature Flags](#92-feature-flags)
    - [9.3 Risk Factors and Mitigations](#93-risk-factors-and-mitigations)
    - [9.4 Rollback Plan](#94-rollback-plan)
-10. [Open Questions](#10-open-questions)
+10. [Research Questions](#10-research-questions) 
+   - [10.1 Product Open Questions](#101-product-open-questions)
+   - [10.2 Engineering Open Questions - Telemetry](#102-engineering-open-questions--telemetry)
+   - [10.3 V3 Deferred Questions](#103-v3-deferred-questions)
 11. [Appendix](#11-appendix)
+   - [11.1 Research Basis](#111-research-basis)
+   - [11.2 Rejected Requirements](#112-rejected-requirements)
+   - [11.3 Answered Questions](#113-answered-questions)
 
 ---
 
@@ -92,6 +99,7 @@ the first week. V2 is a research-first rebuild that solves the reliability and t
 structurally before building any user-facing surface.
 
 **Evidence:**
+
 - V1 post-mortem: lack of research-backed architecture drove structural compromises within
   the first sprint. Three failure modes identified: inefficient peer discovery, no audit
   enforcement, and no payment guarantees.
@@ -416,6 +424,7 @@ The following table maps each `NetworkProfile` field to the functional or non-fu
 **Mnemonic backup (FR-003):** This is the highest-stakes UX moment in the product. If a
 data owner does not back up their mnemonic and later loses their passphrase, they lose their
 data permanently. The UI must:
+
 - Present the 24 words on a single screen with no surrounding UI noise.
 - Explicitly state "These words are the ONLY way to recover your files if you forget your
   passphrase. Write them down now."
@@ -434,6 +443,7 @@ owner selects files.
 this without the provider needing to understand reliability scores, escrow windows, or audit
 mechanics. There is no web dashboard in V2 — all provider status information is surfaced
 through the daemon's local status interface only. Translate technical state to plain language:
+
 - "Your daemon is healthy. You've earned ₹340 this month."
 - "Your machine was offline for 26 hours. Your score dropped slightly but your earnings
   are not affected."
@@ -508,6 +518,133 @@ minimum-spec machine before V2 launches:
 - **HDD-specific audit latency** (ADR-023): p99 ≤ 200 ms under active compaction on a
   7200 RPM consumer HDD.
 - **Postgres audit INSERT ceiling (NFR-043):** sustained INSERT rate on `audit_receipts` schema with row security policy enabled at which p99 write latency first exceeds 50 ms. Must replace the planning estimate in architecture.md §28.4 before any launch milestone closes.
+
+The step-by-step execution procedures for each benchmark above are in **§7.5**.
+
+---
+
+### 7.5 Benchmark Procedures
+
+Execute all protocols below on a **minimum-spec test machine** before the relevant
+subsystem ships. Minimum spec: dual-core ≤ 1.8 GHz Intel Celeron / old Pentium
+(confirmed no AES-NI), 2 GB RAM, consumer 7200 RPM HDD, Ubuntu 22.04 LTS.
+
+Results must be recorded in the build log with machine specs and pass/fail verdict.
+All three benchmarks are V2 launch blockers (NFR-043 adds a fourth — Postgres INSERT
+ceiling — which must be measured on a production-equivalent schema instance, not on
+minimum-spec desktop hardware).
+
+---
+
+#### Q16-1 — AONT Encoding Throughput (ChaCha20 path)
+
+**Closes:** NFR-009 (p50 ≤ 200 ms per 14 MB segment without AES-NI)
+
+**Pre-condition:** Verify AES-NI is absent before running.
+
+```bash
+grep -o 'aes' /proc/cpuinfo | head -1
+# Must return nothing. If it returns 'aes', switch machines.
+```
+
+**Protocol:**
+
+```python
+import time, os, hashlib
+from Crypto.Cipher import ChaCha20  # pip install pycryptodome
+
+results = []
+for _ in range(100):
+    plaintext = os.urandom(14 * 1024 * 1024)   # 14 MB segment
+    K = os.urandom(32)
+    t0 = time.perf_counter()
+    cipher = ChaCha20.new(key=K, nonce=b'\x00' * 8)
+    ciphertext = cipher.encrypt(plaintext)
+    h = hashlib.sha256(ciphertext).digest()
+    c_last = bytes(a ^ b for a, b in zip(K, h[:32]))
+    results.append(time.perf_counter() - t0)
+
+results.sort()
+print(f'median={results[50]*1000:.1f}ms  p95={results[95]*1000:.1f}ms  p99={results[99]*1000:.1f}ms')
+```
+
+**Pass criteria:**
+
+- median ≤ 200 ms, p99 ≤ 400 ms → **PASS**
+- median > 200 ms in Python but ≤ 200 ms in Go implementation → investigate overhead; repeat with the production Go binary
+- median > 200 ms in Go → re-evaluate segment size; any change requires co-ordinated ADR-003 + ADR-004 update
+
+---
+
+#### Q18-1 — Argon2id Session Start Latency
+
+**Closes:** NFR-010 (p50 ≤ 500 ms at t=3, m=64 MB, p=4)
+
+```python
+import time
+from argon2 import PasswordHasher  # pip install argon2-cffi
+
+ph = PasswordHasher(time_cost=3, memory_cost=65536, parallelism=4, hash_len=32, salt_len=16)
+times = []
+for _ in range(10):
+    t0 = time.perf_counter()
+    ph.hash('test_passphrase_representative_length_32ch')
+    times.append(time.perf_counter() - t0)
+
+times.sort()
+print(f'median={times[5]*1000:.0f}ms  min={times[0]*1000:.0f}ms  max={times[-1]*1000:.0f}ms')
+```
+
+**Pass criteria and fallback ladder:**
+
+| Result | Action |
+|---|---|
+| median ≤ 500 ms | **PASS** — use t=3, m=64 MB, p=4 |
+| 500 ms–1000 ms | Acceptable with spinner UI; no parameter change |
+| > 1000 ms, step 1 | Try t=2, m=64 MB, p=4 |
+| Still > 1000 ms, step 2 | Try t=3, m=32 MB, p=4 |
+| Still > 1000 ms, step 3 | Try t=2, m=32 MB, p=4 |
+| Any step passes | Update ADR-020 with confirmed parameters and machine spec |
+
+Do not go below m=32768 KiB (32 MB). OWASP 2023 minimum for interactive login.
+Demo mode uses t=1, m=4096 KiB, p=1 per `NetworkProfile.Argon2*` — do not benchmark demo parameters on this protocol.
+
+---
+
+#### Q27-1 — RocksDB Rate Limiter Calibration
+
+**Closes:** NFR-008 (p99 audit latency ≤ 100 ms SSD / 200 ms HDD under concurrent writes)
+
+**Setup:** WiscKey prototype with RocksDB index (chunk_id 32 B → vlog_offset uint64 + size uint32 = 44 B) and append-only vLog at 256 KB entries. Populate with 200,000 synthetic chunks (~50 GB equivalent).
+
+**Concurrent workload for 10 minutes:**
+
+- **Thread A (writer):** continuously append new 256 KB chunks to vLog + RocksDB index
+- **Thread B (auditor):** 1 random point lookup per second; measure time from RocksDB lookup to vLog read completion
+
+**Rate limiter sweep:** 5 / 10 / 20 / 40 MB/s / unlimited. Record `(rate_limiter_MB_s, p99_audit_ms, write_throughput_MB_s)` at each level.
+
+**Pass criteria:** Highest rate limiter where p99 audit latency ≤ 100 ms (SSD) or ≤ 200 ms (HDD). Write throughput at the chosen rate must be ≥ 2 MB/s (providers at 5 Mbps upload = 0.625 MB/s — this is well within budget). Record chosen value in ADR-023.
+
+---
+
+#### Q17-1 — AES-NI Hardware Prevalence (Provider Fleet Estimate)
+
+**Not a timed benchmark — a fleet characterisation method.** Both cipher paths must be production-quality regardless of result (ADR-019). This protocol sizes the ChaCha20 testing investment.
+
+**Method 1 — CPU model correlation (do first):**
+
+Indian home desktop/laptop market at the V2 target price point (₹20,000–₹50,000) runs predominantly Intel Core i3 Sandy Bridge or later, or AMD Ryzen 3 — both with AES-NI. Planning estimate: **85–90% of providers have AES-NI**. Remaining 10–15% are Celeron N-series or Atom.
+
+Reference: Intel ARK database (`ark.intel.com`) — search by CPU family. AES-NI present from: Intel Core i3/i5/i7 ≥ Sandy Bridge (2011), Pentium G ≥ G630, Celeron G ≥ G530. Absent: Intel Atom Bay Trail / Silvermont, pre-2011 AMD.
+
+**Method 2 — Steam Hardware Survey (quantitative):**
+Visit `store.steampowered.com/hwsurvey/`, filter India region, note CPU family distribution, cross-reference Intel AES-NI support matrix.
+
+**Method 3 — Provider onboarding telemetry (definitive):**
+The daemon already performs CPUID detection at startup (ADR-019). Report result to microservice at registration. After 100 beta registrations the fleet fraction is empirically known. This replaces the estimate above.
+
+**Action:** CPUID detection is non-negotiable regardless of fleet estimate. Implement from day one.
 
 ---
 
@@ -609,15 +746,105 @@ double-payment on retry.
 
 ---
 
-## 10. Open Questions
+## 10. Research Questions
+
+Questions are in three tiers: **Product** (business decisions blocking private beta),
+**Telemetry** (can only be answered by observing the live V2 system; none block the build),
+and **V3 Deferred** (valid questions explicitly out of scope for V2).
+
+All Tier 1 build-blocker questions are resolved. See §11.3 for the closed record.
+
+---
+
+### 10.1 Product Open Questions
+
+These require a business or product decision before private beta opens.
 
 | # | Question | Owner | Due | Linked |
-|---|---------|-------|-----|--------|
-| OQ-001 | What is the storage rate (paise per GB per month) that makes participation economically viable for providers at MTTF ≥ 180 days while keeping data owner costs below cloud alternatives? | Product | Before private beta | ADR-024, FR-013, Paper 40 (Buragohain) |
-| OQ-002 | What fraction of Indian home routers are behind symmetric NAT (requiring Circuit Relay v2 permanently)? Global baseline is ~30%; Indian CGNAT prevalence may be higher. | Engineering | Q20-1 — measure at private beta | ADR-021, NFR-006 |
-| OQ-003 | Does the dual-window partial hold trigger (0.20 drop in 7d vs 30d score, FR-050) correctly catch degrading providers before the 72h threshold, without penalising providers with legitimate weekend absences? | Engineering | Q31-1 — measure at beta | ADR-024 |
-| OQ-004 | What RocksDB rate limiter value satisfies p99 ≤ 200 ms under concurrent compaction on a consumer 7200 RPM HDD? | Engineering | Q27-1 — run benchmark on HDD before launch | ADR-023 |
-| OQ-005 | At what provider count N does the observed BWavg exceed 60 Kbps/peer, triggering evaluation of Hitchhiker code adoption for V3? | Engineering | Q39-1 — telemetry at 6 months post-launch | ADR-026 |
+| --- | --- | --- | --- | --- |
+| OQ-001 | What is the storage rate (paise per GB per month) that makes participation economically viable for providers at MTTF ≥ 180 days while keeping data owner costs below cloud alternatives? | Product | Before private beta | ADR-024, FR-013, Paper 40 |
+| OQ-002 | What fraction of Indian home routers are behind symmetric NAT, requiring Circuit Relay v2 permanently? Global baseline is ~30% (Paper 30); Indian CGNAT prevalence may be higher. Measure via AutoNAT classification at provider registration (Q20-1). | Engineering | Private beta — 30 days post-launch | ADR-021, NFR-006 |
+| OQ-003 | Does the dual-window partial hold trigger (0.20 drop in 7d vs 30d score) correctly catch degrading providers before the 72h threshold without penalising providers with legitimate weekend absences? (Q31-1) | Engineering | Private beta — 90 days post-launch | ADR-024 |
+| OQ-004 | What RocksDB rate limiter value keeps p99 audit latency ≤ 200 ms under concurrent compaction on a consumer 7200 RPM HDD? Run benchmark protocol §7.5 Q27-1 before GA. | Engineering | Before V2 GA | ADR-023 |
+| OQ-005 | At what observed BWavg does Hitchhiker code adoption for V3 become justified? Decision gate: if V2 BWavg exceeds 60 Kbps/peer over the first 6 months, implement. (Q39-1) | Engineering | 6 months post-launch | ADR-026 |
+
+---
+
+### 10.2 Engineering Open Questions — Telemetry
+
+None of the following block the build. All require observing the live V2 system.
+Questions marked **[monitoring note]** have their design decision locked; only the
+empirical validation remains open.
+
+**Provider economics and survival**
+
+- **Q05-4** — What held-earnings percentage and vetting period length empirically achieve MTTF 180–380 days? Starting values in ADR-024: 30-day rolling hold, 50% release cap during vetting. Measure: provider survival curves by cohort; adjust multipliers if median provider tenure < 6 months.
+- **Q08-1** — What is the actual MTTF of a financially-incentivised Indian desktop provider? Measure: survival analysis on the first provider cohort; compare to Bhagwan's unincentivised floor (median session ~1–2h) and Bolosky's corporate desktop ceiling (MTTF 290–380 days). Feeds: ADR-003 MTTF assumption validation.
+- **Q08-3** — At what provider count does a 20%/day turnover rate produce more repair bandwidth than idle upload capacity can absorb? Framework: `turnover_rate × Qpeek / (N × 100 KB/s)`. The repair window table in `architecture.md §27.3` shows the window exceeds 12h at N < 500; the actual turnover rate is unknown until V2. Measure: log per-departure transfer volume against provider count.
+- **Q20-3** — What held-earnings percentage empirically achieves MTTF 180–380 days from an initially unincentivised population? Measure: survival curves for the first provider cohort; compare against Trautwein's unincentivised floor (87.6% of sessions under 8h).
+- **Q21-1** — What fraction of registered providers pass the 4–6 month vetting period vs are rejected or depart? Measure: cohort analysis at 6 months. If reject rate > 40%, investigate registration gate or vetting criteria.
+- **Q29-1** — Does graduated penalty (warn at 48h, partial hold at 60h) retain more providers near the 72h boundary than binary seizure? Measure: survival curves for providers in the 48–72h absence zone. Feeds: ADR-007 potential refinement.
+- **Q33-1** — What holding percentage and holding period maximise provider retention while maintaining deterrence? ADR-024 starting values: 30-day rolling hold, 50% cap during vetting. Measure: cohort analysis.
+- **Q40-1** *(method resolved)* — At what provider count N does the Nash equilibrium stability condition bav/bc − 1 ≥ 2.0 hold comfortably? **Analysis:** the condition is satisfied at any positive storage rate and N > 1. The question is the specific N at which the margin becomes operationally comfortable. Measure: compute bav/bc after OQ-001 storage rate is set; validate against first-cohort economics.
+- **Q40-2** — What is the empirical distribution of marginal storage cost among Indian home desktop providers? Measure: provider survey at V2 beta registration; estimate marginal cost from declared free disk space and hardware tier. Feeds: OQ-001 rate-setting.
+
+**Network and transport**
+
+- **Q14-1** — What fraction of Indian home ISPs block UDP, forcing all QUIC connections to the TCP fallback? Measure: log transport type per provider connection at registration; report UDP-block rate at 30 days.
+- **Q14-3** — What is the false-positive rate of the JIT detector (`response_latency_ms < deadline × 0.3`) during QUIC connection migration events? Measure: correlate QUIC migration signals with latency spikes over the first month. If false-positive rate > 1%, add a migration flag to the audit receipt schema.
+- **Q30-2** *(design locked — validation pending)* — **The DCUtR retry count is confirmed at 1** in `architecture.md §13` (ADR-021), based on Paper 30's 97.6% first-attempt success rate. Validation: monitor audit challenge p99 latency under relay at private beta. If p99 exceeds 400 ms, re-evaluate to retry count = 2.
+
+**Scoring and audit**
+
+- **Q06-3** — Does t=24h need production tuning? Measure: false-positive departure declarations (providers declared departed who return within 72h) over the first 3 months. Adjust if false-positive rate > 5%.
+- **Q31-1** — What threshold drop in the 7d vs 30d score should trigger the dual-window hold? ADR-024 starting value: 0.20 drop. Measure: examine provider score trajectories before silent departures; the threshold should catch > 80% of departing providers before the 72h boundary.
+- **Q34-2** — What fraction of a provider's declared upload bandwidth is consumed by repair in steady state? Measure: log per-provider repair transfer volume over the first 3 months; compare to Giroire BWavg prediction.
+
+**Storage and disk**
+
+- **Q23-1** — Is the ~10–15% write throughput penalty at lf=256 KB vs lf=512 KB observable on Indian desktop hardware? Measure: run Q27-1 benchmark protocol (§7.5) at both entry sizes. If gap > 20%, re-evaluate lf — requires co-ordinated ADR-003 + ADR-004 update.
+- **Q27-2** — What is the empirical rate of within-provider burst failures (multiple chunks failing simultaneously)? Measure: log the count of chunks simultaneously invalidated per provider failure event. If multi-chunk bursts > 1% of events, evaluate sparse vLog pre-allocation.
+
+**Failure correlation**
+
+- **Q19-3** — Does the > 98% single-chunk failure rate (Facebook warehouse observation) hold in a P2P consumer desktop network with correlated failures? Measure: log failure event sizes over the first 6 months. If multi-chunk bursts > 2% of events, re-evaluate whether MSR repair bandwidth targets the right case.
+- **Q36-1** — What are the bi-exponential failure model parameters (α, ρ₁, ρ₂) for Indian ISP failure events? Measure: after 6 months, fit G(α, ρ₁, ρ₂) to observed provider failure events grouped by ASN. Use resulting σ_correlated to refine V3 provisioning target.
+- **Q38-1** — Does the 20% ASN cap empirically keep RS(16,56) in the analytically superior region under real Indian ISP correlated failures? Measure: after 6 months, compute the observed maximum correlated failure event size; confirm it remains below the 11-shard analytical bound.
+
+**Payment**
+
+- **Q35-2** — Is the Razorpay per-transaction payout fee model sustainable at V2 scale? Measure: aggregate payout fee expense at 1,000, 3,000, and 10,000 providers; confirm with Razorpay account manager.
+
+**Provider onboarding**
+
+- **Q01-5** — Does reliability-proportional assignment create a runaway Matthew effect where the top 5% of providers receive > 50% of new chunk assignments? Power of Two Choices in ADR-005 is the structural mitigation. Measure: track cumulative chunk assignment distribution vs reliability score percentile over the first 90 days. Trigger: if the top decile holds > 40% of assignments, add a concentration cap.
+- **Q05-1** — What practical challenges does the central microservice pose at launch scale, and which satellite functions can be decentralised in V3? Measure: microservice latency percentiles, failure incidents, and operational overhead over the first 6 months.
+- **Q05-7** — At what file size does per-segment pointer file metadata overhead become user-visible? Measure: track upload distribution at launch; compute metadata-to-data ratio by file size decile; set an inline threshold if the smallest decile shows > 5% metadata overhead.
+
+---
+
+### 10.3 V3-Deferred Questions
+
+Valid questions explicitly out of scope for V2. Each references the V3 milestone they feed.
+
+| ID | Domain | Question summary | Feeds |
+| --- | --- | --- | --- |
+| Q01-4 | Peer selection | Geographic proximity as an assignment criterion | Coral DSHT implementation |
+| Q05-3 | Mobile providers | At what mobile MTTF does the business model break? | V3 mobile provider tier design |
+| Q07-4 | Reputation | Can correlated failure detection be distributed using EigenTrust on repair-event interactions? | V3 distributed reputation |
+| Q08-4 | Scoring | Should polling interval t be adaptive based on score history? | V3 reliability scoring model |
+| Q08-5 | Scoring | Can the scorer distinguish a diurnally-absent provider from a permanently-departed one before t expires? | V3 reliability scoring model |
+| Q09-4–6 | Mobile | Free-space fraction on Indian smartphones; mobile departure threshold; max safe lazy-update window at MTTF ~30 days | V3 mobile provider tier |
+| Q13-2 | Repair | Should GossipSub be used for repair event propagation? | V3 repair scheduler |
+| Q15-1 | Mobile encryption | Can client-side RS erasure coding on mobile fit within battery and CPU budgets? | V3 mobile encoding pipeline |
+| Q19-1 | Erasure coding | ECWide locality in a P2P network with no rack topology | V3 wide-stripe optimisation |
+| Q24-1, Q24-2 | Reputation | Minimum repair interactions before EigenTrust score is meaningful; replacement for microservice pre-trusted anchor | V3 distributed reputation and coordination |
+| Q29-2 | Erasure + pricing | Should hot-band uploads specify different erasure parameters at upload time? | V3 hot band pricing and ADR-026 multi-tier design |
+| Q31-2, Q33-2 | Reputation / economics | PSM ratings from repair interactions; multi-task incentive weight function | V3 distributed reputation; V3 hot band economics |
+| Q34-1 | Storage engine | Within-vLog hot/cold tiering for frequently-accessed vs archival chunks | V3 provider daemon storage tiering |
+| Q36-2 | Repair | Periodic chunk rebalancing to homogenise provider disk fill ratios | V3 repair scheduler + Dalle variance reduction |
+| Q37-1, Q37-2 | Trust / audit scalability | At what provider concentration does microservice capture become a realistic threat? Minimum audit frequency for probabilistic sampling under SHELBY Theorem 1 | V3 Transparent Merkle Log; V3 audit scheduler |
+| Q39-1 (V3 path) | Repair BW | Hitchhiker code adoption after V2 telemetry gate (OQ-005) triggers | V3 ADR-026 implementation |
 
 ---
 
@@ -652,3 +879,76 @@ The following were considered and deliberately excluded:
 | Blockchain for payment | NBFC registration required; token price volatility; high onboarding friction (ADR-011) |
 | Mobile providers in V2 | BWavg at MTTF=90 days ≈ 130 Kbps/peer, exceeding the 100 Kbps budget (ADR-010) |
 | Public audit verification in V2 | Requires Transparent Merkle Log — deferred to V3 (ADR-015) |
+
+---
+
+### 11.3 Answered Questions
+
+The following questions were open during the research phase and are now closed.
+Answers are locked in the referenced ADRs and must not be re-opened without a
+superseding ADR. The full resolution record is in `docs/research/answered-questions.md`.
+
+#### Coordination and DHT
+
+| Question | Answer | ADR |
+|---|---|---|
+| How to avoid the tracker as a single point of failure? | Kademlia DHT replaces the tracker for all peer and chunk discovery. | ADR-001 |
+| How to pseudonymise chunk IDs in the DHT without breaking FIND_VALUE? | DHT lookup key = `HMAC-SHA256(chunk_hash, file_owner_key)` where `file_owner_key = HKDF(master_secret, "vyomanaut-dht-v1", file_id)`. The DHT never sees chunk_hash or file_id. | ADR-001 |
+| How to set DHT branching factor and concurrency? | k-bucket size k=16, α=3 parallel lookups. O(log n / 3) round trips. | ADR-001, ADR-021 |
+| What replaces blockchain as the neutral audit trail? | Write-once append-only audit log. Both provider and microservice sign each receipt with Ed25519. INSERT-only Postgres (row security policy). V3 upgrade: Transparent Merkle Log. | ADR-015 |
+| What practical attacks does DHT pseudonymisation close? | Closes DSN Challenge 3 from the SoK survey — a monitoring node recording all DHT traffic cannot correlate lookups to files without the owner's master secret. | ADR-001 |
+
+#### Erasure Coding and Repair
+
+| Question | Answer | ADR |
+|---|---|---|
+| What is Qpeek at N=1,000, 50 GB/provider? | ~793 GB per failure event. At 100 Kbps/peer aggregate, repair completes in ~8 hours — within the 12-hour safety window. | ADR-003, ADR-004 |
+| What is BWavg at target parameters? | ~39 Kbps/peer at MTTF=300 days, N=1,000, 50 GB/peer (Giroire Formula 1). | ADR-003 |
+| At what correlated failure rate does RS(16,56) become worse than a simpler scheme? | Never, under the 20% ASN cap. The reversal condition (Paper 38) requires correlated failure size to approach r=40. The ASN cap bounds maximum correlated failure at ~11 shards, leaving 44 survivors — 28 above the reconstruction floor. | ADR-003, ADR-014 |
+| What is the optimal lazy repair strategy? | Single r0=8 (desktop-only V2 collapses the tier model). Reduces bandwidth ~38× vs eager repair. | ADR-004 |
+| Is hinted handoff needed for the (3,2,2) quorum? | No. If replica A is down during a write, replicas B and C both ACK (W=2 satisfied). Anti-entropy gossip reconciles A's state within seconds of its return. | ADR-025 |
+
+#### NAT Traversal and Transport
+
+| Question | Answer | ADR |
+|---|---|---|
+| Does Circuit Relay v2 violate the audit response deadline? | No. Relay RTT < 50 ms from Indian cloud regions. Two relay legs = < 100 ms overhead, within the 614 ms deadline at 5 Mbps. | ADR-021 |
+| What is the latency cost of forcing 1-RTT for audit reconnects? | 5–90 ms depending on NAT type (5 ms same-city, ~40 ms cross-city, +50 ms for relay-dependent). Worst case 90 ms, well within the 614 ms deadline. 0-RTT remains disabled for audit interactions. | ADR-021 |
+| How many relay nodes are required at launch? | 3 nodes (Mumbai AZ1, Mumbai AZ2, Chennai/Hyderabad), 128 concurrent reservations each = 384 slots. 4.3× headroom at 300 initial providers. Scale to 4th node when provider count exceeds 570 (45% CGNAT assumption) or 850 (30% baseline). | ADR-021 |
+| **DCUtR retry count — confirmed at 1.** Paper 30 shows 97.6% first-attempt success rate from 4.4M traversal attempts. Setting retry count to 1 (not the libp2p default of 3) is correct and is confirmed in `architecture.md §13`. Validation: monitor audit challenge p99 latency under relay at private beta. | ADR-021 |
+
+#### Encryption and Key Management
+
+| Question | Answer | ADR |
+|---|---|---|
+| Does code-then-encrypt with per-chunk keys improve on AONT-RS? | No. AONT-RS achieves 2^256 computational security with zero external key management. Code-then-encrypt with 56 keys per file offers no meaningful security improvement. | ADR-022 |
+| Should the Ed25519 signing key be derived from master_secret or stored separately? | Store separately, encrypted under a key derived from master_secret (HKDF `"vyomanaut-keystore-v1"`). A compromised signing key can then be rotated without rotating master_secret or re-encrypting any data. | ADR-020 |
+| What fraction of Indian desktop providers lack AES-NI? | Planning estimate: 10–15% lack AES-NI (Celeron N-series, Atom). Both cipher paths must be production-quality. CPUID detection at daemon startup is non-negotiable. | ADR-019 |
+
+#### Erasure Code Selection
+
+| Question | Answer | ADR |
+|---|---|---|
+| Are Clay / MSR codes feasible at (n=56, k=16)? | No. Sub-packetisation α = 40^16 ≈ 10^25 — computationally intractable (Paper 22). MSR and Clay codes are rejected. Hitchhiker (α=2) is the only viable V3 candidate if BWavg telemetry gate triggers. | ADR-026 |
+| Are LRC codes viable? | No. Non-MDS; local group co-locality cannot be guaranteed in a consumer P2P network; repair benefit collapses to RS-level under Indian ISP conditions. | ADR-026 |
+
+#### Storage Engine
+
+| Question | Answer | ADR |
+|---|---|---|
+| Fixed or variable vLog entry size? | Fixed (262,212 bytes = 256 KB chunk + headers). GC tail advancement requires only arithmetic, no parsing. | ADR-023 |
+| Is proactive continuous disk scrubbing justified? | No. The base UE rate is 2–6 per 1,000 drive days (Schroeder et al.). Scrubbing is reactive: triggered by the first audit FAIL. | ADR-023 |
+| Does the chunk index fall in the hot, warm, or cold data regime? | Moot at 256 KB values. WiscKey eliminates value movement from compaction — write amplification ≈ 1.0 regardless of access regime. | ADR-023 |
+
+#### Economic Mechanism and Payment
+
+| Question | Answer | ADR |
+|---|---|---|
+| How should Razorpay `on_hold_until` be set to target first-3-business-days release? | Embed a static `rbi_bank_holidays_YYYY` table (updated each December). Monthly release job runs on the 23rd: set `on_hold_until` to the last working day of the current month. Route releases on the next business day, landing within the first 1–3 days of the following month. | ADR-024 |
+| How should the service-denial attack be monitored? | Three layers: (1) structural — RS(16,56) requires > 40 simultaneous refusals; ASN cap limits any group to ~11. (2) scoring signal — 3 independent data owner retrieval failure reports from the same provider within 72h rolling window → 0.3× audit FAIL weight for 24h window. (3) V3 upgrade — repair-event interactions provide microservice-visible retrieval evidence. | ADR-014, ADR-008 |
+
+#### Audit Scalability
+
+| Question | Answer | ADR |
+|---|---|---|
+| At what provider count does daily full audit become infeasible? | ~100,000 providers × 10,000 chunks (planning estimate). At N=10,000 × 10,000 chunks, challenge rate is 1,157/sec — well within Postgres capacity. At 100,000 × 10,000 = ~11,574/sec, sharding or probabilistic sampling is needed. SHELBY Theorem 1 must be re-verified if sampling is introduced. | ADR-002 |
