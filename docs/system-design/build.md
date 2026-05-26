@@ -1,1401 +1,2237 @@
-# Vyomanaut V2 — BUILD Procedure
+# Vyomanaut V2 — Build Procedure
 
-**Version:** 1.0
-**Status:** Active — evolves with the build
-**Repository:** https://github.com/masamasaowl/Vyomanaut_Research
-**Derived from:** `docs/system-design/architecture.md`, `docs/system-design/data-model.md`, `docs/system-design/mvp.md`, `docs/system-design/interface-contracts.md`
-**Awaiting integration:** `docs/system-design/requirements.md`, `docs/system-design/api/openapi.yaml`
+**Status:** Authoritative build specification  
+**Version:** 1.0  
+**Date:** May 2026  
+**Repository:** https://github.com/masamasaowl/Vyomanaut_Research  
+**Derived from:**
+- `docs/system-design/interface-contracts.md` (IC) — wire contracts, Go package interfaces, forbidden patterns
+- `docs/system-design/data-model.md` (DM) — PostgreSQL schema, invariants, indexes, row security policies
+- `docs/system-design/mvp.md` (MVP) — NetworkProfile, demo/prod mode, repository layout, CI pipeline
 
-> **Primary build principle (mvp.md §9.3):** Build the full system against `DemoProfile` first. Every code path must execute in a 30-minute demo session before production infrastructure is introduced. `VYOMANAUT_MODE=prod` is a configuration switch, not a code change.
+**Awaiting (documents not yet in context):**
+- `docs/system-design/architecture.md` (ARCH) — system overview, deployment topology, relay infrastructure
+- `docs/system-design/requirements.md` (REQ) — FR/NFR completeness gates, capacity calculations
+- `docs/system-design/api/openapi.yaml` (OAS) — authoritative REST/HTTP surface; all endpoint schemas
 
-> **How to read this file:** Each **Session** is the atomic unit of work — a self-contained task with a clear definition of done. The **Doc Ref** on each session is the exact section that governs its constraints and invariants. When a referenced document is not yet in context, the session is marked `[BLOCKED: missing doc]` — do not begin it until the doc is loaded. Every implementation decision that conflicts with the referenced section must be logged as a candidate fix before merging.
-
----
-
-## Milestone Index
-
-| # | Milestone | Build phase | Depends on |
-|---|---|---|---|
-| M0 | Project Foundation | Scaffold | — |
-| M1 | NetworkProfile & Mode Flag | Scaffold | M0 |
-| M2 | Cryptographic Primitives | Core pipeline | M1 |
-| M3 | Erasure Coding Engine | Core pipeline | M2 |
-| M4 | Provider Storage Engine (WiscKey) | Core pipeline | M1 |
-| M5 | P2P Network Layer | Core pipeline | M1 |
-| M6 | Microservice Database Schema | Core pipeline | M1 |
-| M7 | Provider Daemon — Registration & Heartbeat | Demo lifecycle | M4, M5, M6 |
-| M8 | Data Owner Client — Encode & Upload | Demo lifecycle | M2, M3, M5 |
-| M9 | Audit System | Demo lifecycle | M5, M6, M7 |
-| M10 | Provider Lifecycle — Vetting & ACTIVE Transition | Demo lifecycle | M9 |
-| M11 | Repair System | Demo lifecycle | M9, M10 |
-| M12 | Scoring & Payment (Mock) | Demo lifecycle | M9, M10 |
-| M13 | Data Owner Client — Retrieval | Demo lifecycle | M8, M9 |
-| M14 | Demo Integration & End-to-End Validation | Demo complete | M7–M13 |
-| M15 | Secrets Manager & Cluster Audit Secret | Production infra | M9, M14 |
-| M16 | Razorpay Payment Integration | Production infra | M12, M14 |
-| M17 | Relay Nodes & Production NAT Traversal | Production infra | M5, M14 |
-| M18 | Microservice HA Quorum | Production infra | M6, M14 |
-| M19 | Production Hardening & Launch Gate | Launch | M15–M18 |
+> **Reading convention.** Each session carries a `[REF]` tag pointing to the exact document
+> section that governs it. Sessions marked `⚠️ AWAITING` cannot be completed until the
+> missing document is provided; a stub must be committed that compiles and fails its own
+> placeholder test. Every session is atomic: it produces a passing `go test` or a passing
+> migration apply before the next session begins. Logical errors discovered during
+> implementation are fixed in the current session with a note appended to the session log —
+> do not silently carry forward broken invariants.
 
 ---
 
-## Milestone 0 — Project Foundation
+## Build Dependency Graph
 
-**Goal:** A compiling, linting, and test-running Go module with the exact directory layout specified in the system design. No business logic yet.
+``` tree
+M0 (Setup)
+ └─ M1 (Config / NetworkProfile)
+     ├─ M2 (Cryptography)
+     │   └─ M3 (Erasure Coding)
+     ├─ M4 (Database Schema)
+     └─ M5 (Storage Engine)
+         └─ M6 (P2P Network Layer)
+             ├─ M7 (Provider Daemon Core)
+             ├─ M8 (Audit System)
+             │   ├─ M9 (Scoring)
+             │   └─ M10 (Repair)
+             ├─ M11 (Payment)
+             └─ M12 (REST API Layer)  ← ⚠️ AWAITING openapi.yaml
+                 └─ M13 (Coordination Microservice)
+                     └─ M14 (Vetting & Synthetic Chunks)
+                         └─ M15 (Client SDK)
+                             └─ M16 (Demo Mode Validation)
+                                 └─ M17 (Production Hardening)  ← ⚠️ AWAITING architecture.md
+                                     └─ M18 (Launch Readiness)  ← ⚠️ AWAITING requirements.md
+```
 
-**Doc Ref:** `mvp.md §8.1` (top-level directory map), `mvp.md §8.4` (CI pipeline structure), `arch §4` (technology stack — Go ≥ 1.22, single module)
+The import constraint DAG (IC §9) enforces that `crypto` and `erasure` have zero internal
+dependencies; all data-layer packages flow upward only to the microservice entrypoint.
+
+---
+
+## Milestone 0 — Project Setup & Repository Foundation
+
+**Deliverable:** A compilable Go module with the full directory skeleton, a passing CI
+pipeline skeleton, and all tooling configured. No business logic yet.
+
+**Reference:** MVP §8.1 (directory map), MVP §8.4 (CI pipeline structure),
+IC §10 (naming conventions), IC §11 (forbidden code patterns — linter rules set here)
 
 ---
 
 ### Phase 0.1 — Repository Layout
 
-**Doc Ref:** `mvp.md §8.1`
+**Reference:** MVP §8.1
 
-#### Session 0.1.1 — Initialise Go module
+#### Session 0.1.1 — Initialise Go module and top-level directories
 
-**Task:** Create the Go module `github.com/masamasaowl/vyomanaut` with Go ≥ 1.22. Create `go.mod`. Verify `go build ./...` produces no errors on an empty module.
+**Task:** Create the repository at `github.com/masamasaowl/Vyomanaut_Research`. Run
+`go mod init github.com/masamasaowl/vyomanaut`. Create every top-level directory listed
+in MVP §8.1: `cmd/`, `internal/`, `migrations/`, `deployments/`, `scripts/`, `runbooks/`,
+`docs/`. Within each, place a `.gitkeep` or a stub `doc.go` so the tree is committed.
 
-**Definition of done:** `go build ./...` exits 0. `go.mod` contains `go 1.22` or higher.
+Verify: `ls` matches the tree in MVP §8.1 exactly. No extra top-level directories without
+a corresponding ADR (IC §11 — no communication link not shown in the diagram).
 
-**Note:** The module path is a fixed identifier used in DHT namespace strings (`/vyomanaut/dht-key/1.0.0`) and in external documentation. Do not change it after this session.
+#### Session 0.1.2 — Create `cmd/` entrypoint stubs
 
-#### Session 0.1.2 — Create directory skeleton
+**Task:** Create three entrypoint packages: `cmd/microservice/main.go`,
+`cmd/provider/main.go`, `cmd/client/main.go`. Each file must contain only:
+1. `package main`
+2. An empty `func main()` that prints the startup banner format from MVP §2.1:
+   `[STARTUP] Vyomanaut <binary> v0.1.0 — mode=UNKNOWN — stub`
+3. A `// TODO: wire subsystems` comment
 
-**Task:** Create every directory listed in `mvp.md §8.1` with a `.gitkeep` placeholder. Do not create any `.go` files yet. Directories to create:
-`cmd/microservice`, `cmd/provider`, `cmd/client`, `internal/config`, `internal/crypto`, `internal/erasure`, `internal/storage`, `internal/p2p`, `internal/audit`, `internal/scoring`, `internal/repair`, `internal/payment`, `internal/vettingchunk`, `internal/client/account`, `internal/client/upload`, `internal/client/retrieve`, `internal/client/manage`, `migrations`, `deployments/production`, `deployments/staging`, `deployments/dev`, `scripts/benchmarks`, `runbooks`, `docs/decisions`, `docs/research`, `docs/system-design/api`, `.github/workflows`.
+Verify: `go build ./cmd/...` succeeds with zero warnings.
 
-**Definition of done:** All directories exist. `find . -type d` matches the spec.
+**Note:** Business logic — including mode flag parsing — is deferred to M1. These stubs
+exist only to confirm the package structure compiles.
 
-#### Session 0.1.3 — Create cmd entrypoint stubs
+#### Session 0.1.3 — Create `internal/` package stubs
 
-**Task:** Create minimal `main.go` stubs in `cmd/microservice`, `cmd/provider`, and `cmd/client` that do nothing but print `"not implemented"` and exit 0.
+**Task:** For every package listed in MVP §8.2, create the package directory and a
+`doc.go` file containing only the package declaration and a one-line doc comment matching
+the description in MVP §8.2. Packages to stub: `internal/config`, `internal/crypto`,
+`internal/erasure`, `internal/storage`, `internal/p2p`, `internal/audit`,
+`internal/scoring`, `internal/repair`, `internal/payment`, `internal/vettingchunk`,
+`internal/client/account`, `internal/client/upload`, `internal/client/retrieve`,
+`internal/client/manage`.
 
-**Definition of done:** `go build ./cmd/microservice`, `./cmd/provider`, `./cmd/client` all succeed.
-
----
-
-### Phase 0.2 — CI Pipeline
-
-**Doc Ref:** `mvp.md §8.4` (CI pipeline — all 15 required checks)
-
-#### Session 0.2.1 — Create `.github/workflows/ci.yml`
-
-**Task:** Create the CI workflow file with all 15 required checks from `mvp.md §8.4`. For checks 5–15 (which require actual code), add placeholder steps that `echo "TODO: not yet implemented — check will be enforced once target code is merged"` and exit 0. The placeholder must be replaced before the relevant milestone closes. Mark each placeholder with the milestone that owns it.
-
-Required checks to scaffold:
-
-1. `go build ./...`
-2. `go vet ./...`
-3. `golangci-lint run`
-4. `go test ./... -race`
-5. `TestDHTKeyValidatorPersists` — owned by M5
-6. `TestNoFloatArithmetic` — owned by M12
-7. Migration apply + rollback — owned by M6
-8. Grep fail: `challenge_nonce BYTEA(32)` — owned by M9
-9. Grep fail: `float64|float32|FLOAT|DECIMAL|NUMERIC` in payment context — owned by M12
-10. Grep fail: `ADR-039` (non-existent ADR) — active from day one
-11. Grep fail: UPI Collect API endpoint string — active from day one
-12. Mermaid render check — active from day one
-13. Hyperlink check — active from day one
-14. `TestProfileShardSizeIsConstant` — owned by M1
-15. `TestProfileBothFullySpecified` — owned by M1
-16. Import graph analyser (owned by M2, activated fully in M19): `go vet ./...` with the import-graph analyser. Must catch all six prohibited import
-directions from `interface-contracts §9`. Specifically:
-    - `internal/crypto` imports no other `internal/` package
-    - `internal/erasure` imports no other `internal/` package
-    - `internal/storage` does not import `internal/payment`, `internal/scoring`, `internal/repair`
-    - `internal/payment` does not import `internal/repair`, `internal/p2p`
-    - `internal/scoring` does not import `internal/repair`, `internal/payment`
-    - `internal/audit` does not import `internal/scoring`, `internal/repair`, `internal/payment`
-17. Frozen symbol name grep (owned by M2, activated incrementally): A grep across the codebase verifying these exported names are not renamed. They are used by
-cross-package references and Grafana dashboards per `§10`: `AONTEncodeSegment`, `AONTDecodePackage`, `ChunkStore`, `AppendChunk`, `LookupChunk`, `DeleteChunk`, `InsertEscrowEvent`, `EscrowEventType`, `ChallengeNonce`.
-18. `PaiseAmount` type grep (owned by M12): Verifies the monetary amount type is never expressed as `float64` or `float32` in payment context — enforces the `PaiseAmount` naming convention from `§10` and the float prohibition from `§11`.
-19. Convergent encryption grep (owned by M8): Scans for any code path that assigns a deterministic K per segment (AONT key reuse). The AONT K must be fresh `crypto/rand` per segment per `§11` ("each AONT key K is fresh random per segment by design").
-
-**Definition of done:** CI workflow file exists. PR triggers all 19 steps without failing.
-
-#### Session 0.2.2 — Create `.golangci.yml`
-
-**Task:** Create the linter configuration file with all mandatory linters from `mvp.md §8.4`: `gofmt`, `govet`, `errcheck`, `exhaustive`, `godot`, `gomnd`. Configure `exhaustive` to require switches on `AuditResult`, `ProviderStatus`, `EscrowEventType`, `RepairPriority` to handle all cases.
-
-**A Lint Rule:** `interface-contracts §10` freezes the
-following sentinel error names — renaming them after first commit breaks all `errors.Is()` callers silently: `ErrTagMismatch`, `ErrCanaryMismatch`, `ErrInvalidMnemonic`,
-`ErrChunkNotFound`, `ErrContentHashMismatch`, `ErrVLogFsync`, `ErrVLogRead`,
-`ErrRocksDBInsert`, `ErrPeerIDMismatch`, `ErrAllAddrsFailed`, `ErrDHTKeyInvalid`,
-`ErrInvalidSignature`, `ErrNonceLength`, `ErrReceiptAlreadyFinal`, `ErrProviderNotFound`,
-`ErrProviderNotVetting`, `ErrDuplicateIdempotencyKey`, `ErrProviderOffline`,
-`ErrCapExceeded`, `ErrNotVettingProvider`, `ErrSecretNotFound`, `ErrSecretManagerUnavailable`,
-`ErrSecretExpired`. Add these to the `exhaustive` switch-check list alongside the existing
-enum types.
-
-**Definition of done:** `golangci-lint run` passes on the stub `main.go` files.
-
-#### Session 0.2.3 — Create `CODEOWNERS`
-
-**Task:** Create `.github/CODEOWNERS`. The `/migrations/` directory requires 3 reviewers. The `/internal/crypto/` and `/internal/payment/` directories require 2 reviewers from separate ownership tracks.
-
-**Definition of done:** CODEOWNERS file exists with correct path-to-reviewer mappings.
+Verify: `go build ./internal/...` succeeds. `go vet ./internal/...` produces zero output.
 
 ---
 
-### Phase 0.3 — Development Environment
+### Phase 0.2 — Toolchain & Linter Configuration
 
-**Doc Ref:** `mvp.md §8.5` (infrastructure directory conventions — dev docker-compose)
+**Reference:** MVP §8.4 (linter list), IC §11 (forbidden patterns that linters enforce)
 
-#### Session 0.3.1 — Create `deployments/dev/docker-compose.yml`
+#### Session 0.2.1 — Configure `.golangci.yml`
 
-**Task:** Create a docker-compose file that starts: one Postgres 15+ instance (with `btree_gist` pre-installed via init script), one stub microservice container, one stub provider daemon with `--sim-count=5 --sim-asn-count=5`. The dev environment must reach a healthy state (all containers running) within 10 seconds of `docker compose up`.
+**Task:** Create `.golangci.yml` enabling exactly the linters listed in MVP §8.4:
+`gofmt`, `govet`, `errcheck`, `exhaustive`, `godot`, `gomnd`. Configure `exhaustive` to
+require all cases on the types: `AuditResult`, `ProviderStatus`, `EscrowEventType`,
+`RepairPriority` (these types do not exist yet; add them to the `exhaustive.check` list
+by name so they are enforced once defined). Configure `gomnd` to catch magic numbers that
+should be `NetworkProfile` fields (IC §11 — forbidden: hardcoded Argon2id parameters,
+hardcoded shard counts).
 
-**Doc Ref:** `arch §4` (PostgreSQL ≥ 15 required for `NULLS NOT DISTINCT`), `data §9` (migration checklist — `btree_gist` must be installed before any migration)
+Add a `# TODO: add type names as they are defined` comment for the `exhaustive` section.
 
-**Definition of done:** `docker compose up` succeeds. Postgres is reachable on port 5432.
+Verify: `golangci-lint run ./...` on the stub-only repository produces zero lint errors
+(stubs have no logic to trigger the configured rules).
 
-#### Session 0.3.2 — Create Postgres init script
+#### Session 0.2.2 — Configure forbidden-pattern grep checks
 
-**Task:** Create `deployments/dev/postgres/init.sql` that runs `CREATE EXTENSION IF NOT EXISTS btree_gist;` and creates the `vyomanaut_app` and `vyomanaut_gc` Postgres roles with appropriate grants. These roles are required before any migration in `data §6` (row security policies) can be applied.
+**Task:** Create `scripts/ci/grep_checks.sh` implementing the exact grep-fail checks
+listed in MVP §8.4 checks 8–11:
+- Fail if `challenge_nonce BYTEA(32)` appears in any file (IC §11, DM §3 Invariant 5)
+- Fail if `float64|float32|FLOAT|DECIMAL|NUMERIC` appears in `internal/payment/` context (IC §11)
+- Fail if any ADR reference above ADR-031 appears (IC §11 — no non-existent ADR references)
+- Fail if the UPI Collect API endpoint string appears (IC §11)
 
-**Definition of done:** Postgres starts with both roles and `btree_gist` installed. Verified by `\dx` and `\du`.
+Each check must print the offending file and line on failure. The script exits 0 only if
+all four checks pass.
+
+Verify: Running the script against the current stub-only repository exits 0.
 
 ---
 
-## Milestone 1 — NetworkProfile & Mode Flag
+### Phase 0.3 — CI Pipeline Skeleton
 
-**Goal:** The single source of truth for all mode-variable parameters exists, compiles, passes compiler-enforced invariant tests, and is injected correctly at startup.
+**Reference:** MVP §8.4
 
-**Doc Ref:** `mvp.md §2` (mode flag definition), `mvp.md §3` (exact demo specs), `mvp.md §5.1` (NetworkProfile struct), `mvp.md §5.2` (profile instances), `mvp.md §5.3` (profile selection), `arch §9` (core design principles — profile-driven configuration), `data §3 Invariant 7` (ShardSize is a compile-time constant)
+#### Session 0.3.1 — Create `.github/workflows/ci.yml`
+
+**Task:** Implement the CI workflow with all 15 checks listed in MVP §8.4, in order.
+Checks that depend on code not yet written (5, 6, 7, 14, 15) must be present as steps
+but guarded with `continue-on-error: false` and a placeholder Go test file that
+deliberately fails with `t.Skip("not yet implemented — M1+")`. This ensures the CI
+step exists and will fail loudly until the corresponding milestone is complete, rather
+than being silently absent.
+
+The migration step (check 7) must target the CI Postgres instance; document the required
+`btree_gist` extension setup in `.github/workflows/ci.yml` comments (DM §9 migration
+checklist first item).
+
+Verify: The CI workflow file parses valid YAML. `act` (local GitHub Actions runner) or
+manual inspection confirms all 15 steps are present.
+
+#### Session 0.3.2 — Create `.github/CODEOWNERS`
+
+**Task:** Create `.github/CODEOWNERS` with the rule from MVP §8.4: the `/migrations/`
+directory requires three reviewers. Add placeholder ownership entries for all `internal/`
+packages (two reviewers each) and `cmd/` (one reviewer). Use placeholder GitHub handles
+marked `# TODO: replace with real handles`.
+
+Verify: File parses per GitHub CODEOWNERS syntax. The `/migrations/` entry specifically
+lists at least three owner handles (can be duplicates at this stage).
+
+---
+
+### Phase 0.4 — Development Docker Compose
+
+**Reference:** MVP §8.5 (dev docker-compose requirements)
+
+#### Session 0.4.1 — Create `deployments/dev/docker-compose.yml`
+
+**Task:** Create a docker-compose file satisfying the requirements in MVP §8.5:
+- One microservice replica (points to stub binary; will start and exit immediately at
+  this stage)
+- One Postgres 16 instance with `btree_gist` pre-installed (init SQL:
+  `CREATE EXTENSION IF NOT EXISTS btree_gist;`)
+- One relay node stub (can be a simple echo server at this stage; full implementation
+  in M17)
+- One provider daemon in `--sim-count=5 --sim-asn-count=5` mode (stub binary)
+
+The Postgres instance must expose port 5432 and have health-check configured. The
+connection string format must match what the migration runner expects.
+
+Verify: `docker-compose up` brings up Postgres. `psql` connects. `\dx` shows
+`btree_gist` installed.
+
+---
+
+## Milestone 1 — Configuration & NetworkProfile
+
+**Deliverable:** `internal/config` package fully implemented, both profiles defined,
+all profile-selection and guard-rail logic tested. This is the single source of truth
+for all mode-variable parameters. Every subsequent milestone reads from this package.
+
+**Reference:** MVP §2 (mode flag), MVP §5.1 (NetworkProfile struct), MVP §5.2 (profiles),
+MVP §5.3 (profile selection), MVP §5.4 (toggle map), MVP §6 (switching requirements),
+IC §11 (guard rails — DEMO_MODE_REAL_PAYMENT, PROD_MODE_ENV_SECRET error codes from IC §3.3)
 
 ---
 
 ### Phase 1.1 — NetworkProfile Struct
 
-#### Session 1.1.1 — Define `NetworkProfile` in `internal/config/network_profile.go`
+**Reference:** MVP §5.1
 
-**Task:** Implement the `NetworkProfile` struct exactly as specified in `mvp.md §5.1`. All fields must be present. `ShardSize int` must be present but its value must be `262144` in both profiles — it is included in the struct so the compiler can enforce it via `TestProfileShardSizeIsConstant`, but no subsystem should ever vary it based on the profile. Add a doc comment on the struct that explicitly states it is the sole source of mode-variable values and that subsystems must never read `VYOMANAUT_MODE` directly.
+#### Session 1.1.1 — Define the `NetworkProfile` struct
 
-**Definition of done:** File compiles. All fields from `mvp.md §5.1` are present with correct Go types.
+**Task:** Create `internal/config/network_profile.go` containing the `NetworkProfile`
+struct with every field listed in MVP §5.1, in the exact groupings shown (erasure coding,
+readiness gate, ASN cap, time windows, scoring windows, vetting, cryptographic cost,
+infrastructure, release cycle, GC retry backoff). Every field must have a comment citing
+the ADR that governs it (as shown in MVP §5.1).
 
-#### Session 1.1.2 — Implement `ProductionProfile` and `DemoProfile` in `internal/config/profiles.go`
+**Critical constraint:** `ShardSize int` must be present in the struct (for compiler
+enforcement in tests) but its value must always equal the constant `262144` (DM Invariant
+7). Add a compile-time assertion: `var _ = [1]struct{}{}[ShardSize-262144]` — this will
+not compile if anyone sets ShardSize to a non-262144 value in a profile. Also add a
+`const ShardSize = 262144` to `internal/erasure/` (set up in M3) as the canonical
+definition; the profile field must match it.
 
-**Task:** Implement both profile instances with the exact values from `mvp.md §5.2`. Every field must be explicitly set — no zero-value defaults. The Go struct literal must be exhaustive; if a new field is added to `NetworkProfile`, the compiler fails until both profiles are updated.
+Verify: `go build ./internal/config/` succeeds. The struct has exactly the fields in
+MVP §5.1 — no additions, no omissions. Use `go vet` struct-literal completeness to
+enforce this once profiles are defined.
 
-**Doc Ref:** `mvp.md §5.2`, `mvp.md §3` (exact demo specs for every parameter)
+#### Session 1.1.2 — Define `ProductionProfile` and `DemoProfile`
 
-**Definition of done:** Both profile vars compile. Every field value matches `mvp.md §3` exactly.
+**Task:** Create `internal/config/profiles.go` with `var ProductionProfile` and
+`var DemoProfile` populated with every value from MVP §5.2. Use Go struct literal
+syntax with all fields explicitly set (no omitted fields — MVP §6.3 requirement OR-03:
+Go compiler enforces completeness). Both literals must be on the same file so a diff
+immediately shows any field present in one but not the other.
 
-#### Session 1.1.3 — Write compiler-enforced tests in `internal/config/profiles_test.go`
-
-**Task:** Implement two tests:
-
-`TestProfileShardSizeIsConstant`: asserts `DemoProfile.ShardSize == ProductionProfile.ShardSize == 262144`. If either differs, the test must fail with a message that names `data §3 Invariant 7` and `mvp.md §5.1`.
-
-`TestProfileBothFullySpecified`: uses reflection to verify no field in `ProductionProfile` or `DemoProfile` holds a zero value. Zero values are bugs — every parameter must be a deliberate choice. Fields permitted to be zero: `ReleaseComputationInterval` (production uses a calendar date, not a ticker — zero is the sentinel), `RazorpayCoolingPeriod` in `DemoProfile` (intentionally zero).
-
-**Definition of done:** Both tests pass. CI check #14 and #15 in `mvp.md §8.4` activate.
-
----
-
-### Phase 1.2 — Mode Selection & Startup Guards
-
-#### Session 1.2.1 — Implement `selectProfile()` in shared startup logic
-
-**Task:** Implement the `selectProfile()` function from `mvp.md §5.3` in `internal/config/select.go`. The function reads `VYOMANAUT_MODE` env var, falls back to a CLI flag `--mode`, defaults to `prod` with a warning if unset. The function must print the exact startup banner strings from `mvp.md §2.1`.
-
-**Definition of done:** Function compiles. Unit test verifies all three cases: explicit demo, explicit prod, unset (defaults to prod with warning logged).
-
-#### Session 1.2.2 — Implement startup guard checks
-
-**Task:** Implement the three mandatory startup guard checks from `mvp.md §2.3`:
-1. `VYOMANAUT_MODE=prod` AND `VYOMANAUT_CLUSTER_MASTER_SEED` present in env → `log.Fatalf`
-2. `VYOMANAUT_MODE=demo` AND real Razorpay live API endpoint string present → `log.Fatalf`
-3. `VYOMANAUT_MODE` absent → default to `prod` and log a warning
-
-**Doc Ref:** `mvp.md §2.3`, `arch §18` (secrets manager — fail-closed design), `mvp.md §6.2 IR-05`
-
-**Definition of done:** Unit tests cover all three guard conditions. Guards are called from `selectProfile()` before returning.
-
-#### Session 1.2.3 — Wire profile into `cmd/` entrypoints
-
-**Task:** Update all three `main.go` stubs to call `selectProfile()` and print the full `NetworkProfile` struct at startup (field values, no secrets). The profile instance is the first argument passed to every subsystem constructor. No subsystem may call `os.Getenv("VYOMANAUT_MODE")` directly — this is enforced by the linter.
-
-**Doc Ref:** `mvp.md §5.3`, `mvp.md §6.3 OR-01` (profile must be printed at startup)
-
-**Definition of done:** Running any binary prints the profile fields. `go vet` and `golangci-lint` pass.
+Verify: `go build` succeeds. Both structs compile without zero-value defaults silently
+filling any field.
 
 ---
 
-## Milestone 2 — Cryptographic Primitives
+### Phase 1.2 — Profile Tests
 
-**Goal:** All cryptographic operations compile, pass known-answer vector tests, and satisfy the performance NFRs on minimum-spec hardware. No integration with other systems yet.
+**Reference:** MVP §8.2 (profiles_test.go), MVP §6.3 (OR-02, OR-03), DM §3 Invariant 7
 
-**Doc Ref:** `arch §10` (data encoding pipeline — cipher paths), `arch §11` (key hierarchy), `arch §4` (technology stack — crypto library selections), `arch §4.1` (technology rationale — cipher choice), `mvp.md §3.5` (demo cryptographic parameters), `data §3 Invariant 5` (33-byte challenge nonce)
+#### Session 1.2.1 — `TestProfileShardSizeIsConstant`
 
-> **Note:** The full cryptographic requirements and NFRs governing performance targets (NFR-009, NFR-010, NFR-019) are in `requirements.md`, which is not yet in context. Build to the performance targets stated in `arch §3` (quality attributes) and `arch §4.1` (performance contracts). **[BLOCKED: full NFR list pending `requirements.md`]** — tag any implementation detail that needs NFR cross-check.
+**Task:** In `internal/config/profiles_test.go`, implement `TestProfileShardSizeIsConstant`
+(CI check 14 in MVP §8.4). The test must assert:
+- `ProductionProfile.ShardSize == 262144`
+- `DemoProfile.ShardSize == 262144`
+- Both equal the constant exported from `internal/erasure` (import will be added once
+  M3 is complete; use a `// TODO: cross-check with erasure.ShardSize after M3` comment
+  and assert the literal 262144 for now)
 
----
+This test must be in CI check 14 and must block merges on failure (MVP §8.4).
 
-### Phase 2.1 — CPUID Detection & Cipher Selection
+#### Session 1.2.2 — `TestProfileBothFullySpecified`
 
-**Doc Ref:** `arch §10 Stage 1` (AONT cipher selection), `arch §4.1` (ChaCha20 vs AES-CTR rationale)
+**Task:** Implement `TestProfileBothFullySpecified` (CI check 15 in MVP §8.4). Use
+reflection to verify that every field in `ProductionProfile` and `DemoProfile` is
+non-zero (except fields where zero is explicitly the correct production value, e.g.
+`ReleaseComputationInterval: 0` in ProductionProfile — these must be listed in an
+explicit allowlist in the test with a comment explaining why zero is correct per
+MVP §5.2).
 
-#### Session 2.1.1 — Implement `internal/crypto/aesni.go` and `aesni_other.go`
+#### Session 1.2.3 — `TestDemoDiffersFromProduction`
 
-**Task:** Implement CPUID-based AES-NI detection in `aesni.go` with build tag `//go:build amd64`. The function signature is `DetectAESNI() bool`. Create a stub `aesni_other.go` with the same signature that always returns `false` for non-amd64 platforms. The cipher selection result is read once at daemon startup and stored as a package-level constant — it is never re-checked at runtime.
-
-**Doc Ref:** `interface contract §5.1`, `arch §10 Stage 1` ("The cipher is ChaCha20-256 on hardware without AES-NI... detected at startup via CPUID and sets a global constant"), `arch §4.1` (ChaCha20 performance contract: 75 MB/s no-AES-NI; AES-256-CTR: ~900 MB/s on AES-NI)
-
-**Definition of done:** `DetectAESNI()` compiles on amd64 and non-amd64. Unit test verifies the stub returns false on the CI platform.
-
----
-
-### Phase 2.2 — AONT Cipher (ChaCha20 / AES-256-CTR)
-
-**Doc Ref:** `arch §10 Stage 1` (AONT step-by-step algorithm), `arch §4.1` (cipher rationale — RC4 explicitly rejected)
-
-#### Session 2.2.1 — Implement `internal/crypto/aont.go`
-
-**Task:** Implement the AONT transform as described in `arch §10 Stage 1`. The five steps must map exactly to the spec:
-1. Append 16-byte canary to the segment.
-2. Generate `K = SecureRandom(256 bits)`.
-3. For each 16-byte word `d_i`: encrypt via the selected cipher path (ChaCha20 path or AES-256-CTR path based on `DetectAESNI()`).
-4. Compute `h = SHA-256(c_0 || c_1 || ... || c_s)` (over all codewords including canary-appended segment).
-5. Append key-embedding block: `c_{s+1} = K XOR h`.
-
-The ChaCha20 path uses `ChaCha20_keystream_word(K, block=⌊i/16⌋, offset=i%16)`. The AES-CTR path uses `AES-256-ECB(K, i+1)` (counter starts at `i+1` per the AONT-RS spec cited in `arch §10`).
-
-**Explicit prohibition (arch §4.1):** RC4-128 + MD5 is the explicitly insecure AONT-RS configuration from Paper 16. It must never be implemented or accepted.
-
-**Definition of done:** Encode + decode round-trip test with a known 4 MB segment. Canary verification passes. K recovery test: given all s+1 codewords, K is correctly recovered.
-
-#### Session 2.2.2 — Implement `internal/crypto/aont_canary.go`
-
-**Task:** Define the canary as a fixed-value `[16]byte` constant (not a var). The value must be a fixed, non-zero 16-byte sequence defined in the code. Document that the canary is specified in `arch §10 Stage 4` ("verified on decode to detect corruption — if the canary fails, the segment is corrupt").
-
-**Definition of done:** `const AONTCanary [16]byte` compiles. Unit test: corrupt one byte of a decoded segment and verify `ErrCanaryMismatch` is returned.
+**Task:** Assert that demo and production profiles differ on every field listed in
+MVP §3.2 through §3.5 (erasure params, time windows, crypto params). Assert they are
+identical on: `ShardSize`, `ASNCapFraction`, `VettingCapFraction`, `DualWindowDrop`
+(per MVP §5.1 comments that these are "never mode-variable"). This test documents the
+exact boundary between what changes and what stays the same.
 
 ---
 
-### Phase 2.3 — Key Derivation (HKDF & Argon2id)
+### Phase 1.3 — Profile Selection & Guard Rails
 
-**Doc Ref:** `arch §11` (key hierarchy diagram), `arch §4.1` (HKDF-SHA256 + Argon2id rationale), `mvp.md §3.5` (demo Argon2id parameters)
+**Reference:** MVP §2.3 (guard rails), MVP §5.3 (profile selection), IC §3.3
+(DEMO_MODE_REAL_PAYMENT, PROD_MODE_ENV_SECRET error codes)
 
-#### Session 2.3.1 — Implement `internal/crypto/argon2.go`
+#### Session 1.3.1 — Implement `selectProfile()`
 
-**Task:** Implement `DeriveMasterSecret(passphrase, ownerID []byte, argon2Time uint32, argon2Memory uint32, argon2Threads uint8) []byte`. The function uses Argon2id with parameters from the profile: `profile.Argon2Time`, `profile.Argon2Memory`, `profile.Argon2Threads`. Output: 32 bytes. The function must never log or print its output.
+**Task:** Create `internal/config/select.go` implementing the `SelectProfile()` function
+(exported for use by both `cmd/microservice` and `cmd/provider`) matching the logic in
+MVP §5.3. The function must:
+1. Read `VYOMANAUT_MODE` from environment
+2. Allow `--mode` CLI flag override (accept the flag value as a parameter so `cmd/`
+   wiring passes it in)
+3. Log the startup banner format exactly as shown in MVP §2.1
+4. Return `DemoProfile` for `"demo"`, `ProductionProfile` for `"prod"` or `""`
+5. Log a WARNING when mode is absent (defaults to prod)
+6. Call `os.Exit(1)` with a fatal log for any unknown value
 
-Production values (from `mvp.md §5.2`): t=3, m=65536 KiB, p=4.
-Demo values: t=1, m=4096 KiB, p=1.
+#### Session 1.3.2 — Implement startup guard rails
 
-Performance contract (`arch §4.1`): production parameters complete in ≈200 ms on minimum-spec hardware. **[NFR-010 reference pending `requirements.md`]**
+**Task:** Create `internal/config/guards.go` implementing `ValidateStartupGuards(profile
+NetworkProfile)`. This function must implement the two mandatory guard rails from MVP §2.3:
+1. If `profile.Mode == "prod"` AND `os.Getenv("VYOMANAUT_CLUSTER_MASTER_SEED") != ""`
+   → return error with code `PROD_MODE_ENV_SECRET` (IC §3.3 error code table)
+2. If `profile.Mode == "demo"` AND `profile.PaymentMode == "razorpay_live"`
+   → return error with code `DEMO_MODE_REAL_PAYMENT` (IC §3.3 error code table)
 
-**Definition of done:** Unit test with known-answer vector for both parameter sets. Timing test: demo params complete in < 100 ms on CI hardware.
+These correspond to the `500` error codes in IC §3.3. The function returns a typed error
+so callers can distinguish which guard fired. Both `cmd/microservice` and `cmd/provider`
+must call this at startup before any other initialisation.
 
-#### Session 2.3.2 — Implement `internal/crypto/hkdf.go`
+#### Session 1.3.3 — Guard rail tests
 
-**Task:** Implement HKDF-SHA256 derivations matching the key hierarchy in `arch §11`:
-- `DeriveFileKey(masterSecret []byte, fileID string) []byte` — info: `"vyomanaut-file-v1" || fileID`
-- `DerivePointerKey(masterSecret []byte, fileID string) []byte` — info: `"vyomanaut-pointer-v1" || fileID`
-- `DeriveKeystoreKey(masterSecret []byte) []byte` — info: `"vyomanaut-keystore-v1"`
-- `DeriveDHTKey(masterSecret []byte, fileID string) []byte` — info: `"vyomanaut-dht-v1" || fileID` (used for DHT privacy, `arch §9.5`)
-- `DeriveFilenameKey(masterSecret []byte, fileID string) []byte` — info: `"vyomanaut-filename-v1" || fileID` (used for `files.display_name_ciphertext`, `data §4.3`)
-
-All domain separation strings must be defined as named constants — not inline strings. The domain strings are specified in `arch §4.1` ("documented in ADR-020").
-
-**Definition of done:** Unit tests with known-answer vectors for all five derivation paths. A test verifies that all five outputs are distinct for the same master secret and file ID.
-
----
-
-### Phase 2.4 — Authenticated Encryption (Pointer File)
-
-**Doc Ref:** `arch §10 Stage 3` (pointer file encryption: AEAD_CHACHA20_POLY1305), `arch §4.1` (AEAD rationale), `data §4.3` (pointer_ciphertext, pointer_nonce BYTEA(12), pointer_tag BYTEA(16))
-
-#### Session 2.4.1 — Implement `internal/crypto/chacha20poly1305.go`
-
-**Task:** Implement pointer file encryption and decryption using `AEAD_CHACHA20_POLY1305` (RFC 8439). Functions:
-- `EncryptPointerFile(key []byte, nonce [12]byte, plaintext []byte, aad []byte) (ciphertext []byte, tag [16]byte)`
-- `DecryptPointerFile(key []byte, nonce [12]byte, ciphertext []byte, tag [16]byte, aad []byte) ([]byte, error)`
-
-The tag comparison in `DecryptPointerFile` must use `crypto/subtle.ConstantTimeCompare`. A tampered tag must return `ErrTagMismatch` before any decryption attempt — the check precedes the decryption step. **[NFR-019 reference pending `requirements.md`]**
-
-The returned `tag` from encrypt is always exactly 16 bytes — matching `data §4.3` `pointer_tag BYTEA(16) CHECK (octet_length(pointer_tag) = 16)`.
-
-**Definition of done:** Round-trip test. Tampered-ciphertext test returns `ErrTagMismatch`. Tampered-tag test returns `ErrTagMismatch` (constant-time, no oracle). Tampered-AAD test returns error.
+**Task:** Test all guard rail combinations: prod + seed env present (must error),
+prod + seed env absent (must pass), demo + razorpay_live (must error), demo + mock (must
+pass). Use `t.Setenv` for environment isolation.
 
 ---
 
-### Phase 2.5 — Digital Signatures (Ed25519)
+## Milestone 2 — Core Cryptography (`internal/crypto`)
 
-**Doc Ref:** `arch §4.1` (Ed25519 rationale), `arch §14` (audit receipt — provider_sig and service_sig), `data §4.2` (ed25519_public_key BYTEA(32))
+**Deliverable:** All cryptographic primitives fully implemented, goroutine-safe, with
+known-answer tests and fuzz targets. This package has zero imports from other `internal/`
+packages (IC §9 — hardest import constraint).
 
-#### Session 2.5.1 — Implement Ed25519 helpers in `internal/crypto/` (stdlib only)
-
-**Task:** Implement thin wrappers over `crypto/ed25519` (Go stdlib — no external dependency):
-- `GenerateKeyPair() (publicKey [32]byte, privateKey [64]byte, err error)`
-- `Sign(privateKey [64]byte, message []byte) [64]byte`
-- `Verify(publicKey [32]byte, message []byte, signature [64]byte) bool`
-
-Both `publicKey` and `signature` are fixed-size arrays, matching the BYTEA CHECK constraints in `data §4.2` and `data §4.7`. No field in any database table stores an Ed25519 private key.
-
-**Definition of done:** Sign-then-verify round-trip test. Corrupted-signature test returns false. Sub-millisecond signing confirmed via benchmark.
+**Reference:** IC §5.1 (full function signatures, pre/post-conditions, sentinel errors),
+MVP §8.2 (file inventory for internal/crypto), IC §11 (forbidden: float params, convergent
+encryption, K reuse), DM §3 Invariant 4 (no float in monetary path — enforced in crypto
+by the package invariant in IC §5.1)
 
 ---
 
-### Phase 2.6 — BIP-39 Mnemonic
+### Phase 2.1 — AES-NI Detection
 
-**Doc Ref:** `arch §11` (BIP-39 mnemonic as offline backup for master_secret), `mvp.md §3.5` (mnemonic confirmation skipped in demo), `mvp.md §8.2` (package file inventory — `bip39.go`)
+**Reference:** IC §5.1 (`DetectAESNI`)
 
-#### Session 2.6.1 — Implement `internal/crypto/bip39.go`
+#### Session 2.1.1 — Implement `DetectAESNI()`
 
-**Task:** Implement:
+**Task:** Create `internal/crypto/aesni.go` (build tag `//go:build amd64`) implementing
+`DetectAESNI() bool` via CPUID instruction per IC §5.1. Create
+`internal/crypto/aesni_other.go` (build tag `//go:build !amd64`) returning `false`.
+The function is called once at startup and stored; it must never be called again at
+runtime (IC §5.1 post-condition: "Never re-checked at runtime"). Store the result in a
+package-level `var aesNIAvailable = DetectAESNI()` that callers use — but this variable
+must not be exported (callers pass the result as a parameter per IC §5.1).
 
-```go
-// FROZEN signatures per interface-contracts.md §5.1
-func MasterSecretToMnemonic(masterSecret [32]byte) ([]string, error)
-func MnemonicToMasterSecret(words []string) ([32]byte, error)
-func SelectConfirmationWords(mnemonic []string) (indexA, indexB int)
-
-var ErrInvalidMnemonic = errors.New("crypto: invalid BIP-39 mnemonic")
-```
-
-**Note:** `MasterSecretToMnemonic` takes `[32]byte` (fixed array), not `[]byte`. The master
-secret is the input, not derived from it. BIP-39 passphrase extension is explicitly
-prohibited — `MnemonicToMasterSecret` returns the 32-byte value directly, not a seed.
-
-**Doc Ref:** `interface-contracts.md §5.1`, `arch §11` (recovery paths), `mvp.md §3.5` (`SkipMnemonicConfirm` field in `DemoProfile`)
-
-**Definition of done:** Round-trip test: encode master_secret → 24 words → decode → same bytes. Confirmation gate: demo mode with `SkipMnemonicConfirm=true` must skip the two-word check.
+Verify: Compiles on amd64 and arm64. On amd64 with AES-NI hardware, returns true.
 
 ---
 
-## Milestone 3 — Erasure Coding Engine
+### Phase 2.2 — HKDF Key Derivation
 
-**Goal:** RS(16,56) encodes a 4 MB segment into 56 × 256 KB shards and decodes any 16 back to the original. In demo mode, RS(3,5) encodes a segment into 5 × 256 KB shards. All parameters come from `NetworkProfile`.
+**Reference:** IC §5.1 (`DeriveFileKey`, `DerivePointerEncKey`, `DeriveKeystoreEncKey`,
+`DeriveDHTOwnerKey`, `DeriveDHTKey`)
 
-**Doc Ref:** `arch §10 Stage 2` (Reed-Solomon parameters and rationale), `arch §4.1` (`klauspost/reedsolomon` rationale), `mvp.md §3.2` (demo RS parameters), `data §3 Invariant 7` (ShardSize is constant)
+#### Session 2.2.1 — Implement HKDF-SHA256 derivation functions
 
----
+**Task:** Create `internal/crypto/hkdf.go`. Implement the five HKDF functions from
+IC §5.1, each with the exact `info` string specified:
+- `DeriveFileKey`: info = `"vyomanaut-file-v1" || fileID`
+- `DerivePointerEncKey`: info = `"vyomanaut-pointer-v1" || fileID`
+- `DeriveKeystoreEncKey`: info = `"vyomanaut-keystore-v1"` (no fileID)
+- `DeriveDHTOwnerKey`: info = `"vyomanaut-dht-v1" || fileID`
+- `DeriveDHTKey`: output of HMAC-SHA256(chunkHash, fileOwnerKey) per IC §5.1 and IC §12
 
-### Phase 3.1 — RS Engine
+All pre-conditions from IC §5.1 must be enforced: `len(masterSecret) == 32`,
+`len(ownerID) == 16`, `len(fileID) == 16` — panic in debug build (`//go:build debug`),
+return sentinel error in release build. All functions are pure (no side effects).
 
-#### Session 3.1.1 — Add `klauspost/reedsolomon` dependency
+**Critical:** `DeriveKeystoreEncKey` is named `DeriveKeystoreEncKey` here but IC §3.2
+refers to it as `DeriveDKSKeystoreEncKey()` in the heartbeat section. Resolve: the
+canonical name per IC §5.1 exported interface is `DeriveKeystoreEncKey`. The IC §3.2
+reference contains an inconsistency — use `DeriveKeystoreEncKey` and add a code comment
+noting the discrepancy for a future PR to fix IC §3.2.
 
-**Task:** Add `klauspost/reedsolomon` to `go.mod` and pin the version. Document the pinned version in `go.sum`. Add a comment in `go.mod` noting that this dependency must be vendored if `TestDHTKeyValidatorPersists` fails after an upgrade (this policy from `arch §4` applies to `go-libp2p` but the vendoring decision pattern applies here too for any CI-required check dependency).
+#### Session 2.2.2 — HKDF known-answer tests
 
-**[Version pin: TBD — must be resolved before M3 closes, per `arch §4`]**
-
-**Definition of done:** `go mod tidy` succeeds. `klauspost/reedsolomon` is in `go.sum`.
-
-#### Session 3.1.2 — Implement `internal/erasure/engine.go`
-
-**Task:** Implement `NewEngine(profile config.NetworkProfile) (*Engine, error)` that creates an RS encoder/decoder using `profile.DataShards`, `profile.ParityShards`, and `profile.TotalShards`.
-
-Implement:
-- `EncodeSegment(data []byte) ([][]byte, error)` — takes plaintext segment (padded to `DataShards × ShardSize` bytes), returns `TotalShards` shards each of `ShardSize` bytes. The first `DataShards` shards are the systematic (identity-mapped) codewords per `arch §10 Stage 2`.
-- `DecodeSegment(shards [][]byte, available []bool) ([]byte, error)` — takes `TotalShards` shards (nil for missing), returns reconstructed data. Requires at least `DataShards` non-nil shards.
-
-`ShardSize` is `profile.ShardSize` (always 262144 — `data §3 Invariant 7`). Padding: segments smaller than `DataShards × ShardSize` must be zero-padded before encoding. The original size is stored in `files.original_size_bytes` for padding removal at decode (`data §4.3`).
-
-**Definition of done:** Full round-trip test at both production (16/40/56) and demo (3/2/5) parameters. Test with exactly `DataShards` shards available (minimum reconstruction). Test with shards 0..`DataShards-1` missing but `DataShards..TotalShards-1` available.
-
-#### Session 3.1.3 — Implement `internal/erasure/params.go`
-
-**Task:** Define exported constants that document the production parameter values for cross-package reference. These are never used for conditional logic — they exist for documentation and as a sanity check in `TestProfileBothFullySpecified`. Constants: `ProductionDataShards = 16`, `ProductionParityShards = 40`, `ProductionTotalShards = 56`, `ProductionShardSize = 262144`.
-
-**Definition of done:** Constants compile. A test asserts that `ProductionShardSize == config.ProductionProfile.ShardSize`.
+**Task:** Add `internal/crypto/hkdf_test.go` with known-answer vectors derived from
+fixed inputs (not from a live run — compute expected output offline using the HKDF-SHA256
+RFC 5869 test vector approach). Add a round-trip test: `DeriveFileKey(ms, o, f) ==
+DeriveFileKey(ms, o, f)` (determinism). Add a non-collision test: two different fileIDs
+produce different keys.
 
 ---
 
-## Milestone 4 — Provider Storage Engine (WiscKey)
+### Phase 2.3 — Argon2id Master Secret Derivation
 
-**Goal:** The provider daemon can store, retrieve, and garbage-collect 256 KB chunks using the WiscKey key-value separation architecture. Write amplification is ~1.0 at 256 KB values. Single-writer goroutine invariant is verified by a deadlock-detecting test.
+**Reference:** IC §5.1 (`DeriveMasterSecret`), MVP §3.5 (crypto parameters),
+MVP §5.4 (caller responsibility: pass profile.Argon2* fields, never hardcode)
 
-**Doc Ref:** `arch §16` (provider storage engine — full spec), `arch §4.1` (RocksDB + vLog rationale), `data §3 Invariant 7` (vLog entry size: 262,212 bytes), `arch §4` (RocksDB CGo build note)
+#### Session 2.3.1 — Implement `DeriveMasterSecret()`
 
----
+**Task:** Create `internal/crypto/argon2.go` implementing `DeriveMasterSecret()` per
+IC §5.1 signature exactly: `func DeriveMasterSecret(passphrase, ownerID []byte,
+argon2Time uint32, argon2Memory uint32, argon2Threads uint8) [32]byte`. Use
+`golang.org/x/crypto/argon2` Argon2id variant. The ownerID (UUID bytes) is the salt.
 
-### Phase 4.1 — RocksDB Index
+Pre-condition enforcement: `len(passphrase) >= 8`, `len(ownerID) == 16`,
+`argon2Time >= 1`, `argon2Memory >= 4096`, `argon2Threads >= 1` — panic in debug,
+sentinel error otherwise (no errors returned per IC §5.1 since it panics; note that
+IC §5.1 says "no errors returned; pre-condition violations panic").
 
-**Doc Ref:** `arch §16` (chunk index: `chunk_id (32 bytes) → vlog_offset uint64, chunk_size uint32`), `arch §16` (Bloom filter — 10 bits/key, ~1% FP rate)
+Add the mandatory caller-responsibility comment from IC §5.1: callers must pass
+`profile.Argon2Time`, `profile.Argon2Memory`, `profile.Argon2Threads` — never hardcode.
 
-#### Session 4.1.1 — Configure RocksDB CGo dependency
+#### Session 2.3.2 — `DeriveMasterSecret` performance test
 
-**Task:** Add `linxGnu/grocksdb` to `go.mod`. Configure the CI Docker image with the pinned `librocksdb` shared library pre-installed. Document the exact RocksDB version and Docker image tag in `.github/workflows/ci.yml` and confirm they match the Go binding version — a mismatch is a link-time failure, not runtime. **[Version pin: TBD — must be resolved before M4 closes, per `arch §4.1`]**
-
-**Definition of done:** `go build ./internal/storage` succeeds on the CI Docker image.
-
-#### Session 4.1.2 — Implement `internal/storage/index.go`
-
-**Task:** Implement a RocksDB wrapper with:
-- `InsertChunkIndex(chunkID [32]byte, vlogOffset uint64, chunkSize uint32) error`
-- `LookupChunkIndex(chunkID [32]byte) (vlogOffset uint64, chunkSize uint32, exists bool, err error)`
-- `DeleteChunkIndex(chunkID [32]byte) error`
-
-Configure the RocksDB column family with a Bloom filter of 10 bits per key (~1% FP rate) per `arch §16`. The Bloom filter eliminates disk I/O for audit challenges on unassigned chunks — a challenge for a non-existent chunk must be answerable from memory alone.
-
-**Definition of done:** Insert-then-lookup round-trip test. Bloom filter test: 10,000 lookups for non-existent keys produce zero disk reads (verified via RocksDB stats). Delete test.
-
----
-
-### Phase 4.2 — Value Log (vLog)
-
-**Doc Ref:** `arch §16` (vLog spec: fixed-size entries, single writer, content_hash verification), `data §3 Invariant 7` (vLog entry layout: 32+4+262144+32 = 262,212 bytes)
-
-#### Session 4.2.1 — Implement `internal/storage/vlog.go`
-
-**Task:** Implement the append-only vLog with the fixed entry format from `arch §16`:
-
-```
-chunk_id     (32 bytes)  — copy for GC validation
-chunk_size   (4 bytes)   — always 262,144 in V2
-chunk_data   (262,144 bytes)
-content_hash (32 bytes)  — SHA-256(chunk_data), verified on every read
-```
-
-Functions:
-- `AppendChunk(chunkID [32]byte, data [262144]byte) (vlogOffset uint64, err error)` — must be called only from the single writer goroutine
-- `ReadChunk(vlogOffset uint64) (chunkID [32]byte, data [262144]byte, err error)` — verifies `SHA-256(data) == stored content_hash` before returning; returns `ErrContentHashMismatch` on failure
-- `RecoverFromCrash() error` — scans from the last known head pointer in RocksDB and re-inserts any entries not yet indexed
-
-All appends serialised through one goroutine via a buffered channel (per `arch §16`: "POSIX O_APPEND atomicity does not hold for writes above ~4 KB; for 262 KB entries, serialisation is required").
-
-**Definition of done:** Write-then-read round-trip. Content hash corruption test returns `ErrContentHashMismatch`. Single-writer test: 100 concurrent goroutines submit writes — no data corruption, no deadlock (uses `-race` detector).
-
-#### Session 4.2.2 — Implement `TestSingleWriterGoroutine` in `internal/storage/single_writer_test.go`
-
-**Task:** Implement the required test per `mvp.md §8.2`. Launch 100 goroutines simultaneously calling `AppendChunk`. Verify: (1) all writes complete without error, (2) RocksDB index offsets are consistent with vLog entries, (3) the `-race` detector reports no races. The test must run under `go test -race`.
-
-**Definition of done:** Test passes under `-race`. This test is the CI gate for single-writer correctness.
+**Task:** Add a test `TestArgon2idProduction` that runs with production parameters
+(t=3, m=65536, p=4) and asserts completion time >= 100ms (conservative floor — the
+IC §5.1 post-condition states "Production: >= 200ms" but 100ms covers slower CI
+hardware). Add `TestArgon2idDemo` that runs with demo parameters (t=1, m=4096, p=1)
+and asserts completion time < 200ms. These tests must be tagged `//go:build !short`
+so they are skipped in fast CI runs.
 
 ---
 
-### Phase 4.3 — ChunkStore Interface & Crash Recovery
+### Phase 2.4 — AONT Cipher
 
-**Doc Ref:** `arch §16` (crash recovery spec), `arch §16` (audit lookup path — 7 steps)
+**Reference:** IC §5.1 (`AONTEncodeSegment`, `AONTDecodePackage`), IC §11 (forbidden:
+convergent encryption, K reuse), MVP §8.2 (`aont_canary.go`)
 
-#### Session 4.3.1 — Implement `internal/storage/store.go`
+#### Session 2.4.1 — Implement the AONT canary constant
 
-**Task:** Define the `ChunkStore` interface and implement `NewChunkStore(dataDir string, profile config.NetworkProfile) (*ChunkStore, error)`.
+**Task:** Create `internal/crypto/aont_canary.go` defining the fixed 16-byte canary
+value as `var aontCanary = [16]byte{...}` (choose a deterministic value, e.g. the
+first 16 bytes of SHA-256("vyomanaut-aont-canary-v1"), computed once and hardcoded).
+This must be a `var`, not a `const`, because Go does not allow array constants — but it
+must never be reassigned. Add a `// canary must never be changed — it is an on-disk format commitment` comment. The canary is the second-to-last 16-byte word of every AONT
+package (IC §5.1 post-condition for `AONTEncodeSegment`).
 
-The interface (to be frozen against `interface-contracts.md` when available — **[BLOCKED: pending `interface-contracts.md`]**):
-```go
-type ChunkStore interface {
-    Store(chunkID [32]byte, data [262144]byte) error
-    Retrieve(chunkID [32]byte) ([262144]byte, error)  // verifies content_hash
-    Exists(chunkID [32]byte) bool                      // Bloom filter only, no disk I/O
-    Delete(chunkID [32]byte) error
-    RecoverFromCrash() error
-    Close() error
-}
-```
+#### Session 2.4.2 — Implement `AONTEncodeSegment()`
 
-On startup, `RecoverFromCrash()` must be called before the store is used. The daemon's `main.go` must call it and handle the error.
+**Task:** Create `internal/crypto/aont.go`. Implement `AONTEncodeSegment(segment []byte,
+aesNIAvailable bool) ([]byte, error)` per IC §5.1:
+- Generate fresh random K via `crypto/rand` (never reuse — IC §11 forbidden: K reuse)
+- Select cipher: ChaCha20-256 if `aesNIAvailable == false`, AES-256-CTR if true (IC §5.1,
+  ADR-019, ADR-022)
+- Produce AONT package: `(s+1)` 16-byte words where `s = len(segment)/16`
+- Embed canary as second-to-last word
+- Last word = `K XOR SHA-256(all preceding codewords)` (IC §5.1 post-condition)
+- K must not be returned — it is embedded and inaccessible without all words
 
-**Definition of done:** Full audit lookup path test (7 steps from `arch §16`): receive challenge → Bloom filter (absent: return FAIL) → RocksDB lookup → vLog read → content hash verify → response computed. Times for SSD (<1 ms) and HDD (<15 ms) verified by benchmark.
+Pre-conditions: `len(segment)` must be a multiple of 16; caller is responsible for
+padding to 4 MB minimum before calling.
 
----
+#### Session 2.4.3 — Implement `AONTDecodePackage()`
 
-## Milestone 5 — P2P Network Layer
+**Task:** Implement `AONTDecodePackage(aontPackage []byte, aesNIAvailable bool) ([]byte,
+error)` in `internal/crypto/aont.go`. Must:
+1. Recover K from the last word XOR SHA-256(all preceding words)
+2. Decrypt
+3. Verify the canary word (second-to-last) equals `aontCanary`
+4. If canary mismatches: zero the buffer before returning `ErrCanaryMismatch` (IC §5.1
+   post-condition: "caller MUST NOT return any plaintext to the data owner. Zero the
+   buffer before returning.")
 
-**Goal:** Provider daemons can discover each other, establish authenticated QUIC connections, traverse NAT (DCUtR in demo; Circuit Relay v2 in production), and perform chunk-address DHT lookups using privacy-preserving HMAC keys.
+#### Session 2.4.4 — AONT tests
 
-**Doc Ref:** `arch §13` (P2P transfer layer), `arch §4.1` (libp2p rationale), `arch §5` (system context — libp2p/QUIC), `arch §9.5` (DHT privacy via HMAC keys), `mvp.md §3.1` (demo: 0 relay nodes, all local)
-
-> **[BLOCKED: libp2p version pin TBD — must be resolved before M5 closes, per `arch §4`]**
-> **[BLOCKED: go-libp2p vendoring decision pending `TestDHTKeyValidatorPersists` — per `arch §4`]**
-> **[BLOCKED: full wire format contracts pending `interface-contracts.md`]**
-
----
-
-### Phase 5.1 — libp2p Host & Transports
-
-**Doc Ref:** `arch §13` (QUIC v1 primary, TCP+Noise+yamux fallback), `arch §4.1` (QUIC rationale — connection migration, independent streams)
-
-#### Session 5.1.1 — Implement `internal/p2p/host.go`
-
-**Task:** Create a libp2p host with:
-- QUIC v1 (RFC 9000) as primary transport
-- TCP + Noise XX + yamux as fallback transport
-- Ed25519 identity (loaded from keystore at startup)
-- 0-RTT session resumption **disabled** for all protocols with the suffix `/audit` or `/receipt` — per `arch §13` ("0-RTT disabled for audit interactions") and `mvp.md §5.4` (0-RTT disabled for signed receipts). 0-RTT may be enabled for pure chunk transfer protocols.
-
-The libp2p Peer ID is `multihash(public_key)` per `arch §13`.
-
-**Definition of done:** Host starts, generates a Peer ID, and accepts incoming connections. Connection established between two hosts on localhost using QUIC. Fallback TCP connection established when QUIC is blocked (simulated).
-
-#### Session 5.1.2 — Implement NAT traversal in `internal/p2p/nat.go`
-
-**Task:** Configure AutoNAT (Tier 1), DCUtR (Tier 2), and Circuit Relay v2 registration (Tier 3) per `arch §13` (three-tier NAT traversal table).
-
-DCUtR configuration: `maxHolePunchRetries = 1` (not the libp2p default of 3). Justification: `arch §13` ("97.6% of successes happen on the first attempt — retry count set to 1").
-
-In demo mode (`profile.MinRelayNodes == 0`): Circuit Relay v2 registration is skipped. The relay stack code is compiled in but the relay registration step is gated on `len(profile.RelayAddrs) > 0`. **[BLOCKED: relay configuration fields pending `interface-contracts.md` — add `RelayAddrs []string` to `NetworkProfile` if not already present]**
-
-**Definition of done:** AutoNAT classifies a localhost connection as "publicly reachable". DCUtR hole-punch configured with `maxHolePunchRetries = 1`. Test verifies the retry constant is 1.
+**Task:** Add `internal/crypto/aont_test.go`:
+- Round-trip test: `AONTDecodePackage(AONTEncodeSegment(data))` == original data
+- Test that each call to `AONTEncodeSegment` produces a different ciphertext (K freshness)
+- Test that corrupting any single byte in the AONT package causes `ErrCanaryMismatch`
+  (all-or-nothing property)
+- Cross-cipher test: encode with AES-NI=true, decode with AES-NI=false — must produce
+  `ErrCanaryMismatch` (different cipher = different output; test documents this is not
+  cross-compatible and is expected to fail)
 
 ---
 
-### Phase 5.2 — Kademlia DHT with HMAC Key Validator
+### Phase 2.5 — Pointer File AEAD
 
-**Doc Ref:** `arch §13` (DHT configuration table), `arch §9.5` (HMAC-pseudonymised DHT keys), `mvp.md §8.2` (DHT namespace constant), `arch §4.1` (libp2p rationale — custom DHT key validator)
+**Reference:** IC §5.1 (`EncryptPointerFile`, `DecryptPointerFile`, `ErrTagMismatch`),
+IC §11 (constant-time tag comparison: NFR-019)
 
-#### Session 5.2.1 — Implement `internal/p2p/dht_namespace.go`
+#### Session 2.5.1 — Implement pointer file AEAD
 
-**Task:** Define the DHT namespace constant. This is the sole definition of this string in the entire repository:
+**Task:** Create `internal/crypto/chacha20poly1305.go`. Implement `EncryptPointerFile`
+and `DecryptPointerFile` using `golang.org/x/crypto/chacha20poly1305` (AEAD_CHACHA20_POLY1305,
+RFC 8439 per IC §5.1). 
+
+**Critical for `DecryptPointerFile`:** The Poly1305 tag must be verified with
+`crypto/subtle.ConstantTimeCompare` before any plaintext is returned (IC §5.1
+post-condition, NFR-019). If tag verification fails, return `ErrTagMismatch` with
+nil plaintext. The caller must not use any returned bytes on `ErrTagMismatch` (IC §5.1).
+
+AAD pre-condition: `len(aad) > 0`; the AAD must include `ownerID || fileID ||
+schemaVersion` — this is the caller's responsibility (documented in IC §5.1 pre-condition).
+
+Define `ErrTagMismatch` in `internal/crypto/errors.go`.
+
+---
+
+### Phase 2.6 — BIP-39 Mnemonic System
+
+**Reference:** IC §5.1 (`MasterSecretToMnemonic`, `MnemonicToMasterSecret`,
+`SelectConfirmationWords`, `ErrInvalidMnemonic`), MVP §3.5 (mnemonic confirmation),
+MVP §8.2 (`bip39.go`), IC §11 (forbidden: BIP-39 mnemonic words for real accounts)
+
+#### Session 2.6.1 — Embed BIP-39 English wordlist
+
+**Task:** Embed the BIP-39 English wordlist (2048 words) as a `//go:embed` file at
+`internal/crypto/wordlist_en.txt`. This is the only permitted wordlist (IC §5.1).
+Vyomanaut never uses passphrases on top of the mnemonic — the mnemonic IS the master
+secret directly, not a BIP-39 seed input (IC §5.1 comment). Add a test that the
+wordlist contains exactly 2048 words.
+
+#### Session 2.6.2 — Implement `MasterSecretToMnemonic()`
+
+**Task:** Implement per IC §5.1: 32 bytes of entropy (256 bits) → 24 words with 8-bit
+checksum, per BIP-39 §Generating the mnemonic. The round-trip property
+`MnemonicToMasterSecret(MasterSecretToMnemonic(ms)) == ms` must hold (IC §5.1
+post-condition).
+
+#### Session 2.6.3 — Implement `MnemonicToMasterSecret()`
+
+**Task:** Implement the recovery path per IC §5.1. On invalid mnemonic (wrong word
+count, unknown word, checksum failure), return `ErrInvalidMnemonic` without revealing
+which word failed (IC §5.1: "Do not expose which word failed — timing oracle"). All
+validation branches must take equal time (use constant-time word lookup).
+
+#### Session 2.6.4 — Implement `SelectConfirmationWords()`
+
+**Task:** Implement per IC §5.1. Return two distinct random indices (0–23) drawn via
+`crypto/rand`. The function may be called even in demo mode where `SkipMnemonicConfirm
+== true` — the caller simply does not block on the result (IC §5.1 note).
+
+#### Session 2.6.5 — BIP-39 round-trip and error tests
+
+**Task:** Add known-answer vectors from BIP-39 test vectors (RFC-documented, fixed
+entropy — not from real accounts per IC §11). Test `ErrInvalidMnemonic` on: wrong count,
+unknown word, bad checksum. Test that `SelectConfirmationWords` never returns two equal
+indices across 1000 calls.
+
+---
+
+### Phase 2.7 — Ed25519 Signing Conventions
+
+**Reference:** IC §3.2 (canonical signing input serialisation, verification procedure),
+IC §5.1 (no JSON serialisation for signing inputs)
+
+#### Session 2.7.1 — Document Ed25519 signing conventions in `internal/crypto`
+
+**Task:** Create `internal/crypto/ed25519.go`. This file does NOT wrap the standard
+library — it provides:
+1. A `SignBytes(privateKey ed25519.PrivateKey, inputBytes []byte) [64]byte` helper that
+   computes `Ed25519(private_key, SHA-256(inputBytes))` per IC §3.2 canonical procedure
+2. A `VerifyBytes(publicKey [32]byte, inputBytes []byte, sig [64]byte) bool` helper
+3. A compile-time assertion that Go's `ed25519.PublicKeySize == 32`
+
+**Critical:** IC §3.2 states: "JSON serialisation MUST NOT be used for signing inputs —
+field ordering is not guaranteed across Go versions." Add this as a package-level comment
+and as a `// SIGNING_INPUT_RULE: use fixed-layout byte sequence, never JSON` comment on
+both functions.
+
+Verify: The functions are pure and goroutine-safe (IC §5.1 package invariant).
+
+---
+
+## Milestone 3 — Erasure Coding Engine (`internal/erasure`)
+
+**Deliverable:** `internal/erasure` fully implemented with profile-parameterised
+DataShards/TotalShards. Zero imports from other `internal/` packages (IC §9).
+
+**Reference:** IC §5.2 (full interface), MVP §3.2 (erasure params table),
+DM §3 Invariant 7 (ShardSize constant), IC §9 (import constraints)
+
+---
+
+### Phase 3.1 — Engine Construction
+
+**Reference:** IC §5.2 (`NewEngine`, `Engine` struct, `ShardSize` constant)
+
+#### Session 3.1.1 — Define `ShardSize` constant and `Engine` struct
+
+**Task:** Create `internal/erasure/params.go`. Define `const ShardSize = 262144`
+(IC §5.2 comment: "fixed in both modes; never profile-variable"). Define the `Engine`
+struct per IC §5.2: `DataShards`, `ParityShards`, `TotalShards` as `int` fields.
+
+Now update M1 Session 1.2.1: add the cross-check import of `erasure.ShardSize` to
+`TestProfileShardSizeIsConstant`.
+
+#### Session 3.1.2 — Implement `NewEngine()`
+
+**Task:** In `internal/erasure/engine.go`, implement `NewEngine(profile
+config.NetworkProfile) (*Engine, error)`. Pre-conditions per IC §5.2:
+- `profile.DataShards >= 1`
+- `profile.TotalShards == profile.DataShards + profile.ParityShards`
+- `profile.ShardSize == ShardSize` (compile-time constant cross-check)
+
+Use `github.com/klauspost/reedsolomon` as the underlying library. Return an error if the
+library constructor fails.
+
+---
+
+### Phase 3.2 — Encode & Decode
+
+**Reference:** IC §5.2 (`EncodeSegment`, `DecodeSegment`, `ErrTooFewShards`, `ErrShardSize`)
+
+#### Session 3.2.1 — Implement `EncodeSegment()`
+
+**Task:** Per IC §5.2 pre-condition: `len(aontPackage) == e.DataShards * ShardSize`
+exactly. Returns exactly `e.TotalShards` byte slices each of length `ShardSize`.
+
+#### Session 3.2.2 — Implement `DecodeSegment()`
+
+**Task:** Per IC §5.2. Accept `e.TotalShards` shards with at least `e.DataShards`
+non-nil. Fill nil entries in-place. Return `ErrTooFewShards` if fewer than DataShards
+non-nil. Return `ErrShardSize` if a non-nil shard has wrong length.
+
+#### Session 3.2.3 — Erasure coding tests
+
+**Task:** In `internal/erasure/engine_test.go`:
+- Round-trip test for both production (16,56) and demo (3,5) engines
+- "Any k shards" test: for every combination of DataShards from TotalShards shards,
+  reconstruction succeeds (for demo engine only — production would be 56-choose-16 combinations)
+- ShardSize constant test: assert `ShardSize == 262144` (belt-and-suspenders for DM Invariant 7)
+- Cross-engine test: data encoded with demo engine cannot be decoded by production engine
+  (documents the separation)
+
+---
+
+## Milestone 4 — Database Schema & Migrations
+
+**Deliverable:** A fully applied initial migration (`migrations/001_initial_schema.sql`)
+with all tables, indexes, row security policies, and materialised views. The migration
+must pass the DM §9 checklist and must apply cleanly against both demo-profile and
+production-profile schema generators.
+
+**Reference:** DM §2 through §9 (complete schema), DM §3 (invariants — all 7 must be
+enforced), IC §6 (row-level DML contracts — these constrain the schema's RSP definitions),
+MVP §5.5 (schema parameterisation), MVP §6.4 (migration requirements)
+
+---
+
+### Phase 4.1 — Migration Generator
+
+**Reference:** MVP §5.5 (`migrations/generator.go`), DM §9 (profile rule)
+
+#### Session 4.1.1 — Implement `migrations/generator.go`
+
+**Task:** Create `migrations/generator.go` implementing `GenerateInitialSchema(profile
+config.NetworkProfile) string` per MVP §5.5. The function produces two profile-dependent
+CHECK constraints:
+1. `chunk_assignments.shard_index`: `BETWEEN 0 AND {profile.TotalShards-1} OR shard_index IS NULL`
+2. `repair_jobs.available_shard_count`: `BETWEEN {profile.DataShards} AND {profile.TotalShards}`
+
+The generator is invoked as: `go run migrations/generator.go --profile=prod` or `--profile=demo`.
+It outputs the full migration SQL to stdout. The output is redirected to
+`migrations/001_initial_schema.sql` (production) or `migrations/001_initial_schema_demo.sql`
+(demo).
+
+**Warning from DM §9:** "Never apply a demo schema to a production database or vice versa."
+The generator must embed the profile name as a comment header in the output SQL:
+`-- Generated for profile: {prod|demo}` so a human reviewer can verify the schema
+before applying.
+
+---
+
+### Phase 4.2 — Core Type Definitions
+
+**Reference:** DM §4 (CREATE TYPE statements, DM §9 migration ordering rule: types before tables)
+
+#### Session 4.2.1 — Define all PostgreSQL ENUMs
+
+**Task:** Add to the migration SQL in order (DM §9: all `CREATE TYPE` statements before
+`CREATE TABLE`):
+- `provider_status` ENUM: `PENDING_ONBOARDING`, `VETTING`, `ACTIVE`, `DEPARTED` (DM §4.2)
+- `file_status` ENUM: `ACTIVE`, `DELETION_PENDING`, `DELETED` (DM §4.3, DM §9 checklist)
+- `assignment_status` ENUM: `ACTIVE`, `REPAIRING`, `PENDING_DELETION`, `DELETED` (DM §4.5)
+- `audit_result_type` ENUM: `PASS`, `FAIL`, `TIMEOUT` (DM §4.7)
+- `escrow_event_type` ENUM: `DEPOSIT`, `RELEASE`, `SEIZURE`, `REVERSAL` (DM §4.8 and DM §9
+  checklist item "Add REVERSAL to escrow_event_type ENUM")
+- `owner_escrow_event_type` ENUM: `DEPOSIT`, `CHARGE`, `WITHDRAWAL`, `REFUND` (DM §4.9)
+- `repair_trigger_type` ENUM: `SILENT_DEPARTURE`, `ANNOUNCED_DEPARTURE`,
+  `THRESHOLD_WARNING`, `EMERGENCY_FLOOR` (DM §4.10)
+- `repair_priority` ENUM: `EMERGENCY`, `PERMANENT_DEPARTURE`, `PRE_WARNING`
+  (DM §4.10, DM §9 checklist item "repair_priority ENUM has three values")
+- `repair_job_status` ENUM: `QUEUED`, `IN_PROGRESS`, `COMPLETED`, `FAILED` (DM §4.10)
+
+**Verify:** DM §9 checklist items for ENUMs are all checked. The `repair_priority` ENUM
+ordering matters for `ORDER BY priority ASC` — document that EMERGENCY sorts first
+alphabetically (E < P < P) in the migration comment.
+
+---
+
+### Phase 4.3 — Core Tables
+
+**Reference:** DM §4.1 through §4.5
+
+#### Session 4.3.1 — `owners` table
+
+**Task:** Implement the `owners` DDL from DM §4.1 exactly. Columns: `owner_id` (UUID PK),
+`phone_number` (VARCHAR(15) NOT NULL UNIQUE), `ed25519_public_key` (BYTEA with
+`octet_length = 32` CHECK), `smart_collect_vpa` (VARCHAR(255) nullable — justified in
+DM §8.1), `created_at` (TIMESTAMPTZ NOT NULL DEFAULT NOW()). Add table and column
+COMMENTs from DM §4.1.
+
+#### Session 4.3.2 — `providers` table
+
+**Task:** Implement the `providers` DDL from DM §4.2 with all columns and constraints.
+Pay particular attention to:
+- `p95_throughput_kbps FLOAT NULL` (DM §4.2 comment: default must be NULL not 0;
+  DM §9 checklist: "p95_throughput_kbps and avg_rtt_ms default to NULL, not 0/2000")
+- `avg_rtt_ms FLOAT NULL` (same reason)
+- `var_rtt_ms FLOAT NOT NULL DEFAULT 0` (DM §4.2: zero variance is safe initial assumption)
+- `first_chunk_assignment_at TIMESTAMPTZ` nullable (DM §8.6)
+- The `providers_departed_status` CHECK: `departed_at IS NULL OR status = 'DEPARTED'`
+- `providers_throughput_nonneg`, `providers_avg_rtt_nonneg`, `providers_var_rtt_nonneg`,
+  `providers_passes_nonneg` CHECK constraints
+- Physical DELETE is prohibited — the RSP in Phase 4.7 enforces this at the DB layer;
+  the DDL comment must state: "No DELETE ever — see RSP (DM §6, IC §6, Invariant 3)"
+
+#### Session 4.3.3 — `files` table
+
+**Task:** Implement the `files` DDL from DM §4.3. Include the `display_name_*` columns
+(DM §9 checklist: "files.display_name_ciphertext/nonce/tag columns present for FR-019").
+The `display_name_nonce` and `display_name_tag` CHECKs must allow NULL (DM §4.3).
+
+**⚠️ AWAITING:** `FR-019` is referenced here but `requirements.md` is not in context.
+The column is included per DM §4.3 DDL as written. When `requirements.md` is shared,
+verify FR-019 scope matches the column design.
+
+#### Session 4.3.4 — `segments` table
+
+**Task:** Implement the `segments` DDL from DM §4.4. The `segments_unique_index` UNIQUE
+constraint on `(file_id, segment_index)` prevents two segments at the same position in
+a file.
+
+#### Session 4.3.5 — `chunk_assignments` table
+
+**Task:** Implement the `chunk_assignments` DDL from DM §4.5. Critical items:
+- `is_vetting_chunk BOOLEAN NOT NULL DEFAULT FALSE` (DM §9 checklist)
+- `segment_id` changed to nullable (DM §9 checklist, DM §8.21)
+- `shard_index` changed to nullable (DM §9 checklist, DM §8.22)
+- `chunk_assignments_segment_and_shard_null_iff_vetting` CHECK constraint (DM §4.5,
+  DM §9 checklist) — this is the DB-layer enforcement of Invariant 6
+- `chunk_assignments_one_per_provider_per_chunk` UNIQUE on `(chunk_id, provider_id)`
+- The partial unique index `idx_chunk_assignments_one_active_per_shard` must be
+  a standalone `CREATE UNIQUE INDEX` statement, NOT an inline constraint
+  (DM §9: "inline WHERE on UNIQUE is invalid syntax")
+
+---
+
+### Phase 4.4 — Audit, Escrow, and Repair Tables
+
+**Reference:** DM §4.6 through §4.10
+
+#### Session 4.4.1 — `audit_periods` table
+
+**Task:** Implement DM §4.6 including the `audit_periods_no_overlap` exclusion constraint.
+This requires `btree_gist` (DM §9 first checklist item). Add the prerequisite comment:
+`-- PREREQUISITE: CREATE EXTENSION IF NOT EXISTS btree_gist;`
+The `period_start < period_end` CHECK must be present.
+
+#### Session 4.4.2 — `audit_receipts` table
+
+**Task:** Implement DM §4.7. Critical items enforcing Invariant 1 (append-only audit log):
+- `challenge_nonce BYTEA NOT NULL CHECK (octet_length(challenge_nonce) = 33)` —
+  must be 33, never 32 (DM §3 Invariant 5, DM §9 checklist, IC §11 forbidden pattern)
+- `audit_result audit_result_type` — nullable, no DEFAULT (DM §9 checklist: "no DEFAULT
+  on audit_result — NULL is the intended initial PENDING state")
+- `file_id UUID REFERENCES files(file_id)` — nullable (DM §9 checklist, DM §8.20)
+- `address_was_stale BOOLEAN NOT NULL DEFAULT FALSE` (DM §4.7)
+- The `audit_receipts_response_consistency` CHECK (DM §4.7)
+- The `audit_receipts_service_sig_consistency` CHECK (DM §4.7)
+- The `audit_receipts_nonce_unique` UNIQUE constraint (prevents replay attacks)
+- Add the nightly data integrity monitoring query as a SQL comment (DM §4.7 note,
+  DM §9 checklist): the query must return 0
+
+#### Session 4.4.3 — `escrow_events` table
+
+**Task:** Implement DM §4.8. Invariant 2 enforcement:
+- `amount_paise BIGINT NOT NULL CHECK (amount_paise > 0)` — never FLOAT, NUMERIC, DECIMAL
+  (DM §3 Invariant 4)
+- `idempotency_key VARCHAR(64) NOT NULL UNIQUE`
+- `escrow_event_type` must include `REVERSAL` (DM §9 checklist item)
+- The RSP in Phase 4.7 adds the INSERT-only policy at the DB layer
+
+#### Session 4.4.4 — `owner_escrow_events` table
+
+**Task:** Implement DM §4.9. This table is required for FR-014, FR-021, FR-059 (DM §9
+checklist). Same `amount_paise BIGINT NOT NULL CHECK (amount_paise > 0)` constraint.
+Add the balance query as a SQL comment: `SUM(DEPOSIT) - SUM(CHARGE + WITHDRAWAL) + SUM(REFUND)`.
+
+#### Session 4.4.5 — `repair_jobs` table
+
+**Task:** Implement DM §4.10. Critical items:
+- `repair_jobs_priority_matches_trigger` CHECK — priority derived from trigger_type
+  (IC §5.7 pre-condition also enforces this)
+- `repair_jobs_completed_after_started` CHECK
+- The `available_shard_count` CHECK bounds come from the generator (Phase 4.1)
+- `provider_id` is nullable — justified in DM §8.17
+- The `repair_jobs_no_duplicate_departure` constraint note (DM §4.10): the UNIQUE has
+  been removed; deduplication is at the application layer
+- The `idx_repair_jobs_threshold_no_dup` partial unique index handles threshold-triggered
+  deduplication (DM §5)
+
+---
+
+### Phase 4.5 — Index Catalogue
+
+**Reference:** DM §5 (complete index catalogue with named query patterns)
+
+#### Session 4.5.1 — Create all indexes
+
+**Task:** Create every index listed in DM §5 as a standalone `CREATE INDEX` or
+`CREATE UNIQUE INDEX` statement, in the order they appear in DM §5. Each must be
+accompanied by its named query pattern comment from DM §5 (e.g., "Query: departure
+detector — find providers with last_heartbeat_ts > 72h ago").
+
+Special attention to vetting-related indexes (DM §5):
+- `idx_chunk_assignments_vetting_provider_active` — for ACTIVE transition GC
+- `idx_chunk_assignments_vetting_provider` — for departure handler bulk delete
+  These are new indexes added with ADR-030 (DM §9 checklist).
+
+The `idx_chunk_assignments_one_active_per_shard` partial unique index must include
+`WHERE is_vetting_chunk = FALSE` (DM §9 checklist: "old inline constraint without
+this filter must be dropped").
+
+---
+
+### Phase 4.6 — Row Security Policies
+
+**Reference:** DM §6, IC §6 (DML contracts that RSPs enforce)
+
+#### Session 4.6.1 — `audit_receipts` RSP (Invariant 1)
+
+**Task:** Implement per DM §6:
+- `ALTER TABLE audit_receipts ENABLE ROW LEVEL SECURITY`
+- `audit_receipts_insert_only` policy for `vyomanaut_app` — INSERT only
+- `audit_receipts_phase2_update` policy for `vyomanaut_app` — UPDATE only where
+  `audit_result IS NULL AND abandoned_at IS NULL`, and only to set
+  `audit_result IN ('PASS','FAIL','TIMEOUT')` with non-null `service_sig` and
+  `service_countersign_ts`
+- `audit_receipts_gc_abandon` policy for `vyomanaut_gc` — UPDATE only for stale
+  PENDING rows older than 48h (in production; the profile's `PendingReceiptGCAge`
+  governs the actual query, but the RSP uses the production interval for safety)
+- No DELETE policy created — any DELETE returns permission denied
+
+#### Session 4.6.2 — `escrow_events` RSP (Invariant 2)
+
+**Task:** Implement per DM §6:
+- `ALTER TABLE escrow_events ENABLE ROW LEVEL SECURITY`
+- `escrow_events_insert_only` policy for `vyomanaut_app` — INSERT only
+- No UPDATE or DELETE policy
+
+#### Session 4.6.3 — `chunk_assignments` soft-delete policy
+
+**Task:** Add the `chunk_assignments` RSP per DM §6:
+- A policy that prohibits hard DELETE for all roles
+- The only permitted status-to-`DELETED` transition is via `UPDATE status = 'DELETED'`
+  by `vyomanaut_app`
+
+**Note from DM §6:** "Previously a HARD-DELETE was issued; now a soft-delete policy is
+implemented." This RSP exists specifically to prevent recurrence.
+
+---
+
+### Phase 4.7 — Materialised Views
+
+**Reference:** DM §7, MVP §5.5 (mv_provider_scores is profile-parameterised), DM §9
+(migration ordering: views after tables)
+
+#### Session 4.7.1 — `mv_provider_scores`
+
+**Task:** Implement per DM §7. Critical items:
+- The `NOW() AS scores_as_of` column (DM §9 checklist, DM §7: "consumers must check age")
+- The view uses a subquery (DM §9 checklist: "column aliases not referenced in same SELECT level")
+- The interval literals are PLACEHOLDERS in the migration — this view is dropped and
+  recreated at microservice startup from `NetworkProfile.ScoreWindow{Short,Medium,Long}`
+  (DM §7 note, MVP §5.5). Add a SQL comment: `-- DROP AND RECREATE at startup from NetworkProfile`
+
+#### Session 4.7.2 — `mv_provider_escrow_balance`
+
+**Task:** Implement per DM §7 with the REVERSAL amendment (DM §7 comment: "WE MADE AN
+AMMEND ADDING REVERSAL"). Balance formula: `SUM(DEPOSIT + REVERSAL) - SUM(RELEASE + SEIZURE)`.
+DM §9 checklist: "mv_provider_escrow_balance includes REVERSAL in the DEPOSIT-side SUM".
+
+#### Session 4.7.3 — `mv_owner_escrow_balance`
+
+**Task:** Implement per DM §7 with `GREATEST(..., 0)` on the final balance to prevent
+negative values (DM §7 comment). Formula: `SUM(DEPOSIT + REFUND) - SUM(CHARGE + WITHDRAWAL)`.
+
+#### Session 4.7.4 — `mv_segment_shard_counts`
+
+**Task:** Implement per DM §7. Both `available_shard_count` (ACTIVE + REPAIRING) and
+`active_shard_count` (ACTIVE only) columns are required for the repair trigger detector
+and owner dashboard.
+
+#### Session 4.7.5 — Unique indexes on all materialised views
+
+**Task:** Add `CREATE UNIQUE INDEX ON mv_provider_scores (provider_id)` and equivalent
+for all four materialised views. Required for `REFRESH MATERIALIZED VIEW CONCURRENTLY`
+(DM §9 checklist).
+
+---
+
+### Phase 4.8 — Migration Checklist Verification
+
+**Reference:** DM §9 (complete checklist)
+
+#### Session 4.8.1 — Run and document DM §9 checklist
+
+**Task:** Execute every item in the DM §9 migration checklist as a CI-runnable test
+suite in `scripts/ci/migration_check.sh`. Each check must be a `psql` query or `\d`
+inspection that passes or fails explicitly. Failing checks must print the exact DM §9
+checklist item text. The checks include:
+- `btree_gist` installed
+- `challenge_nonce` is BYTEA with `octet_length = 33` (not 32)
+- No FLOAT columns in escrow_events
+- `audit_result` has no DEFAULT
+- All ENUM values are present (including `REVERSAL`)
+- `is_vetting_chunk` column present on `chunk_assignments`
+- `file_id` on `audit_receipts` is nullable
+- Partial unique index includes `WHERE is_vetting_chunk = FALSE`
+- `scores_as_of` column present in `mv_provider_scores`
+- `REVERSAL` in `mv_provider_escrow_balance` balance formula
+
+The migration checklist script is CI check 7 (MVP §8.4).
+
+---
+
+## Milestone 5 — Provider Storage Engine (`internal/storage`)
+
+**Deliverable:** WiscKey-style storage engine: RocksDB index + append-only vLog, with
+crash recovery, GC, and the single-writer goroutine constraint enforced by test.
+
+**Reference:** IC §5.3 (full `ChunkStore` interface, all methods, sentinel errors,
+concurrency contract), MVP §8.2 (file inventory: store.go, vlog.go, index.go,
+single_writer_test.go), IC §11 (forbidden: breaking the single-writer invariant)
+
+---
+
+### Phase 5.1 — ChunkStore Interface & vLog
+
+**Reference:** IC §5.3
+
+#### Session 5.1.1 — Define `ChunkStore` interface and sentinel errors
+
+**Task:** Create `internal/storage/store.go` with the `ChunkStore` interface from IC §5.3
+and `internal/storage/errors.go` with all sentinel errors: `ErrChunkNotFound`,
+`ErrContentHashMismatch`, `ErrVLogFsync`, `ErrVLogRead`, `ErrRocksDBInsert`.
+
+**Critical concurrency comment (IC §5.3):** The `AppendChunk` method comment must include
+the exact warning: `*** SINGLE WRITER ONLY — NOT goroutine-safe ***` as specified in IC §5.3.
+
+#### Session 5.1.2 — Implement append-only vLog
+
+**Task:** Create `internal/storage/vlog.go`. The vLog is an append-only file. Each entry
+stores: `chunk_id` (32 bytes), `content_hash = SHA-256(chunk_data)` (32 bytes), chunk
+length (4 bytes), raw `chunk_data` (262144 bytes). The `AppendChunk` method must:
+1. Verify `SHA-256(chunkData) == chunkID` before writing (IC §5.3 pre-condition)
+2. Write the entry to the vLog file
+3. Call `fsync` before returning
+4. On fsync failure: return `ErrVLogFsync`; the daemon must halt and restart
+
+Add HDD/SSD detection via `internal/storage/rotational.go` (build tag `linux`) and
+`internal/storage/rotational_other.go` (stub: assume SSD). This affects fsync strategy
+(document the decision in a comment per MVP §8.2).
+
+#### Session 5.1.3 — Implement RocksDB index wrapper
+
+**Task:** Create `internal/storage/index.go`. Wrap `github.com/linxGnu/grocksdb` (or
+equivalent RocksDB Go binding). The index maps `chunk_id → (vlog_offset, chunk_size)`.
+Include a Bloom filter (a RocksDB column family option) so `LookupChunk` can exit fast
+on "not present" without a full disk seek (IC §4.2: "Bloom filter check" in the audit
+challenge flow diagram).
+
+#### Session 5.1.4 — Implement `LookupChunk()`
+
+**Task:** Per IC §5.3: read the chunk from the vLog using the stored offset. Verify
+`SHA-256(returned data) == chunkID` internally before returning. If hash mismatch:
+return `ErrContentHashMismatch` (this is the signal for audit FAIL with `status=0x02`
+per IC §4.2). Goroutine-safe (uses `pread` which is thread-safe on POSIX).
+
+#### Session 5.1.5 — Implement `DeleteChunk()`, `RecoverFromCrash()`, `RunGC()`
+
+**Task:** Implement the three remaining `ChunkStore` methods per IC §5.3:
+- `DeleteChunk`: removes RocksDB index entry; vLog entry is reclaimed by GC
+- `RecoverFromCrash`: scans vLog from last known head offset, re-inserts missing
+  RocksDB entries; must be called before the writer goroutine starts
+- `RunGC`: reclaims vLog space from deleted entries; runs in a background goroutine
+
+**IC §5.3 note on `DeleteChunk`:** "The daemon has no visibility into whether the deleted
+chunk was synthetic or real." Both real and synthetic chunk deletions use the same code path.
+
+---
+
+### Phase 5.2 — Storage Tests
+
+**Reference:** MVP §8.2 (single_writer_test.go), IC §5.3
+
+#### Session 5.2.1 — Implement `TestSingleWriterGoroutine`
+
+**Task:** In `internal/storage/single_writer_test.go`, implement the test from MVP §8.2:
+launch 100 goroutines all calling `AppendChunk` simultaneously. The expected outcome is
+a deadlock or race detection failure (not silent data corruption) — the test is structured
+so that the channel-based serialisation in the upload manager (tested separately) is what
+prevents this. This test documents that `AppendChunk` is intentionally not goroutine-safe
+and should not be made goroutine-safe.
+
+**Note:** This test must be run with `-race` to detect race conditions. It is part of
+CI check 4 (MVP §8.4: `go test ./... -race`).
+
+#### Session 5.2.2 — Storage round-trip and crash recovery tests
+
+**Task:** Test: write N chunks, restart (simulate crash by skipping `Close()`),
+call `RecoverFromCrash()`, verify all chunks are readable. Test: `LookupChunk` on
+a chunk with corrupted vLog bytes returns `ErrContentHashMismatch`. Test: `DeleteChunk`
+followed by `LookupChunk` returns `ErrChunkNotFound`.
+
+---
+
+## Milestone 6 — P2P Network Layer (`internal/p2p`)
+
+**Deliverable:** libp2p host with QUIC/TCP+Noise transports, NAT traversal stack,
+Kademlia DHT with custom HMAC key validator, and 0-RTT policy enforcement per protocol ID.
+
+**Reference:** IC §4 (common libp2p rules), IC §4.3 (Circuit Relay v2), IC §5.4
+(`Host` and `DHT` interfaces, sentinel errors), IC §12 (DHT key contract),
+MVP §8.2 (file inventory), MVP §8.4 (TestDHTKeyValidatorPersists — CI check 5)
+
+---
+
+### Phase 6.1 — libp2p Host
+
+**Reference:** IC §5.4 (`Host` interface), IC §4 (common rules: transport auth, stream lifecycle)
+
+#### Session 6.1.1 — Implement `Host` interface
+
+**Task:** Create `internal/p2p/host.go`. Implement the `Host` interface from IC §5.4
+using `github.com/libp2p/go-libp2p`. The host must use:
+- QUIC v1 as primary transport (IC §4.3 ADR-021)
+- TCP+Noise XX as fallback transport
+- Ed25519-based Peer ID (IC §5.4: `PeerID() = multihash(ed25519_public_key)`)
+
+**0-RTT policy enforcement (IC §4, IC §5.4):** The `Host` must automatically set
+`DisableEarlyData: true` for any stream whose protocol ID suffix matches `-audit` or
+`-challenge`. IC §5.4: "The caller does not need to enforce this; the Host enforces it
+automatically based on the protocol ID." Implement this in `host.go` as a protocol
+middleware that wraps `NewStream`.
+
+#### Session 6.1.2 — NAT traversal stack
+
+**Task:** Create `internal/p2p/nat.go`. Configure AutoNAT, DCUtR (hole-punching), and
+Circuit Relay v2 reservation per IC §4.3. Set `maxHolePunchRetries = 1` (MVP §8.2).
+The `NATType()` method returns the current AutoNAT classification.
+
+**IC §4.3 circuit relay:** Relay reservation TTL = 30 minutes (libp2p default). The daemon
+includes relay multiaddrs in heartbeat `current_multiaddrs[]` when a reservation is active
+(IC §4.3). Relay overhead must add < 50ms RTT from Indian cloud nodes (IC §4.3 NFR-006)
+— this is a milestone gate, not code, and will be validated in M18.
+
+#### Session 6.1.3 — Provider identity persistence
+
+**Task:** Create `internal/p2p/identity.go`. Generate Ed25519 key pair at first startup
+via `crypto/rand`. Persist encrypted to the daemon's keystore using `DeriveKeystoreEncKey`
+from `internal/crypto` (IC §3.2: "Stored in the daemon's local keystore encrypted under
+a key derived from DeriveDKSKeystoreEncKey()"). On subsequent startups, load and decrypt.
+
+---
+
+### Phase 6.2 — Kademlia DHT with Custom HMAC Validator
+
+**Reference:** IC §12 (DHT key contract), IC §5.4 (`DHT` interface), MVP §8.2 (dht_namespace.go),
+MVP §8.4 (TestDHTKeyValidatorPersists — CI check 5)
+
+#### Session 6.2.1 — Define the DHT namespace constant
+
+**Task:** Create `internal/p2p/dht_namespace.go` with:
 ```go
 const dhtKeyNamespace = "/vyomanaut/dht-key/1.0.0"
 ```
-Do not duplicate this string anywhere else. All DHT key construction must import this constant.
+This is the sole definition in the entire repository (MVP §8.2). No other file may define
+this string inline. The CI namespace pinning requirement (IC §12) means a global search
+for this string must find only this file and the registration point in `cmd/provider/main.go`.
 
-**Definition of done:** Constant defined. Grep confirms it appears exactly once in the codebase.
+#### Session 6.2.2 — Implement custom HMAC key validator
 
-#### Session 5.2.2 — Implement the custom DHT key validator in `internal/p2p/dht.go`
+**Task:** Create `internal/p2p/dht.go`. Implement the custom key validator that accepts:
+- Any 32-byte key (HMAC-SHA256 output is always 32 bytes per IC §12)
 
-**Task:** Implement the HMAC-SHA256 DHT key validator. DHT lookup keys use:
-```
-dht_key = HMAC-SHA256(chunk_hash, file_owner_key)
-where file_owner_key = HKDF(master_secret, "vyomanaut-dht-v1", file_id)
-```
-per `arch §9.5` and `arch §13`.
+And rejects:
+- Keys shorter or longer than 32 bytes
+- Keys with a `vyom-chunk:` prefix (plaintext SHA-256 hashes per IC §12)
+- libp2p default CID namespace keys (multihash encoding)
 
-The validator must implement the `go-libp2p-kad-dht` `Validator` interface for the namespace `dhtKeyNamespace`. The validator must survive every `go-libp2p` upgrade — this is the trigger for `TestDHTKeyValidatorPersists`.
+Register the validator with namespace `dhtKeyNamespace`. Implement `PutProviderRecord`,
+`FindProviders`, `Bootstrap` per IC §5.4. The `PutProviderRecord` pre-condition
+(IC §5.4): the daemon must NOT recompute the dht_key at republication time — the key
+is pre-computed at upload time and cached locally (IC §5.4, IC §12.2).
 
-Also implement DHT republication: `PublishChunkAddress(chunkID [32]byte, fileOwnerKey []byte)` and `LookupChunkAddress(chunkID [32]byte, fileOwnerKey []byte) ([]peer.AddrInfo, error)`. Republication interval: `profile.DHTRepublishInterval`. Record expiry: `profile.DHTExpiryDuration`. The `dht_key` for each chunk is cached in RocksDB alongside `vlog_offset` so republication does not require the data owner to be online.
+#### Session 6.2.3 — Implement `TestDHTKeyValidatorPersists` (CI check 5)
 
-**Definition of done:** Round-trip DHT publish and lookup on a local 3-node DHT. HMAC key is non-reversible without the `file_owner_key` (verified by a test that shows two different keys produce different DHT addresses for the same chunk).
-
-#### Session 5.2.3 — Implement `TestDHTKeyValidatorPersists` in `internal/p2p/dht_test.go`
-
-**Task:** Implement the CI required check (`mvp.md §8.4`, check #5). The test:
-1. Creates a DHT key using the custom validator with the namespace `/vyomanaut/dht-key/1.0.0`.
-2. Upgrades `go-libp2p` (or simulates the test by checking the namespace has not been reset by the validator framework).
-3. Verifies the key is still valid and the namespace is unchanged.
-
-The test must fail if any `go-libp2p` upgrade silently resets the custom key namespace. This is the vendoring gate: if the test fails after a dependency upgrade, `go-libp2p` is vendored until the upstream fix lands.
-
-**Definition of done:** CI check #5 activates and passes.
-
----
-
-### Phase 5.3 — Heartbeat Protocol
-
-**Doc Ref:** `arch §13` (heartbeat: "4-hour address update"), `arch §18` (microservice dispatches challenges using `providers.last_known_multiaddrs`, not DHT), `data §4.2` (`last_known_multiaddrs JSONB`, `last_heartbeat_ts`, `multiaddr_stale`), `mvp.md §3.4` (demo heartbeat: 30 s interval, ±5 s jitter)
-
-#### Session 5.3.1 — Implement `internal/p2p/heartbeat.go`
-
-**Task:** Implement the provider-side heartbeat sender. Every `profile.HeartbeatInterval` ± `profile.HeartbeatJitter`, the daemon signs and sends the current libp2p multiaddresses to the microservice endpoint `POST /api/v1/provider/heartbeat`.
-
-The heartbeat payload must be signed with the provider's Ed25519 private key. **[BLOCKED: exact heartbeat wire format pending `interface-contracts.md`]** — use a placeholder struct until wire format is frozen.
-
-The microservice-side handler (saves multiaddrs to `providers.last_known_multiaddrs`, updates `last_heartbeat_ts`, clears `multiaddr_stale`) is implemented in M7.
-
-**Definition of done:** Heartbeat fires at the correct interval with jitter. Signed payload test: tampered heartbeat fails signature verification.
-
----
-
-## Milestone 6 — Microservice Database Schema
-
-**Goal:** All Postgres tables, indexes, row security policies, materialised views, and the migration checklist are applied to the dev database. The schema exactly matches `data-model.md`. The migration generator produces correct CHECK constraint bounds for both demo and production profiles.
-
-**Doc Ref:** `data-model.md` (entire document), `arch §4` (PostgreSQL ≥ 15), `mvp.md §5.5` (schema parameterisation via `migrations/generator.go`), `data §9` (migration checklist — must be completed in full)
-
----
-
-### Phase 6.1 — Migration Generator
-
-**Doc Ref:** `mvp.md §5.5`, `data §3 Invariant 7`, `data §8.23` (profile-parameterised CHECK bounds)
-
-#### Session 6.1.1 — Implement `migrations/generator.go`
-
-**Task:** Implement the migration generator that emits the two profile-parameterised CHECK constraints:
+**Task:** In `internal/p2p/dht_test.go`, implement the mandatory CI test from IC §12:
 ```go
-func GenerateInitialSchema(profile config.NetworkProfile) string {
-    // Emits shard_index CHECK bound: BETWEEN 0 AND profile.TotalShards-1
-    // Emits available_shard_count CHECK range: BETWEEN profile.DataShards AND profile.TotalShards
+func TestDHTKeyValidatorPersists(t *testing.T) {
+    // A valid HMAC-derived key must be accepted
+    // A plain CID must be rejected with ErrDHTKeyInvalid
+    // A 31-byte key must be rejected with ErrDHTKeyInvalid
 }
 ```
-per `mvp.md §5.5`. The generator must be invoked with the active profile before any migration is applied to a new database. A `--profile=demo|prod` flag selects the profile.
-
-Add to `data §9` migration checklist: a CI check that runs the generator for both profiles and verifies the emitted SQL parses without error.
-
-**Definition of done:** Generator emits correct SQL for both profiles. Demo: `BETWEEN 0 AND 4`, `BETWEEN 3 AND 5`. Production: `BETWEEN 0 AND 55`, `BETWEEN 16 AND 56`.
+This test catches `go-libp2p` version upgrades that silently reset the namespace
+configuration to defaults (IC §12, MVP §8.4 CI check 5). This test MUST pass on every
+commit touching `internal/p2p`.
 
 ---
 
-### Phase 6.2 — Initial Schema Migration
+### Phase 6.3 — Heartbeat Goroutine
 
-**Doc Ref:** `data §4` (all table definitions), `data §5` (index catalogue), `data §6` (row security policies), `data §7` (materialised views), `data §9` (migration ordering — must follow the exact DDL order in §9)
+**Reference:** IC §3.1 (heartbeat multiaddr update), IC §12.2 (DHT republication
+coordinated with heartbeat)
 
-#### Session 6.2.1 — Create `migrations/001_initial_schema.sql`
+#### Session 6.3.1 — Implement heartbeat goroutine
 
-**Task:** Write the initial schema migration applying ALL tables, indexes, RSPs, and views in the exact ordering from `data §9`:
-1. `CREATE EXTENSION IF NOT EXISTS btree_gist`
-2. All `CREATE TYPE` statements (in dependency order)
-3. All `CREATE TABLE` statements (in FK-dependency order)
-4. All `CREATE INDEX` and `CREATE UNIQUE INDEX` statements — note: `idx_chunk_assignments_one_active_per_shard` is a standalone `CREATE UNIQUE INDEX`, NOT an inline table constraint (per `data §9` migration checklist)
-5. All `ALTER TABLE ENABLE ROW LEVEL SECURITY` and `CREATE POLICY` statements
-6. All `CREATE MATERIALIZED VIEW` and their unique indexes
+**Task:** Create `internal/p2p/heartbeat.go`. Implement the heartbeat loop per IC §3.1
+pseudo-code:
+- Ticker interval: `profile.HeartbeatInterval` (NOT hardcoded 4h)
+- Token refresh check: if `tokenExpiresIn() < 24*time.Hour`, call `refreshToken()`
+- Call `sendHeartbeat()` on each tick
+- Cold-start handling: if token is expired and grace period has passed, prompt
+  re-registration (IC §3.1)
 
-Every nullable column must match its justification in `data §8`. Every CHECK constraint must match its table definition in `data §4`. The challenge_nonce constraint must be `octet_length = 33` (not 32) per `data §3 Invariant 5`.
-
-**Definition of done:** `psql -f migrations/001_initial_schema.sql` succeeds on a fresh Postgres 15 instance. All 35+ checklist items from `data §9` pass. CI check #7 (migration apply + rollback) activates.
-
-#### Session 6.2.2 — Verify all 7 Invariants from `data §3`
-
-**Task:** For each of the 7 invariants in `data §3`, write a test or a psql verification command that confirms the invariant is enforced at the database level:
-1. `audit_receipts` INSERT-only → attempt UPDATE of a non-PENDING row → must fail
-2. `escrow_events` INSERT-only → attempt UPDATE → must fail
-3. No physical deletion of `providers` rows → attempt DELETE → must fail
-4. `escrow_events.amount_paise` is BIGINT → attempt INSERT with fractional paise → must fail
-5. `challenge_nonce` is 33 bytes → attempt INSERT with 32-byte nonce → must fail
-6. Real shard on vetting provider → attempt INSERT of `is_vetting_chunk=FALSE` on VETTING provider → must fail at application layer
-7. `ShardSize` compile-time constant → `TestProfileShardSizeIsConstant` already covers this
-
-**Definition of done:** All 7 invariants are enforced. Each has a failing test that demonstrates the enforcement.
+Also integrate DHT republication per IC §12.2: a separate ticker at
+`profile.DHTRepublishInterval` triggers `PutProviderRecord` for all locally-cached
+`dht_key` values (IC §12.2 note: the daemon caches dht_keys from upload receipts;
+it does NOT recompute them).
 
 ---
 
-### Phase 6.3 — Materialised View Lifecycle
+## Milestone 7 — Audit System (`internal/audit`)
 
-**Doc Ref:** `data §7`, `mvp.md §5.5` (mv_provider_scores dropped and recreated at startup from profile scoring windows), `mvp.md §6.3 OR-04`
+**Deliverable:** Challenge generation, response validation, two-phase crash-safe receipt
+write, cluster secret cache, and JIT detection. The audit package does NOT import
+`scoring`, `repair`, or `payment` (IC §9 constraint).
 
-#### Session 6.3.1 — Implement view regeneration at microservice startup
-
-**Task:** The `mv_provider_scores` view is dropped and recreated at microservice startup using the active profile's scoring window intervals. Implement `RegenerateScoringView(db *sql.DB, profile config.NetworkProfile) error` in the microservice startup sequence. The view SQL is generated from `profile.ScoreWindowShort`, `profile.ScoreWindowMedium`, `profile.ScoreWindowLong`. The view must include `NOW() AS scores_as_of` per `data §7` and `mvp.md §6.3 OR-04`.
-
-**Definition of done:** Starting the microservice with `DemoProfile` generates the view with 2-minute, 6-minute, 20-minute intervals. Starting with `ProductionProfile` generates the view with 24-hour, 7-day, 30-day intervals. Verified by `\d+ mv_provider_scores`.
-
----
-
-## Milestone 7 — Provider Daemon: Registration & Heartbeat
-
-**Goal:** A provider daemon can register with the microservice (creating a DB row, initiating Razorpay account setup in mock mode), receive its first heartbeat acknowledgement, and advance to `VETTING` status.
-
-**Doc Ref:** `arch §12` (provider lifecycle — joining), `data §4.2` (`providers` table), `arch §18` (microservice API — `/api/v1/provider/register`, `/api/v1/provider/heartbeat`), `mvp.md §3.3` (demo readiness gate), `mvp.md §3.6` (demo timeline — T+00:00 to T+00:30)
-
-> **[BLOCKED: exact request/response wire formats pending `interface-contracts.md` and `openapi.yaml`]** — implement with placeholder structs; replace with frozen contracts when docs are available.
+**Reference:** IC §5.5 (full package contract), IC §3.2 (Ed25519 signing conventions),
+IC §4.2 (audit challenge protocol wire format — this is what the microservice sends;
+the provider-side handler is in M8 provider daemon), DM §4.7 (audit_receipts schema),
+IC §8 (secrets manager contract), MVP §8.2 (file inventory for internal/audit)
 
 ---
 
-### Phase 7.1 — Provider Registration
+### Phase 7.1 — Challenge Nonce Generation
 
-**Doc Ref:** `arch §12` (registration step), `data §4.2` (providers table constraints — `phone_number UNIQUE`, `ed25519_public_key CHECK(32 bytes)`, `status DEFAULT 'PENDING_ONBOARDING'`)
+**Reference:** IC §5.5 (`ChallengeNonce`), DM §3 Invariant 5 (33 bytes always),
+IC §11 (forbidden: `challenge_nonce` as 32-byte field)
 
-#### Session 7.1.1 — Implement `POST /api/v1/provider/register` handler
+#### Session 7.1.1 — Implement `ChallengeNonce()`
 
-**Task:** Implement the microservice endpoint that:
-1. Validates OTP-verified phone number (mock OTP in demo mode)
-2. Checks `phone_number` uniqueness against `providers.phone_number`
-3. Inserts a `providers` row with `status = 'PENDING_ONBOARDING'`
-4. Calls `PaymentProvider.CreateLinkedAccount(providerID)` — mock in demo, Razorpay in prod
-5. Sets `razorpay_cooling_until = NOW() + profile.RazorpayCoolingPeriod`
+**Task:** In `internal/audit/challenge.go`, implement `ChallengeNonce(serverSecretVN
+[]byte, versionByte uint8, chunkID [32]byte, serverTsMs int64) [33]byte` per IC §5.5.
+Formula: `nonce = version_byte || HMAC-SHA256(serverSecretVN, chunkID || serverTsMs)`.
+Return type is `[33]byte` — a fixed-size array, not a slice — so any code attempting to
+use it as a 32-byte value fails at compile time.
 
-**Demo behaviour:** `RazorpayCoolingPeriod = 0` so `razorpay_cooling_until = NOW()` (instant cooling).
-
-**Definition of done:** POST to `/api/v1/provider/register` creates a DB row. Status is `PENDING_ONBOARDING`. `razorpay_cooling_until` is set correctly for both demo and production profiles.
-
-#### Session 7.1.2 — Implement `POST /api/v1/provider/heartbeat` handler
-
-**Task:** Implement the microservice endpoint that:
-1. Verifies the Ed25519 signature on the heartbeat payload
-2. Extracts the provider's current libp2p multiaddresses from the payload
-3. Updates `providers.last_known_multiaddrs` (JSONB array of multiaddr strings)
-4. Updates `providers.last_heartbeat_ts = NOW()`
-5. Clears `providers.multiaddr_stale = FALSE`
-6. If `status = 'PENDING_ONBOARDING'` AND cooling period has elapsed → advances to `VETTING`
-
-**Doc Ref:** `data §4.2` (`last_known_multiaddrs JSONB`, `last_heartbeat_ts`, `multiaddr_stale`), `arch §12` ("Status advances to VETTING on first heartbeat")
-
-**Definition of done:** Heartbeat from a `PENDING_ONBOARDING` provider with elapsed cooling advances it to `VETTING`. Stale address flag is cleared. Invalid signature returns HTTP 401.
+Add a CI grep check to `scripts/ci/grep_checks.sh`: fail if `ChallengeNonce` is called
+anywhere with a result cast to `[32]byte` (catches accidental truncation).
 
 ---
 
-### Phase 7.2 — Readiness Gate
+### Phase 7.2 — Response Validation
 
-**Doc Ref:** `arch §8` (minimum viable network — 7 conditions), `mvp.md §3.3` (demo thresholds), `data §4.2` (`asn` field, `region` field)
+**Reference:** IC §5.5 (`ValidateResponse` and its explicit limitation note)
 
-#### Session 7.2.1 — Implement `GET /api/v1/admin/readiness` endpoint
+#### Session 7.2.1 — Implement `ValidateResponse()`
 
-**Task:** Implement the readiness gate check that evaluates all 7 conditions from `arch §8` against the active `NetworkProfile` thresholds:
-1. Active vetted providers ≥ `profile.MinActiveProviders`
-2. Distinct ASNs ≥ `profile.MinDistinctASNs`
-3. Distinct metro regions ≥ `profile.MinMetroRegions`
-4. Quorum state (skipped in demo if `!profile.RequireQuorum`)
-5. Linked accounts with cooling elapsed ≥ `profile.MinCooledAccounts`
-6. Relay nodes ≥ `profile.MinRelayNodes`
-7. Cluster audit secret loaded on all replicas (skipped in demo)
+**Task:** In `internal/audit/validate.go`, implement `ValidateResponse` per IC §5.5.
+What this function DOES verify:
+1. `len(challengeNonce) == 33`
+2. `challengeNonce[0]` identifies a currently-valid secret version
+3. `providerSig` is a valid Ed25519 signature
 
-Returns HTTP 200 with a JSON summary of all conditions and their pass/fail state. Returns HTTP 503 if any condition fails. Upload requests in M8 must check this gate before proceeding.
-
-**Doc Ref:** `arch §8` ("Upload requests return HTTP 503 until all conditions are met"), `mvp.md §3.3` (demo thresholds: 5 providers, 5 ASNs, 1 region, etc.)
-
-**Definition of done:** Gate passes with 5 demo providers correctly registered with distinct `SIM-AS1..5` ASNs. Gate fails if any condition is unmet.
-
----
-
-## Milestone 8 — Data Owner Client: Encode & Upload
-
-**Goal:** A data owner client can register, derive a master secret, encode a file through the 4-stage AONT-RS pipeline, and upload 56 (or 5) shards directly to providers over libp2p. The pointer file is encrypted and registered with the microservice.
-
-**Doc Ref:** `arch §10` (data encoding pipeline — all 4 stages), `arch §11` (key hierarchy), `arch §5` (system context — data plane never touches microservice), `data §4.3` (files table), `data §4.4` (segments table), `data §4.5` (chunk_assignments table), `mvp.md §3.6` (demo timeline — T+01:00 upload)
-
----
-
-### Phase 8.1 — Data Owner Registration
-
-**Doc Ref:** `arch §11` (master secret derivation), `data §4.1` (owners table)
-
-#### Session 8.1.1 — Implement `internal/client/account/register.go`
-
-**Task:** Implement `cmd/client register` subcommand:
-1. Prompt for phone number + OTP verification
-2. Prompt for passphrase
-3. Call `DeriveMasterSecret(passphrase, ownerID, profile)` — the master secret never leaves this function's stack frame
-4. Generate Ed25519 key pair
-5. Derive keystore key via `DeriveKeystoreKey(masterSecret)`
-6. Encrypt private key + pointer nonce counter into keystore file on disk
-7. Call `MasterSecretToMnemonic` and display mnemonic
-8. If `!profile.SkipMnemonicConfirm`: gate on two-word confirmation
-9. POST to microservice to create the `owners` row
-
-**Doc Ref:** `mvp.md §3.5` (`SkipMnemonicConfirm = true` in demo), `arch §11` (recovery paths)
-
-**Definition of done:** `register` command completes in demo mode without mnemonic confirmation prompt. Keystore file created. Master secret never written to disk (verified by test that checks no secret bytes appear in the keystore file).
-
----
-
-### Phase 8.2 — Upload Orchestrator
-
-**Doc Ref:** `arch §10` (4-stage pipeline), `arch §10 Stage 3` (pointer file creation), `data §4.3`, `data §4.4`, `data §4.5`
-
-#### Session 8.2.1 — Implement segmentation in `internal/client/upload/orchestrator.go`
-
-**Task:** Implement file segmentation: split the input file into segments of `DataShards × ShardSize` bytes (`profile.DataShards × 262144`). Zero-pad the last segment if necessary. Store `original_size_bytes` for later padding removal. Each segment is processed independently through Stages 1–4.
-
-**Definition of done:** A 5 MB file with `DemoProfile` (DataShards=3, ShardSize=262144 = 786,432 bytes per segment) produces `ceil(5MB / 786KB) = 7` segments.
-
-#### Session 8.2.2 — Implement AONT + RS pipeline per segment
-
-**Task:** For each segment, execute Stages 1 and 2 from `arch §10`:
-1. Stage 1: AONT encode → `(s+1)` words, with K embedded
-2. Stage 2: RS encode → `TotalShards` shards each of `ShardSize` bytes
-
-Both operations use `profile.DataShards`, `profile.ParityShards`, `profile.TotalShards`.
-
-**Definition of done:** Full encode-then-decode round-trip for a multi-segment file. Canary verified after decode.
-
-#### Session 8.2.3 — Implement assignment request and parallel upload
-
-**Task:** Call `POST /api/v1/upload/assign` to get `TotalShards` provider assignments from the microservice. Then upload each shard to its assigned provider over libp2p in parallel. Each upload is one QUIC stream.
-
-**[BLOCKED: upload assignment request/response format pending `interface-contracts.md`]**
-
-The assignment service enforces the 20% ASN cap at assignment time — do not re-implement this in the client. The client simply uses the assignments returned by the microservice.
-
-Check the readiness gate (`GET /api/v1/admin/readiness`) before attempting upload. Return a clear error if the gate is not passing.
-
-**Definition of done:** File uploads to 5 demo providers. All 5 libp2p connections established. All shards transferred.
-
-#### Session 8.2.4 — Implement pointer file construction and registration
-
-**Task:** After all shards are confirmed uploaded:
-1. Construct the pointer file struct: 56 provider IDs, 56 chunk content addresses (SHA-256 of each shard), erasure parameters
-2. Derive pointer key: `DerivePointerKey(masterSecret, fileID)`
-3. Encrypt with `EncryptPointerFile`
-4. POST the three fields to microservice: `pointer_ciphertext`, `pointer_nonce`, `pointer_tag` — matching `data §4.3`
-5. Create a `segments` row and `chunk_assignments` rows in the DB (via microservice API)
-
-**Doc Ref:** `arch §10 Stage 3`, `data §4.3` (files table schema), `data §4.5` (chunk_assignments — `is_vetting_chunk=FALSE`, `segment_id NOT NULL`, `shard_index NOT NULL`)
-
-**Definition of done:** `files` row created. `segments` row created. `chunk_assignments` rows created with correct `shard_index` (0..`TotalShards-1`). `is_vetting_chunk = FALSE` for all.
-
-#### Session 8.2.5 — Implement upload crash recovery in `internal/client/upload/session.go`
-
-**Task:** Implement the upload session crash recovery per `mvp.md §8.2` (session.go spec): persist `file_id`, `chunk_ids`, `ack_status[TotalShards]` to disk during the upload. On restart, detect an incomplete session file and resume from the last confirmed shard.
-
-**Definition of done:** Kill the process mid-upload. Restart. Upload completes without re-sending already-confirmed shards.
-
----
-
-## Milestone 9 — Audit System
-
-**Goal:** The microservice issues one audit challenge per active chunk per `profile.PollingInterval`. Providers respond within their RTO. The microservice writes receipts using the two-phase write protocol. All 7 invariants in `data §3` are maintained under concurrent writes.
-
-**Doc Ref:** `arch §14` (audit system — full spec), `data §4.7` (audit_receipts table), `data §6` (row security policies), `arch §9.5` (security boundary — nonce replay prevention), `mvp.md §3.4` (demo audit interval: 2 minutes)
-
----
-
-### Phase 9.1 — Challenge Generation & Dispatch
-
-**Doc Ref:** `arch §14` (challenge issuance), `arch §18` (cluster audit secret), `data §4.7` (`challenge_nonce BYTEA(33)` — `data §3 Invariant 5`)
-
-#### Session 9.1.1 — Implement `internal/audit/challenge.go`
-
-**Task:** Implement `GenerateChallenge(serverSecret []byte, chunkID [32]byte, serverTs time.Time) ChallengeNonce` where:
-
-```
-challenge_nonce = version_byte (1 byte) || HMAC-SHA256(server_secret_vN, chunk_id || server_ts)
+What this function DOES NOT verify (add as a code comment per IC §5.5):
+```go
+// LIMITATION: The microservice cannot verify that responseHash == SHA-256(chunkData ||
+// challengeNonce) because it never holds chunkData. Correctness depends on economic
+// deterrence and JIT detection (ADR-014 Defence 3). This is a stated design property.
 ```
 
-The result is always 33 bytes. The version byte identifies the `server_secret` version used for cross-replica validation (`arch §18`, `arch §14`).
+Return `ErrInvalidSignature` or `ErrNonceLength` from IC §5.5 sentinel errors.
 
-**Critical (from `data §3 Invariant 5`):** The CHECK constraint is `octet_length(challenge_nonce) = 33`. A 32-byte nonce silently breaks cross-replica validation after failover. CI grep check #8 (`mvp.md §8.4`) must catch any `BYTEA(32)` in challenge context.
+---
 
-**Definition of done:** Output is always 33 bytes. Unit test with known HMAC vector. The CI grep check fires and fails on a `BYTEA(32)` string (verified manually during this session).
+### Phase 7.3 — Two-Phase Receipt Write
 
-#### Session 9.1.2 — Implement per-provider RTO in `internal/scoring/rto.go`
+**Reference:** IC §5.5 (`WriteReceiptPhase1`, `WriteReceiptPhase2`, `ErrReceiptAlreadyFinal`),
+DM §4.7 (two-phase write semantics), DM §6 (RSP enforces the phase2 update constraint)
 
-**Task:** Implement EWMA-based per-provider RTO calculation:
+#### Session 7.3.1 — Implement `WriteReceiptPhase1()`
+
+**Task:** In `internal/audit/receipt.go`, implement Phase 1 per IC §5.5: INSERT a row
+with `audit_result = NULL` and `provider_sig` populated. The INSERT must be WAL-flushed
+(use `SELECT pg_wal_flush()` in the same transaction or rely on `synchronous_commit = on`).
+Return the assigned `receipt_id` (UUIDv7 generated at the application layer — IC §5.5).
+
+#### Session 7.3.2 — Implement `WriteReceiptPhase2()`
+
+**Task:** Phase 2 per IC §5.5: UPDATE the row identified by `receiptID`, setting
+`audit_result`, `service_sig`, `service_countersign_ts` atomically. The `WHERE` clause:
+`WHERE receipt_id = $1 AND audit_result IS NULL AND abandoned_at IS NULL`
+(matches the RSP in DM §6). Return `ErrReceiptAlreadyFinal` if the row already has a
+non-NULL `audit_result` (idempotent retry: IC §5.5 post-condition "treat as success").
+
+---
+
+### Phase 7.4 — Cluster Secret Cache
+
+**Reference:** IC §8 (full secrets manager contract), IC §5.5 (`SecretsManagerClient`
+interface, `ErrSecretExpired`), MVP §8.2 (`secret.go`, `secrets_iface.go`)
+
+#### Session 7.4.1 — Implement `SecretsManagerClient` interface and cache
+
+**Task:** Create `internal/audit/secrets_iface.go` with the `SecretsManagerClient`
+interface from IC §8. Create `internal/audit/secret.go` with `ClusterSecretCache`:
+- 5-minute TTL cache of the cluster audit secret
+- Reads `server_secret_vN` and `server_secret_v{N+1}` during rotation overlap window
+- Fail-closed on startup: if secrets manager is unreachable, return an error and the
+  caller (microservice startup) must refuse to start (IC §8: "fail-closed")
+- During operation: return `ErrSecretExpired` after TTL expiry if manager is unreachable;
+  caller must back off and not issue challenges (IC §8)
+
+**Local dev / demo mode:** If `RequireSecretsManager == false`, read from
+`VYOMANAUT_CLUSTER_MASTER_SEED` environment variable (IC §8). The presence of this env
+var in prod mode is caught by the guard in M1 Session 1.3.2.
+
+---
+
+### Phase 7.5 — JIT Detection
+
+**Reference:** IC §4.2 (JIT detection note), DM §4.7 (`jit_flag` column),
+MVP §8.2 (`jit.go`)
+
+#### Session 7.5.1 — Implement JIT threshold computation
+
+**Task:** Create `internal/audit/jit.go`. Implement the JIT flag evaluation:
+`jit_flag = (response_latency_ms < (chunk_size_kb / p95_throughput_kbps) × 0.3)`.
+
+**Important:** `p95_throughput_kbps` may be NULL for new providers (DM §4.2). When NULL,
+skip JIT detection (no flag set). Compute `chunk_size_kb = 256` (always, since
+`ShardSize = 262144 = 256 KB` from Invariant 7). Note per IC §4.2: this threshold
+"is distinct from the RTO" — document this separation in a code comment.
+
+---
+
+## Milestone 8 — Scoring System (`internal/scoring`)
+
+**Deliverable:** Three-window reliability score, consecutive pass counter and
+VETTING→ACTIVE transition, EWMA RTO tracking. Read-only against the database.
+Must NOT import `repair` or `payment` (IC §9).
+
+**Reference:** IC §5.6 (full package contract), DM §7 (`mv_provider_scores` view),
+MVP §8.2 (file inventory)
+
+---
+
+### Phase 8.1 — Score Retrieval
+
+**Reference:** IC §5.6 (`GetScore`, `ProviderScore` struct)
+
+#### Session 8.1.1 — Implement `GetScore()`
+
+**Task:** In `internal/scoring/score.go`, implement `GetScore()` querying the
+`mv_provider_scores` materialised view. The view may be up to 60 seconds stale — this
+is acceptable (IC §5.6). Compute `DualWindowFlag = (score30d - score7d > 0.20)` in
+application code, not in SQL (easier to unit-test). Return `ErrProviderNotFound` if
+the provider does not appear in the view.
+
+Add `GetScoreFromPrimary()` (MVP §8.2: "monthly release multiplier must use primary") —
+this version forces a read from the primary replica via connection hint (implementation
+detail: pass a different `*sql.DB` handle pointing to the primary).
+
+---
+
+### Phase 8.2 — Consecutive Pass Counter
+
+**Reference:** IC §5.6 (`IncrementConsecutivePasses`, `ResetConsecutivePasses`),
+DM §4.2 (`consecutive_audit_passes`), MVP §3.4 (`VettingMinPasses` from profile)
+
+#### Session 8.2.1 — Implement `IncrementConsecutivePasses()` with VETTING→ACTIVE transition
+
+**Task:** In `internal/scoring/passes.go`, implement per IC §5.6. Critical: the
+transition check is `profile.VettingMinPasses` (read from NetworkProfile — 80 in prod,
+5 in demo), NOT a hardcoded 80. The VETTING→ACTIVE transition also requires the minimum
+duration check: `first_chunk_assignment_at + profile.VettingMinDuration <= NOW()`
+(IC §5.6 cross-reference to FR-026, MVP §5.4).
+
+Use `SELECT FOR UPDATE` within a transaction to prevent concurrent increments from
+both triggering the transition (IC §5.6 goroutine-safe note).
+
+Return `ErrProviderNotVetting` if the provider is not in VETTING status (IC §5.6).
+
+**Note on stale address timeouts (DM §4.7):** `ResetConsecutivePasses` must NOT be
+called when `audit_result = 'TIMEOUT' AND address_was_stale = TRUE` — this was added
+to `audit_receipts` specifically to prevent false resets on DHT-fallback timeouts.
+The scoring package must check this flag before calling `ResetConsecutivePasses`.
+
+---
+
+### Phase 8.3 — EWMA RTO Tracking
+
+**Reference:** IC §4.2 (RTO formula), DM §4.2 (`avg_rtt_ms`, `var_rtt_ms`,
+`rto_sample_count`, `p95_throughput_kbps`), MVP §8.2 (`rto.go`)
+
+#### Session 8.3.1 — Implement EWMA update functions
+
+**Task:** In `internal/scoring/rto.go`, implement:
+- EWMA update for `avg_rtt_ms` and `var_rtt_ms` after each audit response
+- EWMA update for `p95_throughput_kbps` (the 95th-percentile upload throughput)
+- `rto_sample_count` increment to track when to switch from pool-median RTO to
+  per-provider formula (threshold: `rto_sample_count >= 5` per IC §4.2)
+
+Pool-median RTO fallback: query `AVG(avg_rtt_ms + 4 * var_rtt_ms)` across all ACTIVE
+providers when `rto_sample_count < 5`. Cache this pool median for 5 minutes.
+
+**`p95_throughput_kbps` and `avg_rtt_ms` NULL handling (DM §4.2):** Both default to NULL
+for new providers. The EWMA update initialises them on the first sample; never write 0
+as the initial value (DM §9 checklist: "default to NULL, not 0/2000").
+
+---
+
+## Milestone 9 — Repair System (`internal/repair`)
+
+**Deliverable:** Departure detector, repair job queue with priority ordering, repair
+executor, and vetting chunk exclusion. Must NOT import `payment` or `p2p` (IC §9).
+
+**Reference:** IC §5.7 (full package contract), DM §4.10 (`repair_jobs` schema),
+DM §3 Invariant 6 (no repair for synthetic chunks)
+
+---
+
+### Phase 9.1 — Repair Job Queue
+
+**Reference:** IC §5.7 (`EnqueueJob`, `DequeueNextJob`, `IsVettingChunk`,
+`DeleteVettingChunksOnDeparture`, `MarkJobComplete`)
+
+#### Session 9.1.1 — Implement `EnqueueJob()`
+
+**Task:** In `internal/repair/queue.go`, implement `EnqueueJob()` per IC §5.7. The
+priority is derived automatically from `triggerType` (enforcing the
+`repair_jobs_priority_matches_trigger` DB CHECK via application logic before INSERT).
+
+**Invariant 6 enforcement (DM §3, IC §5.7 pre-condition):** Calling `EnqueueJob` for
+a synthetic vetting chunk panics in debug builds. The caller (departure handler) must
+call `IsVettingChunk()` first. Add the check as a debug-mode guard within `EnqueueJob`
+as a second line of defence (IC §5.7: "panics in debug builds").
+
+Also enforce the `availableShardCount` range from the active `NetworkProfile` (16–56 in
+prod, 3–5 in demo) — pass the profile to the constructor.
+
+#### Session 9.1.2 — Implement `DequeueNextJob()`
+
+**Task:** Use `SELECT ... FOR UPDATE SKIP LOCKED` to atomically dequeue and mark as
+`IN_PROGRESS`. Priority ordering: `ORDER BY priority ASC, created_at ASC`. The ENUM
+ordering (EMERGENCY < PERMANENT_DEPARTURE < PRE_WARNING alphabetically) determines
+priority — verify this matches the intended drain order (DM §4.10 comment: "verify
+ENUM order").
+
+#### Session 9.1.3 — Implement `IsVettingChunk()` and `DeleteVettingChunksOnDeparture()`
+
+**Task:** `IsVettingChunk()` per IC §5.7: returns true iff `chunk_assignments` row
+for `(chunkID, providerID)` has `is_vetting_chunk = TRUE`.
+
+`DeleteVettingChunksOnDeparture()` per IC §5.7: bulk soft-delete all synthetic
+chunk_assignments for a departing vetting provider (`status = 'DELETED'`,
+`deleted_at = NOW()`). Zero repair_jobs are created (Invariant 6, FR-065).
+
+---
+
+### Phase 9.2 — Repair Executor
+
+**Reference:** IC §4.4.1 (repair download stream), IC §4.4.2 (repair upload stream),
+IC §5.7 (`RepairJob`, `RepairPromotionTimeout`)
+
+#### Session 9.2.1 — Implement repair download client
+
+**Task:** In `internal/repair/executor.go`, implement the microservice-side client for
+the `/vyomanaut/repair-download/1.0.0` protocol (IC §4.4.1). The repair scheduler:
+1. Contacts `DataShards` (=16 in prod) surviving shard holders
+2. For each: opens a stream, sends `RepairDownloadRequest` with `repair_auth_sig`
+   (Ed25519 over `SHA-256(chunk_id || request_ts_ms || microservice_peer_id)` per IC §4.4.1)
+3. Receives `chunk_data` (262144 bytes)
+4. 0-RTT must be PROHIBITED for this stream (IC §4.4.1)
+5. Timeout: 10,000ms (IC §4.4.1)
+
+After download: RS decode via `internal/erasure`, generate missing parity shards,
+upload via the standard `/vyomanaut/chunk-upload/1.0.0` protocol (IC §4.4.2).
+
+#### Session 9.2.2 — Implement `RepairPromotionTimeout()`
+
+**Task:** Implement the simple accessor per IC §5.7: `return profile.RepairPromotionTimeout`.
+The scheduler must call this rather than reading a constant (IC §5.7, ADR-031).
+
+---
+
+### Phase 9.3 — Departure Detector
+
+**Reference:** IC §3.1 (heartbeat effect on departure detection), DM §4.2
+(`departed_at`, `providers.status = 'DEPARTED'`)
+
+#### Session 9.3.1 — Implement departure detector loop
+
+**Task:** In `internal/repair/departure.go`, implement the departure detector that
+periodically runs:
+```sql
+SELECT provider_id FROM providers
+WHERE status = 'ACTIVE'
+  AND last_heartbeat_ts < NOW() - $1  -- profile.DepartureThreshold
 ```
-RTO = avg_rtt_ms + 4 × var_rtt_ms
+For each departed provider:
+1. Set `status = 'DEPARTED'`, `frozen = TRUE`, `departed_at = NOW()`
+2. Call `IsVettingChunk()` for each assigned chunk — if true, call
+   `DeleteVettingChunksOnDeparture()` instead of `EnqueueJob()`
+3. Call `payment.Penalise()` (the departure handler wires payment — but repair package
+   cannot import payment; this call is in the microservice entrypoint that orchestrates both)
+4. Call `EnqueueJob()` for each real shard (Invariant 3: no physical deletion)
+
+**IC §6 DML constraint:** `UPDATE providers SET status = 'DEPARTED'` is only permitted by
+`vyomanaut_app` (IC §6 `providers` table row).
+
+---
+
+## Milestone 10 — Payment System (`internal/payment`)
+
+**Deliverable:** `PaymentProvider` interface, mock provider, Razorpay live implementation,
+append-only escrow ledger, release computation, seizure. Zero float arithmetic. Must NOT
+import `repair` or `p2p` (IC §9). `TestNoFloatArithmetic` must pass (CI check 6).
+
+**Reference:** IC §5.8 (full package contract, INVARIANT block), DM §3 Invariant 4
+(all amounts in integer paise), DM §4.8 (escrow_events schema), IC §7 (Razorpay webhook
+contracts), IC §11 (float arithmetic forbidden in internal/payment/)
+
+---
+
+### Phase 10.1 — PaymentProvider Interface & Mock
+
+**Reference:** IC §5.8 (`PaymentProvider` interface)
+
+#### Session 10.1.1 — Define `PaymentProvider` interface
+
+**Task:** Create `internal/payment/provider.go` with the `PaymentProvider` interface
+from IC §5.8. All `amountPaise` parameters must be typed as `int64` — never `float64`
+or `float32` (Invariant 4).
+
+#### Session 10.1.2 — Implement mock payment provider
+
+**Task:** Create `internal/payment/mock.go`. The mock implements `PaymentProvider` fully
+(MVP §6.1 CR-10: "The mock must implement the interface fully, not bypass it"). Mock
+behaviour:
+- `InitiateEscrow`: stores in-memory, returns a fake VPA
+- `ReleaseEscrow`: logs the payout, deduplicates on `idempotencyKey`
+- `Penalise`: marks the provider as seized in-memory
+- `GetBalance`: computes from in-memory events
+
+**Idempotency in mock:** The `escrow_events.idempotency_key` UNIQUE constraint at the DB
+layer enforces idempotency for the real provider; the mock must also enforce it
+(MVP §7.7: "Idempotency is DB-enforced regardless of payment provider implementation").
+
+---
+
+### Phase 10.2 — Escrow Ledger
+
+**Reference:** IC §5.8 (`InsertEscrowEvent`, `EscrowEventType`, `ErrDuplicateIdempotencyKey`),
+DM §4.8
+
+#### Session 10.2.1 — Implement `InsertEscrowEvent()`
+
+**Task:** Create `internal/payment/ledger.go`. `InsertEscrowEvent()` is the only
+permitted write to `escrow_events` (Invariant 2). The function must:
+- Accept `amountPaise int64` — never accept float via a type check or debug panic
+- Handle `ErrDuplicateIdempotencyKey` on UNIQUE constraint violation (idempotent retry)
+
+Define `EscrowEventType` constants per IC §5.8: `EscrowDeposit`, `EscrowRelease`,
+`EscrowSeizure`, and `EscrowReversal` (note: IC §5.8 has a duplicate `EscrowSeizure`
+constant name for REVERSAL — this is an error in the document. Use `EscrowReversal`
+for the `"REVERSAL"` event type per DM §4.8 and DM §7 which adds REVERSAL).
+
+**Document the IC §5.8 inconsistency:** Add a code comment: "IC §5.8 contains a
+duplicate constant name for REVERSAL (shows EscrowSeizure twice). This implementation
+uses EscrowReversal for the REVERSAL event type per DM §4.8. The inconsistency in
+IC §5.8 requires a correction PR."
+
+---
+
+### Phase 10.3 — Razorpay Implementation
+
+**Reference:** IC §7 (all three webhook contracts), IC §3.3 (RAZORPAY_UNAVAILABLE error code)
+
+#### Session 10.3.1 — Implement Razorpay webhook handlers
+
+**Task:** Create `internal/payment/razorpay.go`. Implement handlers for all three
+Razorpay webhooks from IC §7:
+
+**`virtual_account.payment.captured` (IC §7.1):**
+- Verify `X-Razorpay-Signature` before any DB write
+- `amount_paise` is ALREADY in paise from Razorpay — do NOT multiply (IC §7.1: "already in paise; do not multiply")
+- Use the SQL in IC §7.1 with `ON CONFLICT DO NOTHING`
+
+**`payout.reversed` (IC §7.2):**
+- Insert a `REVERSAL` event (not a negative RELEASE — IC §7.2)
+- `idempotency_key = SHA-256('reversal' || original_idempotency_key)` (DM §7, IC §7.2)
+
+**`account.created` (IC §7.3):**
+- Set `razorpay_cooling_until = NOW() + profile.RazorpayCoolingPeriod`
+  (profile-variable, NOT hardcoded 24h — MVP §5.4)
+- The `AND razorpay_linked_account_id IS NULL` idempotency guard (IC §7.3)
+
+**UPI Collect prohibition (IC §11):** Any call to the Razorpay Collect API endpoint is
+forbidden. All deposit flows use UPI Intent only (deprecated 28 February 2026).
+
+---
+
+### Phase 10.4 — Release Computation & Seizure
+
+**Reference:** IC §5.8 (`ReleaseEscrow`, `Penalise`), MVP §5.4 (release computation
+cycle: calendar date in prod, ticker in demo), DM §4.2 (`frozen` column)
+
+#### Session 10.4.1 — Implement monthly release computation
+
+**Task:** Create `internal/payment/release.go`. The release computation:
+1. For each provider with `release_computed = FALSE` for the current audit period
+2. Compute the release multiplier from the score (score-to-multiplier table — ⚠️ AWAITING
+   `requirements.md` for the exact multiplier table; use a placeholder linear function
+   and mark `// TODO: replace with exact multiplier table from requirements.md §...`)
+3. Call `ReleaseEscrow()` with idempotency key `SHA-256(provider_id || audit_period_id)`
+4. Set `release_computed = TRUE`
+
+In demo mode, the computation fires on `profile.ReleaseComputationInterval` ticker
+(MVP §5.4). In prod mode, it fires on the 23rd of each month calendar trigger
+(`profile.ReleaseComputationInterval == 0` means calendar-driven — MVP §5.4).
+
+#### Session 10.4.2 — Implement `TestNoFloatArithmetic` (CI check 6)
+
+**Task:** Create `internal/payment/payment_test.go` with `TestNoFloatArithmetic` (CI
+check 6, MVP §8.4). This test uses `go/ast` to parse every `.go` file in
+`internal/payment/` and assert that no `float64`, `float32`, `FLOAT`, `DECIMAL`, or
+`NUMERIC` identifier appears in any expression. Disabling or weakening this test is
+itself a prohibited change (IC §11).
+
+---
+
+## Milestone 11 — REST API Layer
+
+**⚠️ PARTIAL MILESTONE — AWAITING `openapi.yaml`**
+
+**Status:** The error envelope, readiness gate, and Razorpay webhook handler can be
+implemented from the documents in context. All other endpoint schemas require
+`openapi.yaml`. Stub handlers that return `501 Not Implemented` must be committed for
+every endpoint referenced in IC and DM so that the routing tree is established.
+
+**Reference:** IC §3 (all REST contracts), IC §3.3 (error envelope), IC §3.4 (readiness
+gate), IC §7 (webhook contracts implemented in M10)
+
+---
+
+### Phase 11.1 — Error Envelope
+
+**Reference:** IC §3.3 (standard error body, HTTP status code table)
+
+#### Session 11.1.1 — Implement standard error response
+
+**Task:** Create `internal/api/errors.go` (new package `internal/api` for HTTP-layer
+concerns). Implement a `WriteError(w http.ResponseWriter, statusCode int, errorCode string,
+message string, retryAfter *int)` function that writes the exact JSON body from IC §3.3:
+```json
+{
+  "error_code": "...",
+  "message": "...",
+  "request_id": "...",
+  "retry_after": null
+}
 ```
-New providers: substitute pool median (below `rto_sample_count < 5`). Update EWMA after each PASS receipt per `arch §14` ("per-provider RTO = AVG + 4 × VAR of recent audit response latencies").
+The `request_id` must be a UUIDv7 matching the `X-Request-ID` response header (IC §3.3).
+Implement all error codes from the IC §3.3 table as typed constants.
 
-Also implement `p95_throughput_kbps` EWMA update — used for JIT detection deadline: `(chunk_size_kb / p95_throughput_kbps) × 1.5`.
-
-**Definition of done:** RTO test: a provider with 5 samples uses per-provider formula. Provider with 4 samples uses pool median. EWMA convergence test.
-
-#### Session 9.1.3 — Implement challenge scheduler loop
-
-**Task:** Implement the audit challenge dispatch loop: once per `profile.PollingInterval`, for every `ACTIVE` chunk_assignment row, dispatch a challenge to the provider at their `last_known_multiaddrs` (fall back to DHT if `multiaddr_stale = TRUE`).
-
-**Doc Ref:** `arch §14` ("microservice dispatches challenges using the address from `providers.last_known_multiaddrs`... DHT is fallback if no heartbeat within 8 hours")
-
-Track `address_was_stale` on each challenge (used in `data §4.7` for `address_was_stale BOOLEAN` — TIMEOUTs from stale addresses do NOT reset `consecutive_audit_passes`, per `data §4.2` comment on that column).
-
-**Definition of done:** In demo mode, challenges fire every 2 minutes for all active chunks. Stale-address fallback to DHT activates correctly.
+**`INSUFFICIENT_ASN_DIVERSITY` special case (IC §3.3):** This error code must include
+an additional `"available_asns": int` field. Handle this via a separate `WriteASNError`
+function or an extra parameter.
 
 ---
 
-### Phase 9.2 — Provider Audit Response
+### Phase 11.2 — Readiness Gate Endpoint
 
-**Doc Ref:** `arch §14` (provider response — 5 steps), `arch §16` (audit lookup path — 7 steps), `data §4.7` (response_hash, provider_sig)
+**Reference:** IC §3.4 (readiness gate contract, exact response body)
 
-#### Session 9.2.1 — Implement provider-side challenge handler
+#### Session 11.2.1 — Implement `GET /api/v1/admin/readiness`
 
-**Task:** Implement the daemon-side challenge response per `arch §14`:
-1. Lookup `chunk_id` in RocksDB. If absent → return FAIL immediately (no disk I/O)
-2. Read chunk from vLog using offset
-3. Verify `SHA-256(chunk_data) == stored content_hash`. If wrong → return FAIL with `ErrContentHashMismatch` error code
-4. Compute `response_hash = SHA-256(chunk_data || challenge_nonce)`
-5. Sign the receipt with the provider's Ed25519 private key
-6. Return signed audit receipt to microservice
+**Task:** In `internal/api/readiness.go`, implement the readiness gate evaluator and
+HTTP handler per IC §3.4. All seven conditions must be evaluated simultaneously:
+1. Active vetted providers: `COUNT(*) WHERE status IN ('VETTING','ACTIVE') >= profile.MinActiveProviders`
+2. Distinct ASNs: `COUNT(DISTINCT asn) >= profile.MinDistinctASNs`
+3. Distinct metro regions: `COUNT(DISTINCT region) >= profile.MinMetroRegions`
+4. Quorum: depends on `profile.RequireQuorum` — ⚠️ AWAITING `architecture.md` for
+   gossip cluster details; stub as `true` when `profile.RequireQuorum == false`
+5. Razorpay cooled accounts: **LIVE QUERY** every 60-second cycle — must NOT cache
+   (IC §3.4: "MUST NOT cache this value")
+6. Relay nodes: `COUNT(relay heartbeat entries) >= profile.MinRelayNodes`
+7. Cluster audit secret: `clusterSecretCache.IsLoaded()`
 
-**Definition of done:** Full challenge-response cycle works between a test microservice and a test provider. Content hash corruption returns FAIL with correct error code.
-
----
-
-### Phase 9.3 — Two-Phase Receipt Write
-
-**Doc Ref:** `arch §14` (crash-safe receipt writing — 4 steps), `data §4.7` (audit_receipts schema), `data §3 Invariant 1` (INSERT-only), `data §6` (row security policies)
-
-#### Session 9.3.1 — Implement `internal/audit/receipt.go`
-
-**Task:** Implement the two-phase write protocol from `arch §14`:
-
-Phase 1 (`WriteReceiptPhase1`): INSERT a PENDING row (`audit_result = NULL`) with the full `provider_sig`. This INSERT is durable before any further processing.
-
-Phase 2 (`WriteReceiptPhase2`): Verify the Ed25519 signature. UPDATE the row: set `audit_result`, `service_sig`, `service_countersign_ts`. Return the countersignature to the provider.
-
-The only permitted UPDATE on `audit_receipts` is the PENDING→final transition per `data §3 Invariant 1`. The row security policy `audit_receipts_phase2_update` enforces this at the database level.
-
-**JIT flag evaluation:** After setting `audit_result`, evaluate the JIT flag:
-```
-jit_flag = (response_latency_ms < (chunk_size_kb / p95_throughput_kbps) × 0.3)
-```
-per `arch §14` and `arch §20` (JIT defence).
-
-**Idempotent retry:** If the provider retries the same `challenge_nonce`, detect the duplicate unique constraint violation and return the existing countersignature.
-
-**Definition of done:** Two-phase write test: simulate a crash between Phase 1 and Phase 2 → verify the orphaned PENDING row exists and is GC'd within `profile.PendingReceiptGCAge`. Idempotent retry test.
-
-#### Session 9.3.2 — Implement pending receipt GC in `internal/audit/` (background)
-
-**Task:** Background GC process: every `profile.PendingReceiptGCAge / 2`, scan for PENDING rows older than `profile.PendingReceiptGCAge` and mark them `abandoned_at = NOW()` per `data §4.7`. The row security policy `audit_receipts_gc_abandon` governs this UPDATE.
-
-ABANDONED rows are excluded from all scoring window queries (`WHERE abandoned_at IS NULL`).
-
-**Definition of done:** GC test: insert a PENDING row, wait `profile.PendingReceiptGCAge` (use demo value of 5 minutes), verify `abandoned_at` is set.
+Response body must match IC §3.4 exactly. The `"threshold"` field is populated from
+`NetworkProfile.Min*` fields, not hardcoded constants (IC §3.4: "must not assume the
+value is always 56").
 
 ---
 
-## Milestone 10 — Provider Lifecycle: Vetting & ACTIVE Transition
+### Phase 11.3 — Endpoint Routing Stubs
 
-**Goal:** Synthetic vetting chunks are assigned to VETTING providers, providers accumulate consecutive audit passes, and transition to ACTIVE after `VettingMinPasses` AND `VettingMinDuration`. The GC instruction delivers the synthetic chunk IDs to the daemon. In demo mode, this lifecycle completes in ~10 minutes.
+**Reference:** IC §2 (component communication map — lists all permitted endpoints),
+IC §3 (REST contract cross-references)
 
-**Doc Ref:** `arch §12` (vetting period spec), `arch §20` (synthetic vetting chunks — ADR-030), `data §4.5` (chunk_assignments — `is_vetting_chunk=TRUE`, `segment_id=NULL`, `shard_index=NULL`), `data §3 Invariant 6`, `mvp.md §3.6` (demo timeline — T+00:30 to T+10:30)
+#### Session 11.3.1 — Establish HTTP routing tree with stubs
 
----
+**Task:** Create `internal/api/router.go` defining the full routing tree. For each
+endpoint referenced in IC §2 and IC §3 cross-reference table, create a stub handler
+returning `501 Not Implemented` with error_code `INTERNAL_ERROR`. The purpose is to
+establish the URL structure so that `openapi.yaml` can be validated against it once
+available.
 
-### Phase 10.1 — Synthetic Chunk Assignment
+Endpoints to stub (from IC §2 and IC §3):
+- `POST /api/v1/provider/heartbeat` (IC §3.1)
+- `POST /api/v1/provider/register` (IC §2)
+- `POST /api/v1/provider/depart` (IC §2)
+- `POST /api/v1/upload/assign` (IC §3.4 — must return 503 until readiness gate passes)
+- `POST /api/v1/file/register` (IC §6 files table)
+- `GET /api/v1/file/{file_id}` (IC §2)
+- `DELETE /api/v1/file/{file_id}` (IC §6 files table)
+- `GET /api/v1/admin/readiness` (IC §3.4 — implemented in Phase 11.2)
+- `POST /webhooks/razorpay` (IC §7)
+- `GET /.well-known/jwks.json` (IC §4.1 capability token verification)
+- `POST /api/v1/provider/downtime` (IC §6 providers table)
 
-**Doc Ref:** `arch §12` (vetting period — synthetic chunks, 10% cap), `data §4.5` (CHECK constraint: `segment_id IS NULL AND shard_index IS NULL` when `is_vetting_chunk=TRUE`), `data §6` (row security policy — assignment service must check provider status before INSERT)
-
-#### Session 10.1.1 — Implement synthetic chunk generation and assignment
-
-**Task:** When a provider in VETTING status is eligible for chunk assignment:
-1. Generate a random 256 KB block (the synthetic vetting chunk)
-2. Compute `content_hash = SHA-256(block)`
-3. Send the block to the provider via libp2p — provider stores it identically to a real shard
-4. INSERT a `chunk_assignments` row with `is_vetting_chunk=TRUE`, `segment_id=NULL`, `shard_index=NULL`
-5. Cap: total synthetic chunks ≤ `floor(declared_storage_gb × 400)` (10% of declared storage per `arch §12`)
-
-**Doc Ref:** `data §6` (the assignment service MUST check `providers.status = 'VETTING'` before INSERT and must set `is_vetting_chunk = TRUE` — described in the row security note)
-
-**Definition of done:** Synthetic chunk inserted with correct NULL fields. Cap enforced: a provider with `declared_storage_gb = 10` gets at most 4,000 synthetic chunks. `data §3 Invariant 6` test: attempt to INSERT `is_vetting_chunk=FALSE` for a VETTING provider → must fail at application layer.
-
----
-
-### Phase 10.2 — ACTIVE Transition
-
-**Doc Ref:** `arch §12` ("After 80 consecutive audit passes AND 120 days since first chunk assignment → ACTIVE"), `mvp.md §5.4` (toggle map — `VettingMinPasses` and `VettingMinDuration`), `data §4.2` (`consecutive_audit_passes`, `first_chunk_assignment_at`)
-
-#### Session 10.2.1 — Implement consecutive pass counter and ACTIVE transition check
-
-**Task:** In `internal/scoring/passes.go`:
-- `IncrementConsecutivePasses(providerID)` — increments `consecutive_audit_passes`; checks `profile.VettingMinPasses` AND `(NOW() - first_chunk_assignment_at) >= profile.VettingMinDuration` → if both true: advance to ACTIVE
-- `ResetConsecutivePasses(providerID)` — resets to 0 on any non-PASS result
-
-TIMEOUT with `address_was_stale=TRUE` does NOT reset consecutive passes per `data §4.2` comment.
-
-**Definition of done:** Demo: 5 consecutive passes AND 5 minutes elapsed → status becomes ACTIVE. TIMEOUT from stale address does not reset counter. Non-stale TIMEOUT resets counter.
-
-#### Session 10.2.2 — Implement vetting GC instruction delivery
-
-**Task:** On ACTIVE transition:
-1. Query all `chunk_assignments WHERE provider_id = $1 AND is_vetting_chunk = TRUE AND status = 'ACTIVE'`
-2. Send the list of `chunk_id`s to the provider via the `/vyomanaut/vetting-gc/1.0.0` libp2p protocol
-3. Provider deletes these from its vLog
-4. Microservice marks the rows `status = 'PENDING_DELETION'` then `'DELETED'`
-
-**[BLOCKED: `/vyomanaut/vetting-gc/1.0.0` wire format pending `interface-contracts.md`]**
-
-Use the retry backoff from `profile.GCRetryBackoff` on delivery failure.
-
-**Doc Ref:** `arch §12` ("On the ACTIVE transition the microservice sends a GC instruction... listing all synthetic chunk IDs"), `mvp.md §3.4` (GC retry backoff: demo `[10s, 30s, 2min]`)
-
-**Definition of done:** GC instruction delivered. Provider deletes synthetic chunks. Rows soft-deleted in DB.
+**⚠️ All stub handlers must include:** `// TODO: implement per openapi.yaml §<section>`.
 
 ---
 
-## Milestone 11 — Repair System
+## Milestone 12 — Coordination Microservice (`cmd/microservice`)
 
-**Goal:** When a provider is detected as silently departed (absent ≥ `profile.DepartureThreshold`), the repair scheduler enqueues jobs for all affected real shards (not synthetic chunks), downloads surviving shards, reconstructs missing shards, and uploads them to replacement providers. Escrow is seized.
+**Deliverable:** Fully wired microservice that starts up, passes guard rails, loads the
+cluster secret, passes the readiness gate (in demo mode), and handles the provider
+heartbeat. Full REST API implementation awaits `openapi.yaml`.
 
-**Doc Ref:** `arch §15` (repair system), `arch §12` (provider exit states), `data §4.9` (repair_jobs table), `data §3 Invariant 6` (no repair jobs for vetting chunks), `mvp.md §3.6` (demo timeline — T+20:00 to T+32:00)
-
----
-
-### Phase 11.1 — Departure Detection
-
-**Doc Ref:** `arch §12` (silent departure: "absent ≥ 72 hours"), `arch §6` (72-hour threshold calibration — Bolosky's bimodal distribution), `data §4.2` (`departed_at`, `frozen`), `mvp.md §3.4` (demo departure threshold: 10 minutes)
-
-#### Session 11.1.1 — Implement departure detector in `internal/repair/departure.go`
-
-**Task:** Background loop: every `profile.HeartbeatInterval / 2`, scan `providers WHERE status = 'ACTIVE' AND last_heartbeat_ts < NOW() - profile.DepartureThreshold`. For each match:
-1. Set `status = 'DEPARTED'`, `departed_at = NOW()`, `frozen = TRUE` in a single transaction
-2. Seize escrow (SEIZURE event in `escrow_events`)
-3. For all `chunk_assignments WHERE provider_id = $1 AND is_vetting_chunk = FALSE AND status = 'ACTIVE'` → enqueue repair jobs (**NOT** for `is_vetting_chunk = TRUE` rows — `data §3 Invariant 6`)
-4. Set those `chunk_assignments.status = 'REPAIRING'`
-
-**Doc Ref:** `arch §15` ("Vetting chunk exclusion: before enqueueing any repair job, check `is_vetting_chunk`"), `arch §12` (vetting departure path — zero repair jobs enqueued)
-
-**Definition of done:** Demo: kill a provider daemon. After 10 minutes, the detector marks it DEPARTED. Escrow seized. Repair jobs enqueued only for non-vetting chunks.
+**Reference:** MVP §2.3 (startup guard rails), IC §8 (secrets manager contract),
+IC §3.4 (readiness gate), IC §9 (import graph: microservice entrypoint wires audit,
+scoring, repair, payment), IC §2 (component communication map)
 
 ---
 
-### Phase 11.2 — Repair Executor
+### Phase 12.1 — Microservice Startup
 
-**Doc Ref:** `arch §15` (what repair does), `data §4.9` (repair_jobs priority ordering), `arch §4.1` (repair priority: EMERGENCY > PERMANENT_DEPARTURE > PRE_WARNING)
+**Reference:** MVP §5.3 (profile selection), IC §8 (startup fail-closed on secret),
+MVP §2.3 (guard rails)
 
-#### Session 11.2.1 — Implement repair scheduler and executor in `internal/repair/`
+#### Session 12.1.1 — Wire microservice `main()`
 
-**Task:** Implement:
-- `EnqueueJob(chunkID, segmentID, triggerType, availableShardCount)` — pre-condition: `is_vetting_chunk` must be FALSE; function must check this (`data §3 Invariant 6`)
-- `DequeueNextJob()` — `ORDER BY priority ASC, created_at ASC` (EMERGENCY first, then PERMANENT_DEPARTURE, then PRE_WARNING)
-- `ExecuteRepairJob(job)`:
-  1. Query 16 (or `DataShards`) surviving shard holders from `chunk_assignments`
-  2. Download their shards over libp2p
-  3. RS decode to reconstruct missing shards
-  4. Select replacement providers (Power of Two Choices + ASN cap, same as assignment)
-  5. Upload missing shards to replacements
-  6. Update `chunk_assignments`: new rows for replacement providers, mark departed provider's row DELETED
+**Task:** Replace the stub in `cmd/microservice/main.go` with full startup wiring:
+1. Call `config.SelectProfile()` — print startup banner
+2. Call `config.ValidateStartupGuards(profile)` — halt on violation
+3. Initialise `ClusterSecretCache` — fail-closed if `RequireSecretsManager == true`
+   and secrets manager is unreachable (IC §8)
+4. Initialise database connection pool (PostgreSQL)
+5. Drop and recreate `mv_provider_scores` view using `profile.ScoreWindow*` values
+   (DM §7, MVP §5.5 — this is an application-layer step at startup, not a migration)
+6. Start the readiness gate evaluator goroutine (60-second cycle per IC §3.4)
+7. Start the HTTP server with the routing tree from Phase 11.3
+8. Start the audit challenge scheduler goroutine (interval: `profile.PollingInterval`)
+9. Start the departure detector goroutine
+10. Start the release computation goroutine (ticker or calendar per profile)
 
-**Definition of done:** Demo repair completes in < 2 minutes (from T+30 departure → T+32 repair complete). Fragment count restored to 5. File still retrievable after repair.
+**⚠️ AWAITING architecture.md** for: gossip cluster initialisation, replica synchronisation.
+Stub with `if profile.RequireQuorum { log.Fatal("quorum: awaiting architecture.md") }`.
 
----
+#### Session 12.1.2 — Audit challenge dispatch loop
 
-## Milestone 12 — Scoring & Payment (Mock Mode)
+**Task:** In `cmd/microservice/`, implement the audit challenge dispatch logic.
+For each active chunk in `active_chunk_assignments`:
+1. Generate nonce via `audit.ChallengeNonce()`
+2. Determine provider multiaddrs (heartbeat record primary, DHT fallback if `multiaddr_stale = true`)
+3. Open libp2p stream to provider via `/vyomanaut/audit-challenge/1.0.0`
+4. Send `ChallengeRequest` frame per IC §4.2 field table (73-byte payload)
+5. Apply per-provider RTO timeout (IC §4.2)
+6. Call `audit.WriteReceiptPhase1()` before dispatching
+7. On response: call `audit.ValidateResponse()`, then `audit.WriteReceiptPhase2()`
+8. Call `scoring.IncrementConsecutivePasses()` or `scoring.ResetConsecutivePasses()`
+   depending on result, with the `address_was_stale` check
+9. Update EWMA metrics via `scoring.UpdateRTO()`
 
-**Goal:** The three-window reliability score drives the monthly (or 2-minute in demo) release multiplier. Escrow events are recorded correctly. The mock PaymentProvider logs all operations. No floating-point arithmetic anywhere.
-
-**Doc Ref:** `arch §17` (payment system), `arch §19` (reliability scoring), `data §4.8` (escrow_events), `data §4.6` (audit_periods), `data §7` (materialised views — mv_provider_scores, mv_provider_escrow_balance), `arch §4.1` (Razorpay rationale — mock in demo)
-
----
-
-### Phase 12.1 — Reliability Scoring
-
-**Doc Ref:** `arch §19`, `data §7` (mv_provider_scores), `mvp.md §5.4` (scoring window toggle), `arch §17` (release multiplier table)
-
-#### Session 12.1.1 — Implement `internal/scoring/score.go`
-
-**Task:** Implement score queries against `mv_provider_scores`:
-- `GetScore(providerID) (score24h, score7d, score30d, scoreComposite float64)` — uses the materialised view
-- `GetScoreFromPrimary(providerID) (...)` — for monthly release computation, must read from the primary replica, not a read replica (per `arch §19` comment that "monthly release multiplier must use primary")
-
-Implement the dual-window deterioration check:
-```
-if score7d < score30d - 0.20 → use score7d as the release multiplier input
-```
-per `arch §17` ("If the 7-day score drops more than 0.20 below the 30-day score").
-
-**Definition of done:** Score computation matches expected values from a known audit receipt sequence. Dual-window flag triggers correctly when 7d score drops 0.20 below 30d score.
+**Concurrency (IC §4.2):** The microservice may open multiple concurrent challenge streams
+to a single provider. Use a goroutine per chunk assignment, bounded by a semaphore.
 
 ---
 
-### Phase 12.2 — Payment Mock & Escrow Ledger
+## Milestone 13 — Provider Daemon Core (`cmd/provider`)
 
-**Doc Ref:** `arch §17` (payment system), `data §4.8` (escrow_events — append-only, integer paise), `data §3 Invariant 2 and 4`, `mvp.md §6.1 CR-04` (mock must enforce integer paise)
+**Deliverable:** Provider daemon with stream handlers for all four libp2p protocols,
+startup identity, and heartbeat integration.
 
-#### Session 12.2.1 — Implement `internal/payment/provider.go` and `internal/payment/mock.go`
-
-**Task:** Define the `PaymentProvider` interface. **[BLOCKED: exact interface signature pending `interface-contracts.md`]**. Implement the mock payment provider that:
-1. Logs all operations to stdout with timestamps
-2. Enforces the `PaiseAmount int64` type — rejects any fractional value
-3. Implements `CreateLinkedAccount`, `ReleaseEarnings`, `SeizeEscrow`, `ReverseTransfer`
-
-**Definition of done:** All mock calls succeed. `TestNoFloatArithmetic` (CI check #9) activates: scanning `internal/payment/` for `float64|float32|FLOAT|DECIMAL|NUMERIC` must return zero results in payment context.
-
-#### Session 12.2.2 — Implement `internal/payment/ledger.go`
-
-**Task:** Implement escrow event insertion:
-- `InsertEscrowEvent(providerID, eventType, amountPaise int64, auditPeriodID *uuid.UUID, idempotencyKey string)` — INSERT only, never UPDATE. The idempotency key for RELEASE events: `SHA-256(provider_id || audit_period)` as 64 hex chars.
-- REVERSAL event: idempotency key = `SHA-256("reversal" || original_idempotency_key)` per `data §7` comment
-
-`escrow_events.amount_paise` is `BIGINT` — the application type is `int64`. Any path that uses float arithmetic in payment context is a build-breaking CI failure.
-
-**Definition of done:** INSERT test. Duplicate idempotency key test returns the existing event (idempotent). Balance query test: `SUM(DEPOSIT + REVERSAL) - SUM(RELEASE + SEIZURE)` returns correct paise value.
-
-#### Session 12.2.3 — Implement release computation in `internal/payment/release.go`
-
-**Task:** Implement the monthly (or `profile.ReleaseComputationInterval`) release computation:
-1. For each active provider, get `score30d` and `score7d`
-2. Apply the release multiplier table from `arch §17`
-3. Apply dual-window deterioration signal
-4. Compute `releasable_paise = floor(held_balance × multiplier)` — integer division, never float
-5. Call `PaymentProvider.ReleaseEarnings(providerID, releasable_paise, auditPeriodID, idempotencyKey)`
-6. Set `audit_periods.release_computed = TRUE`
-
-In demo mode: triggered by `profile.ReleaseComputationInterval` ticker (2 minutes). In production: triggered on the 23rd of the month using `LastWorkingDayOfMonth` from `rbi_holidays.go`.
-
-**Definition of done:** Demo release fires every 2 minutes after vetting completes. Multiplier table applied correctly for each score tier.
+**Reference:** IC §4.1 (chunk upload stream), IC §4.2 (audit challenge stream),
+IC §4.4.1 (repair download stream), IC §4.5 (vetting GC stream), IC §3.1 (heartbeat),
+IC §4 (common rules: transport auth, 0-RTT, framing)
 
 ---
 
-## Milestone 13 — Data Owner Client: Retrieval
+### Phase 13.1 — Provider Startup
 
-**Goal:** A data owner can retrieve any file by downloading any `DataShards` of its `TotalShards` shards, RS-decoding, AONT-decoding (K recovered automatically), canary-verified, padding stripped.
+**Reference:** MVP §5.3, IC §3.1
 
-**Doc Ref:** `arch §10 Stage 4` (decoding — full algorithm), `arch §11` (pointer file key derivation and decryption), `data §4.3` (files table — pointer fields), `arch §9.5` (K recovery from AONT package)
+#### Session 13.1.1 — Wire provider `main()`
 
----
-
-### Phase 13.1 — Pointer File Retrieval
-
-#### Session 13.1.1 — Implement `internal/client/retrieve/pointer.go`
-
-**Task:**
-1. Fetch `pointer_ciphertext`, `pointer_nonce`, `pointer_tag` from microservice
-2. Derive pointer key: `DerivePointerKey(masterSecret, fileID)`
-3. Verify Poly1305 tag with `crypto/subtle.ConstantTimeCompare` before any decryption
-4. Decrypt pointer ciphertext
-5. Parse pointer file struct: extract provider IDs, chunk content addresses, erasure parameters
-
-**Definition of done:** Decryption round-trip. Tampered-tag rejection before decryption. Tampered-ciphertext rejection.
+**Task:** Replace the stub in `cmd/provider/main.go` with:
+1. Parse flags per MVP §8.3 table (`--microservice-url`, `--data-dir`, `--declared-storage-gb`,
+   `--relay-addrs`, `--sim-count`, `--sim-base-port`, `--sim-data-dir`, `--sim-asn-count`)
+2. Call `config.SelectProfile()` and `config.ValidateStartupGuards(profile)`
+3. Load or generate Ed25519 identity (`internal/p2p/identity.go`)
+4. Initialise `ChunkStore` — call `RecoverFromCrash()` before starting writer goroutine
+5. Start the writer goroutine (the only goroutine that may call `AppendChunk`)
+6. Initialise libp2p `Host` with QUIC+TCP transports
+7. Register stream handlers (Phases 13.2–13.5)
+8. Start heartbeat goroutine + DHT republication (IC §3.1, IC §12.2)
+9. Register the DHT custom validator using the constant from `dht_namespace.go` (IC §12)
 
 ---
 
-### Phase 13.2 — Parallel Shard Download & Decode
+### Phase 13.2 — Chunk Upload Stream Handler
 
-#### Session 13.2.1 — Implement `internal/client/retrieve/download.go` and `decode.go`
+**Reference:** IC §4.1 (complete wire format, all status codes, capability token verification)
 
-**Task:**
-1. Dial all `TotalShards` providers in parallel (cancel after any `DataShards` respond successfully)
-2. Verify content address of each shard: `SHA-256(shard_data) == stored_chunk_id`
-3. RS decode to reconstruct the AONT package
-4. Recover K: `K = c_{s+1} XOR SHA-256(all codewords)` per `arch §10 Stage 4`
-5. Decrypt each word to recover the segment
-6. Verify canary — if fail: `ErrCanaryMismatch`, escalate to audit subsystem
-7. Strip padding to `original_size_bytes`
-8. Zero the decrypted buffer on canary failure (security)
+#### Session 13.2.1 — Implement `/vyomanaut/chunk-upload/1.0.0` handler
 
-**Definition of done:** Full retrieval round-trip for a multi-segment file. Retrieval with only `DataShards` providers online. Content address mismatch test. Canary failure test.
+**Task:** Register the stream handler for `/vyomanaut/chunk-upload/1.0.0` on the
+provider daemon. The handler must implement the full Frame 1 verification per IC §4.1:
+1. Read the 4-byte length prefix; reject with `0x01` if `length > 262252`
+2. Parse `chunk_id` (32B), `shard_index` (4B), `capability_token` (72B), `chunk_data` (262144B)
+3. Capability token verification steps 1–5 exactly per IC §4.1:
+   - `len(capability_token) == 72` → reject `0x03`
+   - Parse `expiry_unix_ms` from bytes 0–7
+   - Check `expiry_unix_ms > NOW_unix_ms - 30_000` → reject `0x07` (CAPABILITY_EXPIRED)
+   - Verify Ed25519 signature (bytes 8–71) → reject `0x03` if invalid
+   - `chunk_id` mismatch via signing input → same `0x03` path
+4. Verify `SHA-256(chunk_data) == chunk_id` → respond `0x02` before any disk write
+5. Write to vLog via the writer goroutine channel (not directly — single-writer rule)
+6. On success (`0x00`): compute `provider_sig` over
+   `SHA-256(chunk_id || shard_index || provider_id_bytes || timestamp_unix_ms)` (IC §4.1)
+7. Return Frame 2 with `status` byte and (on success) `provider_sig`
 
----
+Handle `0x06 ALREADY_STORED` for idempotent re-uploads (IC §4.1).
 
-## Milestone 14 — Demo Integration & End-to-End Validation
-
-**Goal:** The full lifecycle from `mvp.md §3.6` completes end-to-end on a single machine with `--sim-count=5 --sim-asn-count=5` in approximately 30–35 minutes. All 5 demo time windows are observable live.
-
-**Doc Ref:** `mvp.md §3.6` (demo timeline — T+00:00 to T+32:00), `mvp.md §7` (viability fact-check — all 13 items must pass)
-
----
-
-### Phase 14.1 — Demo Integration Test
-
-#### Session 14.1.1 — Create end-to-end integration test script
-
-**Task:** Create `scripts/demo_e2e_test.sh` that:
-1. Starts 5 provider daemons with `--sim-count=5 --sim-asn-count=5`
-2. Starts the microservice with `VYOMANAUT_MODE=demo`
-3. Registers a data owner and uploads a 1 MB test file
-4. Waits for vetting to complete (polls status every 10 seconds)
-5. Verifies the file is retrievable
-6. Kills one provider daemon (simulates departure)
-7. Waits for departure detection (10 minutes in demo)
-8. Verifies repair completes and file remains retrievable
-9. Verifies a mock payout was logged
-
-**Definition of done:** Script completes without errors in ≤ 35 minutes. All lifecycle transitions verified.
-
-#### Session 14.1.2 — Verify all 13 viability items from `mvp.md §7`
-
-**Task:** For each item in `mvp.md §7.1` through `7.13`, add an assertion to the integration test or a standalone test that confirms the mathematical consistency holds:
-- 7.1: ASN cap enforcement with 5 distinct ASNs
-- 7.2: RS(3,5) reconstruction math
-- 7.3: Vetting timing (10 min, never violates VettingMinDuration)
-- 7.7: Idempotency key uniqueness at DB level
-- 7.8: Repair completes in < 2 minutes on LAN
-
-**Definition of done:** All 13 viability checks pass. Any failing check is documented as a candidate fix.
+Pre-condition check: `providers.status` must be `ACTIVE` or `VETTING` — if `DEPARTED`,
+reset the stream immediately (IC §4.1).
 
 ---
 
-## Milestone 15 — Secrets Manager & Cluster Audit Secret (Production)
+### Phase 13.3 — Audit Challenge Stream Handler
 
-**Goal:** The cluster audit secret is loaded from a secrets manager (not env var) at microservice startup. Nonce rotation works across a 24-hour window.
+**Reference:** IC §4.2 (complete wire format, all status codes)
 
-**Doc Ref:** `arch §18` (cluster audit secret — HKDF derivation, versioned rotation), `arch §4.1` (secrets manager rationale), `mvp.md §6.2 IR-03` (demo and prod secrets must be separate)
+#### Session 13.3.1 — Implement `/vyomanaut/audit-challenge/1.0.0` handler
 
-> **Prerequisite:** M14 complete (demo validated). This milestone is production infrastructure only.
+**Task:** Register the stream handler. 0-RTT is PROHIBITED (IC §4.2) — the `Host`
+middleware from M6 Phase 6.1.1 handles this automatically via protocol ID ending in
+`-challenge`. The handler must:
+1. Read Frame 1: `chunk_id` (32B), `challenge_nonce` (33B), `server_challenge_ts_ms` (8B)
+   — reject with `0x03` if nonce is not 33 bytes (IC §4.2)
+2. Check nonce version byte against valid `server_secret_vN` versions
+3. Bloom filter check → `LookupChunk()`
+4. If not found: respond `0x01` with `provider_sig` (IC §4.2 Frame 2 note: `0x01/0x02`
+   responses are 1+64 bytes, not 1 byte)
+5. Verify `SHA-256(chunk_data) == content_hash` → respond `0x02` on mismatch (IC §4.2)
+6. Compute `response_hash = SHA-256(chunk_data || challenge_nonce)`
+7. Compute `provider_sig` over `SHA-256(response_hash || challenge_nonce ||
+   server_challenge_ts_ms || provider_id)` (IC §4.2)
+8. Respond Frame 2 with `0x00`, `response_hash`, `provider_sig`
 
----
-
-### Phase 15.1 — SecretsManagerClient Interface
-
-#### Session 15.1.1 — Implement `internal/audit/secrets_iface.go`
-
-**Task:** Define the `SecretsManagerClient` interface. **[BLOCKED: exact interface signature pending `interface-contracts.md §8`]**. Implement three concrete providers:
-- `HashiCorpVaultClient`
-- `AWSSSMClient`
-- `GCPSecretManagerClient`
-
-All three support per-path versioning (`/vyomanaut/audit-secret/v{N}`) and IAM-gated access. Selected at deployment time.
-
-**Definition of done:** Interface defined. Each implementation loads a secret from a test secrets manager.
-
-#### Session 15.1.2 — Implement cluster secret rotation
-
-**Task:** Implement HKDF derivation of the audit secret:
-```
-server_secret_v{N} = HKDF-SHA256(
-    ikm  = cluster_master_seed,
-    salt = cluster_id,
-    info = "vyomanaut-audit-secret-v" + N,
-    len  = 32
-)
-```
-On rotation: old version accepted for 24 hours (one full audit cycle) before retirement. The `ClusterSecretCache` has a 5-minute TTL — fail-closed if the secrets manager is unreachable at startup.
-
-**Definition of done:** Rotation test: a challenge nonce generated with `v1` secret is validated correctly by a replica that has loaded `v2` but still accepts `v1` for 24 hours.
+Concurrency: handle at least 32 concurrent challenge streams (IC §4.2). Each stream
+runs in a goroutine; `LookupChunk` is goroutine-safe.
 
 ---
 
-## Milestone 16 — Razorpay Payment Integration (Production)
+### Phase 13.4 — Repair Download Stream Handler
 
-**Goal:** The `RazorpayProvider` implementation of `PaymentProvider` handles deposits (Smart Collect 2.0 webhook), release transfers (Route with `on_hold`), seizures, payouts (RazorpayX), and idempotency.
+**Reference:** IC §4.4.1 (repair download stream, 0-RTT prohibited)
 
-**Doc Ref:** `arch §17` (payment system — Razorpay products), `arch §4.1` (Razorpay rationale + mandatory compliance notes), `data §4.8` (escrow_events — idempotency_key), `mvp.md §6.2 IR-02` (demo and prod Razorpay credentials must be separate)
+#### Session 13.4.1 — Implement `/vyomanaut/repair-download/1.0.0` handler
 
----
-
-### Phase 16.1 — Razorpay Provider Implementation
-
-**Doc Ref:** `arch §17` mandatory compliance notes: (1) UPI Collect deprecated 28 Feb 2026 — use UPI Intent/QR, (2) `X-Payout-Idempotency` header mandatory since 15 Mar 2025, (3) RBI bank holiday table updated each December
-
-#### Session 16.1.1 — Implement `internal/payment/razorpay.go`
-
-**Task:** Implement `RazorpayProvider` with:
-- Smart Collect 2.0 webhook handler for UPI deposits (UPI Intent/QR — NOT UPI Collect)
-- Route transfer creation with `on_hold: true`
-- `Modify Settlement Hold API` to update `on_hold_until`
-- `on_hold_until` set to last working day of current month via `LastWorkingDayOfMonth` from `rbi_holidays.go`
-- `RazorpayX Payouts` with mandatory `X-Payout-Idempotency` header
-- `payout.reversed` webhook handler: sets REVERSAL event in `escrow_events`
-
-**CI check #11** (`mvp.md §8.4`): UPI Collect API endpoint string must never appear in the codebase.
-
-**Definition of done:** Webhook handler test with Razorpay test credentials. Idempotency key test. `on_hold_until` computation test against RBI holiday table.
+**Task:** Register the stream handler. 0-RTT PROHIBITED (IC §4.4.1). The handler must:
+1. Verify the requesting Peer ID is a registered microservice replica (locally-cached
+   microservice peer list refreshed via DHT and heartbeat acknowledgements — IC §4.4.1)
+2. Reject unregistered Peer IDs with `0x02 NOT_AUTHORISED` immediately
+3. Verify `repair_auth_sig`: Ed25519 over
+   `SHA-256(chunk_id || request_ts_ms || microservice_peer_id)` (IC §4.4.1)
+4. Call `LookupChunk()` — respond `0x01` if not found, `0x03` if corruption
+5. Respond Frame 2 with `0x00` and `chunk_data`
+6. Timeout: 10,000ms (IC §4.4.1)
 
 ---
 
-## Milestone 17 — Relay Nodes & Production NAT Traversal
+### Phase 13.5 — Vetting GC Stream Handler
 
-**Goal:** Three relay nodes (one per Indian AZ) are deployed and handle Circuit Relay v2 reservations for the approximately 30% of providers behind symmetric NAT.
+**Reference:** IC §4.5 (vetting GC protocol, complete wire format), IC §5.3 (`DeleteChunk`)
 
-**Doc Ref:** `arch §13` (Circuit Relay v2 — Tier 3 NAT), `arch §24` (deployment topology — relay nodes: 1 vCPU, 1 GB RAM, minimum 1 Gbps), `arch §27.5` (relay infrastructure scaling)
+#### Session 13.5.1 — Implement `/vyomanaut/vetting-gc/1.0.0` handler
 
----
+**Task:** Register the stream handler. 0-RTT PROHIBITED (IC §4.5). The handler must:
+1. Read Frame 1: `chunk_count` (4B), `chunk_ids` (`chunk_count × 32B`)
+2. For each chunk ID: call `DeleteChunk()` from `ChunkStore`
+3. Construct `failure_bitmap`: bit N set if `DeleteChunk(chunk_ids[N])` failed
+4. Respond Frame 2: `0x00` if all succeeded, `0x01` with bitmap on partial failure,
+   `0x02` on `INTERNAL_ERROR`
+5. Maximum 10,000 chunk IDs per frame (IC §4.5); multiple sequential frames on same stream
+6. Timeout: 30,000ms per frame (IC §4.5 — longer than audit challenge timeout)
 
-### Phase 17.1 — Relay Node Deployment
-
-#### Session 17.1.1 — Configure libp2p Circuit Relay v2 on relay nodes
-
-**Task:** Run the provider daemon binary with relay mode enabled. Each relay node configured for 128 concurrent relay reservations. Deploy 3 instances (Mumbai AZ1, Mumbai AZ2, Chennai/Hyderabad) per `arch §24`.
-
-Scale trigger per `arch §27.5`: add a 4th relay node before provider count reaches 400 (under the 45% Indian CGNAT pessimistic assumption).
-
-**Definition of done:** Relay node starts and accepts incoming reservation requests. 128 concurrent reservation test. Provider behind simulated symmetric NAT connects via relay.
-
----
-
-## Milestone 18 — Microservice HA Quorum (Production)
-
-**Goal:** Three microservice replicas with a (3,2,2) quorum — reads require 2 replicas, writes require 2 acknowledgements. One replica can fail without interrupting service.
-
-**Doc Ref:** `arch §18` (cluster configuration — (3,2,2) quorum, gossip membership), `arch §4.1` (quorum rationale — etcd/Consul explicitly rejected for 3-node cluster), `arch §25` (consistency model — 14 coordination-free, 6 coordinated operations)
+The protocol handler must remain in the daemon binary indefinitely (IC §13 versioning):
+"Removing the protocol handler from the daemon requires a coordinated network-wide migration."
 
 ---
 
-### Phase 18.1 — Gossip Membership
+## Milestone 14 — Vetting & Synthetic Chunks (`internal/vettingchunk`)
 
-**Doc Ref:** `arch §18` (gossip: "each replica contacts one randomly chosen peer per second", two seed node addresses)
+**Deliverable:** Synthetic chunk lifecycle: generation, upload to providers, GC delivery
+on ACTIVE transition, departure cleanup. Enforces Invariant 6 end-to-end.
 
-#### Session 18.1.1 — Implement gossip membership in microservice
-
-**Task:** Implement gossip-based cluster membership with two pre-configured seed node addresses. Each replica contacts one random peer per second to reconcile membership histories. Client-driven routing: for latency-sensitive paths, the service client caches membership and routes directly to the responsible replica, bypassing the load balancer.
-
-**Doc Ref:** `arch §18` ("client-driven routing reduces 99.9th-percentile latency by 30+ ms compared to load-balancer indirection")
-
-**Definition of done:** Three-replica cluster starts. One replica killed → reads and writes continue on remaining two. Killed replica rejoins and reconciles state via anti-entropy.
+**Reference:** IC §5.10 (`Generator` and `GCDelivery` interfaces, sentinel errors),
+IC §4.5 (vetting GC protocol — client side), DM §3 Invariant 6, DM §4.5 (`is_vetting_chunk`
+column semantics)
 
 ---
 
-## Milestone 19 — Production Hardening & Launch Gate
+### Phase 14.1 — Synthetic Chunk Generator
 
-**Goal:** All benchmark scripts pass on minimum-spec hardware. All 8 runbooks exist. All CI checks are active (no placeholder steps). The production readiness gate passes.
+**Reference:** IC §5.10 (`Generator` interface: `GenerateChunk`, `CurrentCount`, `Cap`)
 
-**Doc Ref:** `mvp.md §8.5` (runbooks — 8 required files), `mvp.md §8.5` (benchmark scripts — 4 required), `arch §27.7` (hard ceilings — relay saturation, repair window, Postgres audit INSERT), `arch §3` (quality attributes — performance targets)
+#### Session 14.1.1 — Implement `Generator`
 
----
+**Task:** In `internal/vettingchunk/generator.go`, implement `GenerateChunk()` per
+IC §5.10:
+1. Generate 256 KB via `crypto/rand` — NOT retained by the microservice after confirmation
+2. Compute `chunkID = SHA-256(data)`
+3. Upload via `/vyomanaut/chunk-upload/1.0.0` to the provider (using the same client
+   as the upload orchestrator in M15)
+4. On success: INSERT `chunk_assignments` row with `is_vetting_chunk = TRUE`,
+   `segment_id = NULL`, `shard_index = NULL` (IC §5.10, DM §4.5)
 
-### Phase 19.1 — Benchmark Validation
-
-**Doc Ref:** `mvp.md §8.5` (scripts/benchmarks — 4 required scripts), `arch §3` (performance contracts)
-
-#### Session 19.1.1 — Run all 4 benchmark scripts on minimum-spec hardware
-
-**Task:** Execute `aont_encode.sh`, `argon2id.sh`, `rocksdb_ssd.sh`, `rocksdb_hdd.sh` on a machine with dual-core, no AES-NI, 2 GB RAM, 7200 RPM HDD. Verify:
-- AONT encode: ≤ 186 ms for a 14 MB segment (ChaCha20, no AES-NI) — `arch §3`
-- Argon2id production params: ≤ 500 ms — `arch §4.1`
-- RocksDB SSD audit lookup: ≤ 1 ms p99 — `arch §16`
-- RocksDB HDD audit lookup: ≤ 15 ms p99 — `arch §16`
-
-**Definition of done:** All 4 benchmarks pass. Results recorded in `docs/research/` per the benchmarking protocol.
+**Cap enforcement (IC §5.10):** `Cap(declaredStorageGB int) int = floor(declaredStorageGB × 400)`.
+The caller is responsible for checking `CurrentCount < Cap` before calling `GenerateChunk`
+(IC §5.10 pre-condition).
 
 ---
 
-### Phase 19.2 — Runbooks
+### Phase 14.2 — GC Delivery
 
-**Doc Ref:** `mvp.md §8.5` (8 required runbooks before M19 closes)
+**Reference:** IC §5.10 (`GCDelivery` interface, `ErrProviderOffline`), IC §4.5
+(vetting GC protocol — the libp2p client side initiated by the microservice)
 
-#### Session 19.2.1 — Create all 8 operational runbooks
+#### Session 14.2.1 — Implement `DeliverGCInstruction()`
 
-**Task:** Create the 8 runbook files in `runbooks/`:
-1. `microservice-failover.md` — (3,2,2) quorum failover steps
-2. `postgres-failover.md` — managed Postgres primary failover
-3. `relay-node-replacement.md` — replace a failed relay node
-4. `secrets-manager-outage.md` — behaviour during secrets manager outage (fail-closed, existing replicas continue with cached secret)
-5. `razorpay-api-outage.md` — payout failure handling, `payout.reversed` webhook
-6. `provider-mass-departure.md` — alert thresholds, manual monitoring at N < 500
-7. `rbi-holiday-table-update.md` — December update procedure for `rbi_holidays.go`
-8. `audit-secret-rotation.md` — 24-hour overlap window procedure
+**Task:** In `internal/vettingchunk/gc.go`, implement `DeliverGCInstruction()` per
+IC §5.10. Triggered immediately after `providers.status` transitions to `ACTIVE`:
+1. Query all synthetic chunk IDs: `WHERE is_vetting_chunk = TRUE AND provider_id = $1
+   AND status = 'ACTIVE'`
+2. Batch into frames of ≤ 10,000 chunk IDs (IC §4.5)
+3. Open libp2p stream `/vyomanaut/vetting-gc/1.0.0` to the provider
+4. For each frame: send `VettingGCRequest`, await `VettingGCResponse` within 30,000ms
+5. On `0x00`: mark batch as `DELETED` in `chunk_assignments`
+6. On `0x01` (partial failure): retry failed entries on next connection
+7. On provider offline: set all rows to `PENDING_DELETION`, return `ErrProviderOffline`
+   for retry on next heartbeat (IC §4.5, IC §5.10)
 
-**Definition of done:** All 8 files exist with complete step-by-step procedures.
-
----
-
-### Phase 19.3 — Production Launch Checklist
-
-#### Session 19.3.1 — Activate all CI placeholder checks
-
-**Task:** Replace every placeholder CI step (from M0 Phase 0.2) with the actual check. By this session, all 15 CI checks from `mvp.md §8.4` must be active and passing. No `echo "TODO"` remains in `ci.yml`.
-
-**Definition of done:** All 15 CI checks pass on a clean PR. No placeholder steps.
-
-#### Session 19.3.2 — Run production readiness gate
-
-**Task:** With `VYOMANAUT_MODE=prod`, verify `GET /api/v1/admin/readiness` returns HTTP 200 with all 7 conditions from `arch §8` satisfied:
-1. ≥ 56 active vetted providers
-2. ≥ 5 distinct ASNs
-3. ≥ 3 distinct Indian metro regions
-4. Full (3,2,2) quorum
-5. ≥ 56 Razorpay accounts with 24h cooling complete
-6. ≥ 3 relay nodes deployed
-7. Cluster audit secret loaded on all replicas
-
-**Definition of done:** Production readiness gate passes. First real upload accepted.
+Retry backoff: `profile.GCRetryBackoff` (IC §4.5: prod is `[5m, 15m, 60m]`, demo is
+`[10s, 30s, 2m]` — profile-variable, NOT hardcoded).
 
 ---
 
-## Appendix A — Pending Interface-Contracts Integrations
+## Milestone 15 — Client SDK (`internal/client`)
 
-The following sessions are marked `[BLOCKED: pending interface-contracts.md]`. Each must be revisited when that document is loaded. Search for this tag before beginning any session.
+**Deliverable:** Upload orchestrator, retrieval orchestrator, account management, and
+file management. The client SDK does NOT import `cmd/` (IC §9).
 
-| Session | What is blocked | Section in interface-contracts.md expected |
-|---|---|---|
-| 2.6.1 | `MasterSecretToMnemonic` exact signature | §5.1 |
-| 5.1.1 | Libp2p host configuration — relay addr fields | §5.2 |
-| 5.3.1 | Heartbeat wire format | §4.x |
-| 7.1.1 | Provider registration request/response format | §4.x |
-| 7.1.2 | Heartbeat request/response format | §4.x |
-| 7.2.1 | Admin readiness response JSON format | §4.x |
-| 8.2.3 | Upload assignment request/response | §4.x |
-| 10.2.2 | `/vyomanaut/vetting-gc/1.0.0` wire format | §4.5 |
-| 12.2.1 | `PaymentProvider` interface signature | §5.x |
-| 15.1.1 | `SecretsManagerClient` interface signature | §8 |
+**Reference:** IC §5.9 (`UploadOrchestrator` interface, ERRATA note, all sentinel errors),
+IC §4.1 (upload stream — client initiator side), MVP §8.2 (file inventory per package),
+IC §11 (forbidden: no business logic in cmd/)
 
 ---
 
-## Appendix B — Pending Requirements Document Integrations
+### Phase 15.1 — Account Management
 
-The following sessions need NFR/FR cross-checks once `requirements.md` is available. Search for `[BLOCKED: requirements.md]` and `[NFR-XXX reference pending]` in the build sessions.
+**Reference:** IC §5.1 (crypto primitives used here), MVP §8.2 (`internal/client/account/`)
 
-| Session | Referenced NFR/FR | Likely location in requirements.md |
-|---|---|---|
-| 2.4.1 | NFR-019 (constant-time tag comparison) | §NFR-019 |
-| 2.3.1 | NFR-010 (Argon2id latency p50 ≤ 500 ms) | §NFR-010 |
-| 4.3.1 | NFR-013 (write amplification), NFR-008 (audit lookup p99) | §NFR-008, §NFR-013 |
-| 7.1.1 | FR-001 (OTP-verified registration) | §FR-001 |
-| 8.2.4 | FR-030 (assignment ceiling enforcement) | §FR-030 |
-| 10.2.1 | FR-026 (120-day vetting check) | §FR-026 |
-| 13.2.1 | FR-008 (padding strip to original_size_bytes) | §FR-008 |
+#### Session 15.1.1 — Implement registration and keystore
 
----
-
-## Appendix C — Known Candidate Fixes
-
-These are potential inconsistencies identified during document analysis. Each must be resolved during the affected milestone — not silently worked around.
-
-| # | Location | Observation | Resolution required during |
-|---|---|---|---|
-| CF-01 | `data §4.2` `p95_throughput_kbps` | Changed from `NOT NULL DEFAULT 0` to `NULL` — division-by-zero risk if application reads 0 before checking for NULL. Application must substitute pool median when value is NULL. | M9 (challenge generation uses this value) |
-| CF-02 | `data §4.2` `avg_rtt_ms` | Changed from `NOT NULL DEFAULT 2000` to `NULL` — hardcoded 2000ms default is no longer the initial state. Pool median must be used when NULL. | M9 |
-| CF-03 | `data §3 Invariant 6` | States "must never be assigned to a provider whose `status = 'VETTING'`" for real shards — but the assignment service only checks status at INSERT time. If a provider's status changes between assignment time and the check, a race is possible. | M10 (assignment service, test for race condition) |
-| CF-04 | `arch §14` / `data §4.7` | Architecture states "the microservice independently has the expected hash and verifies it" for `response_hash` — but architecture also states "the microservice never verifies the response_hash, it knows the chunk_id but not the 256 KB chunk data". These two statements contradict each other. The NOTE in `arch §14` is authoritative: the microservice does NOT verify `response_hash` — only the Ed25519 signature. Implement accordingly. | M9 |
-| CF-05 | `data §9` migration checklist | Checklist item: `chunk_assignments partial unique index created as a standalone CREATE UNIQUE INDEX, NOT as an inline table constraint`. The table definition in `data §4.5` shows the partial index inline in the CREATE TABLE — this is invalid SQL syntax per the checklist note. Implement as standalone `CREATE UNIQUE INDEX`. | M6 |
-| CF-06 | `data §4.9` `repair_jobs` | The removed `UNIQUE (chunk_id, provider_id, trigger_type)` constraint leaves threshold-based repairs (where `provider_id IS NULL`) without deduplication. The comment says "deduplication must be at the application layer". Implement in `EnqueueJob` as a pre-INSERT check for existing `QUEUED/IN_PROGRESS` job for the same `chunk_id`. | M11 |
+**Task:** In `internal/client/account/register.go` and `keystore.go`:
+- `Register()`: generate Ed25519 key pair, derive master secret via `DeriveMasterSecret`
+  with `profile.Argon2*` params (NOT hardcoded), display BIP-39 mnemonic, run
+  `SelectConfirmationWords()` gate if `!profile.SkipMnemonicConfirm`
+- Keystore: encrypt Ed25519 key + pointer file nonce counter under `DeriveKeystoreEncKey()`
+- Recovery paths: passphrase (re-derive master secret) and mnemonic (via
+  `MnemonicToMasterSecret`)
 
 ---
 
-*Repository: https://github.com/masamasaowl/Vyomanaut_Research*
-*Primary build sequence derived from: `mvp.md §9.4`*
-*All section references are to the three documents shared in context. References to `requirements.md`, `interface-contracts.md`, and `openapi.yaml` are marked `[BLOCKED]` and will be filled in when those documents are loaded.*
+### Phase 15.2 — Upload Orchestrator
+
+**Reference:** IC §5.9 (`UploadOrchestrator` ERRATA note — capability tokens),
+IC §4.1 (chunk upload stream client side), IC §5.9 (session state for FR-060 resume)
+
+#### Session 15.2.1 — Implement `UploadFile()` with capability token handling
+
+**Task:** In `internal/client/upload/orchestrator.go`, implement the upload lifecycle:
+1. Segment the file (padding to `DataShards × ShardSize` minimum)
+2. AONT encode each segment via `crypto.AONTEncodeSegment()`
+3. RS encode via `erasure.Engine.EncodeSegment()`
+4. Call `POST /api/v1/upload/assign` to get provider assignments AND capability tokens
+5. **ERRATA (IC §5.9):** Include each `capability_token` verbatim in the corresponding
+   `UploadRequest` frame. On `0x07 CAPABILITY_EXPIRED`: re-call the assignment endpoint
+   with the same `file_id` (idempotent — returns same providers with fresh tokens)
+6. Upload all shards in parallel (bounded goroutine pool)
+7. Register the encrypted pointer file with the microservice
+8. Persist session state for resume (FR-060): `file_id`, `chunk_ids`, `ack_status[TotalShards]`
+
+#### Session 15.2.2 — Implement `ResumeUpload()`
+
+**Task:** Load persisted session state, identify unacknowledged shards, re-upload only
+those (FR-060 — do not retransmit acknowledged shards, IC §5.9).
+
+---
+
+### Phase 15.3 — Retrieval Orchestrator
+
+**Reference:** IC §5.9 (`RetrieveFile`, `ErrPointerTagMismatch`, `ErrTooFewShards`,
+`ErrCanaryMismatch`), IC §5.1 (`DecryptPointerFile`, `AONTDecodePackage`)
+
+#### Session 15.3.1 — Implement `RetrieveFile()`
+
+**Task:** In `internal/client/retrieve/orchestrator.go`:
+1. Fetch pointer ciphertext from microservice
+2. Derive pointer key via `DerivePointerEncKey()`
+3. Call `DecryptPointerFile()` — on `ErrTagMismatch`, return `ErrPointerTagMismatch`
+   with no plaintext (IC §5.9)
+4. For each segment: dial providers in parallel, cancel after `DataShards` valid shards
+5. Verify each shard's content address before passing to RS decode
+6. RS decode via `erasure.Engine.DecodeSegment()`
+7. `AONTDecodePackage()` — on `ErrCanaryMismatch`: zero the buffer and return
+   `ErrCanaryMismatch` (IC §5.1, IC §5.9: "caller MUST NOT return any plaintext")
+8. Strip padding to `original_size_bytes`
+9. Concatenate segments in `segment_index` order
+
+---
+
+## Milestone 16 — Demo Mode Validation
+
+**Deliverable:** A fully runnable demo that completes the 30-minute lifecycle from MVP
+§3.6 timeline. `go test` suite validates all demo-specific behaviours and mode-invariant
+properties.
+
+**Reference:** MVP §3.6 (demo timeline), MVP §7 (viability fact-checks), MVP §6 (switching
+requirements), MVP §8.4 (CI checks 14–15)
+
+---
+
+### Phase 16.1 — End-to-End Demo Test
+
+**Reference:** MVP §3.6
+
+#### Session 16.1.1 — Implement `TestDemoTimeline` integration test
+
+**Task:** Create `scripts/test/demo_timeline_test.go`. Using `--sim-count=5
+--sim-asn-count=5` and `VYOMANAUT_MODE=demo`, run the demo timeline from MVP §3.6:
+- Assert readiness gate passes within 60s of startup
+- Assert file upload succeeds for a file ≤ 1.25 MB
+- Assert first audit PASS is recorded within 3 minutes
+- Assert VETTING→ACTIVE transition completes within 12 minutes
+- Assert synthetic chunk GC is delivered after ACTIVE transition
+- Kill one simulated daemon; assert departure detection within `profile.DepartureThreshold`
+  (10 min in demo)
+- Assert repair job created and completed
+
+This test is tagged `//go:build integration` and runs separately from unit tests.
+
+#### Session 16.1.2 — Validate all viability fact-checks from MVP §7
+
+**Task:** Add individual tests for each fact-check in MVP §7:
+- MVP §7.1 (ASN cap): assert `MinDistinctASNs=5` in DemoProfile (already in M1 tests)
+- MVP §7.2 (RS math): assert repair succeeds when 2 of 5 providers are offline
+- MVP §7.3 (vetting timing): assert ACTIVE transition happens at ~10 min in demo
+- MVP §7.7 (mock idempotency): assert duplicate webhook delivery produces exactly one
+  `escrow_events` row
+
+---
+
+### Phase 16.2 — Simulation Mode
+
+**Reference:** MVP §8.3 (`--sim-count` flag), IC §10 (simulation mode paths)
+
+#### Session 16.2.1 — Implement `--sim-count` multi-instance provider
+
+**Task:** In `cmd/provider/main.go`, when `--sim-count=N`, spawn N goroutines each
+running an independent provider daemon instance with:
+- Separate Ed25519 identity
+- Separate RocksDB instance at `/tmp/vyomanaut-sim/{zero-padded-index}/db/`
+- Separate vLog at `/tmp/vyomanaut-sim/{zero-padded-index}/vlog/chunks.vlog`
+- Auto-assigned synthetic ASN `SIM-AS{1..N}` from `--sim-asn-count`
+
+Paths must use the exact format from IC §10 naming conventions: `{instance_id}` is
+zero-padded to 4 digits (e.g. `0000`, `0001`).
+
+---
+
+## Milestone 17 — Production Hardening
+
+**⚠️ PARTIAL MILESTONE — AWAITING `architecture.md`**
+
+**Status:** Circuit relay integration and HA microservice clustering require deployment
+topology details from `architecture.md`. The Razorpay live integration and secrets manager
+adapters (Vault, AWS SSM, GCP) can proceed.
+
+**Reference:** IC §4.3 (circuit relay), IC §8 (secrets manager — interface defined;
+adapters not yet specified without architecture.md), MVP §6.2 (infrastructure requirements)
+
+---
+
+### Phase 17.1 — Secrets Manager Adapters
+
+**Reference:** IC §8, MVP §6.2 (IR-03)
+
+#### Session 17.1.1 — Implement secrets manager adapters
+
+**Task:** Implement `SecretsManagerClient` (IC §8 interface) for three backends:
+- HashiCorp Vault (`internal/secrets/vault.go`)
+- AWS SSM Parameter Store (`internal/secrets/aws_ssm.go`)
+- GCP Secret Manager (`internal/secrets/gcp_secret.go`)
+
+Each adapter reads the secret at path `/vyomanaut/audit-secret/v{N}` (IC §8 path
+convention). Each must handle the 24-hour rotation overlap window: read both `v{N}` and
+`v{N+1}` when both exist (IC §8 rotation contract). Selection among adapters is via
+`VYOMANAUT_SECRETS_BACKEND` environment variable.
+
+---
+
+### Phase 17.2 — HA Microservice & Relay Nodes
+
+**⚠️ AWAITING `architecture.md`**
+
+#### Session 17.2.1 — STUB: Gossip cluster initialisation
+
+**Task:** Stub `internal/cluster/gossip.go` with `// TODO: implement per architecture.md
+§{section} — requires gossip membership, quorum (3,2,2) configuration, and replica sync
+for cluster audit secret`. The stub must compile and return `ErrNotImplemented`. The
+readiness gate `quorum_healthy` condition must return `false` until this is implemented.
+
+#### Session 17.2.2 — STUB: Relay node deployment configuration
+
+**Task:** Stub `deployments/production/relay/` with a placeholder `README.md`:
+"Relay node configuration awaits architecture.md §{section} — relay nodes are
+Vyomanaut-operated, co-located in Indian cloud regions, each supporting 128 concurrent
+reservations (IC §4.3 capacity.md §5.2)." The 50ms RTT overhead constraint (IC §4.3
+NFR-006) is a validation gate in M18.
+
+---
+
+## Milestone 18 — Launch Readiness
+
+**⚠️ PARTIAL MILESTONE — AWAITING `requirements.md`**
+
+**Status:** Runbooks and benchmark scripts are structurally defined by document references.
+FR/NFR completion gates require `requirements.md`.
+
+**Reference:** MVP §8.5 (runbooks list), MVP §8.5 (benchmark scripts), IC §10 (runbook
+filenames — must match exactly)
+
+---
+
+### Phase 18.1 — Runbooks
+
+**Reference:** IC §10 (naming conventions — exact filenames), MVP §8.5 (list of 8
+required runbooks, all must exist before M8 private beta)
+
+#### Session 18.1.1 — Create the 8 required runbooks
+
+**Task:** Create all 8 runbook files in `runbooks/` using EXACT filenames per IC §10
+(Grafana alert links depend on these names):
+1. `microservice-failover.md`
+2. `postgres-failover.md`
+3. `relay-node-replacement.md`
+4. `secrets-manager-outage.md`
+5. `razorpay-api-outage.md`
+6. `provider-mass-departure.md`
+7. `rbi-holiday-table-update.md`
+8. `audit-secret-rotation.md`
+
+Each runbook must include:
+- Trigger conditions (Prometheus alert name)
+- Step-by-step recovery procedure
+- Rollback procedure
+- For `rbi-holiday-table-update.md`: the annual update procedure for `rbi_holidays.go`
+  (IC §11 — hardcoded RBI holiday data is forbidden outside that file)
+- For `audit-secret-rotation.md`: the full rotation procedure per IC §8 rotation contract
+  (24-hour overlap window, `v{N}` and `v{N+1}` both present during overlap)
+
+---
+
+### Phase 18.2 — Benchmark Scripts
+
+**Reference:** MVP §8.5 (four benchmark scripts, minimum-spec hardware requirements)
+
+#### Session 18.2.1 — Create benchmark scripts
+
+**Task:** Create `scripts/benchmarks/` with the four scripts from MVP §8.5:
+- `aont_encode.sh` (Q16-1): AONT encode benchmarks on minimum-spec hardware
+  (dual-core, no AES-NI, 2 GB RAM, 7200 RPM HDD)
+- `argon2id.sh` (Q18-1): Argon2id performance benchmarks (must show demo vs prod params)
+- `rocksdb_ssd.sh` (Q27-1 SSD): RocksDB throughput on SSD
+- `rocksdb_hdd.sh` (Q27-1 HDD): RocksDB throughput on HDD
+
+Each script must output pass/fail against a defined threshold. These are launch gate
+criteria per `requirements.md §7.4` (⚠️ exact thresholds await `requirements.md`; use
+placeholder thresholds from IC pre-condition comments as temporary values).
+
+---
+
+### Phase 18.3 — Security Verification Checklist
+
+**Reference:** MVP `§Security Verification Checklist` (referenced in IC §12 — the
+TestDHTKeyValidatorPersists test references this section)
+
+#### Session 18.3.1 — Document and run security checklist
+
+**Task:** Create `docs/system-design/security-verification-checklist.md` with all
+verifiable security properties derivable from the three documents in context:
+
+- [ ] `TestDHTKeyValidatorPersists` passes (IC §12, CI check 5)
+- [ ] `TestNoFloatArithmetic` passes (IC §11, CI check 6)
+- [ ] Grep: no `challenge_nonce BYTEA(32)` in any file (CI check 8)
+- [ ] All Ed25519 signing inputs use fixed-layout bytes, not JSON (IC §3.2)
+- [ ] `ErrTagMismatch` path returns no plaintext bytes (IC §5.1)
+- [ ] `ErrCanaryMismatch` path zeros the buffer before returning (IC §5.1)
+- [ ] AONT key K is fresh `crypto/rand` on every segment encode (IC §11)
+- [ ] 0-RTT disabled for audit-challenge and vetting-gc streams (IC §4)
+- [ ] `VYOMANAUT_CLUSTER_MASTER_SEED` absent in all production env configs (IC §8)
+- [ ] Razorpay error bodies never forwarded to API callers (IC §3.3)
+- [ ] No Razorpay live keys in source files (IC §11)
+- [ ] Demo and production databases are separate instances (MVP §6.2 IR-01)
+- [ ] `challenge_nonce CHECK (octet_length(challenge_nonce) = 33)` in schema (DM §3 Invariant 5)
+- [ ] `escrow_events` has no FLOAT columns (DM §3 Invariant 4)
+- [ ] Row security policies enabled on `audit_receipts` and `escrow_events` (DM §6)
+- [ ] `TestDHTKeyValidatorPersists` re-run after every `go-libp2p` upgrade (IC §12)
+- [ ] Relay overhead < 50ms RTT from Indian cloud nodes (IC §4.3 NFR-006) — measured
+
+**⚠️ AWAITING `requirements.md`:** Additional security NFR items from the requirements
+document must be added to this checklist when shared.
+
+---
+
+### Phase 18.4 — Final CI Gate
+
+**Reference:** MVP §8.4 (all 15 CI checks), MVP §6.4 MR-03 (migration checklist against both profiles)
+
+#### Session 18.4.1 — All-green CI verification
+
+**Task:** Verify all 15 CI checks from MVP §8.4 pass on a clean build:
+1. `go build ./...` — zero warnings
+2. `go vet ./...` — zero output
+3. `golangci-lint run` — zero findings
+4. `go test ./... -race` — all pass
+5. `TestDHTKeyValidatorPersists` — pass
+6. `TestNoFloatArithmetic` — pass
+7. Migration apply + rollback against CI Postgres (both profiles per MVP §6.4 MR-03)
+8. Grep: no `challenge_nonce BYTEA(32)` — pass
+9. Grep: no float in payment — pass
+10. Grep: no non-existent ADR reference — pass
+11. Grep: no UPI Collect endpoint — pass
+12. Mermaid render check — pass
+13. Hyperlink check — pass
+14. `TestProfileShardSizeIsConstant` — pass
+15. `TestProfileBothFullySpecified` — pass
+
+All 15 must pass simultaneously. Document the passing state in a milestone sign-off
+commit with the message `milestone: M18 launch-readiness all-green CI`.
+
+---
+
+## Appendix A — Document Gap Register
+
+The following table records every implementation decision deferred pending missing
+documents. Each entry must be resolved before the corresponding session is closed.
+
+| Gap ID | Session | Missing Document | Blocked Decision |
+|--------|---------|-----------------|-----------------|
+| GAP-001 | M8 Phase 8.2 | architecture.md | Gossip cluster quorum check in readiness gate |
+| GAP-002 | M10 Phase 10.4.1 | requirements.md | Exact score-to-release-multiplier table |
+| GAP-003 | M11 Phase 11.3.1 | openapi.yaml | All endpoint request/response schemas |
+| GAP-004 | M12 Phase 12.1.1 | architecture.md | Gossip cluster initialisation (replicas 3,2,2) |
+| GAP-005 | M17 Phase 17.2.1 | architecture.md | HA microservice replica sync and relay deployment |
+| GAP-006 | M18 Phase 18.2.1 | requirements.md | Exact benchmark thresholds (requirements.md §7.4) |
+| GAP-007 | M18 Phase 18.3.1 | requirements.md | Additional security NFR checklist items |
+| GAP-008 | M11 all stubs | openapi.yaml | All REST endpoint implementation beyond error envelope and readiness |
+
+When a missing document is shared, search this register for the corresponding gap IDs,
+implement the blocked decisions, and update the session log.
+
+---
+
+## Appendix B — Invariant Enforcement Traceability
+
+Every design invariant from DM §3 and IC must be enforced at the layer shown below.
+A PR that breaks any row here must be rejected.
+
+| Invariant | Source | Enforced at | Milestone |
+|-----------|--------|-------------|-----------|
+| 1 — Append-only audit log | DM §3 | DB RSP (DM §6); `WriteReceiptPhase2` WHERE clause | M4, M7 |
+| 2 — Append-only escrow ledger | DM §3 | DB RSP (DM §6); `InsertEscrowEvent` only write | M4, M10 |
+| 3 — No physical provider deletion | DM §3 | IC §6 DML table; departure sets `status='DEPARTED'` | M4, M9 |
+| 4 — All amounts integer paise | DM §3 | DB BIGINT constraint; `TestNoFloatArithmetic`; debug panic | M4, M10 |
+| 5 — Challenge nonce 33 bytes | DM §3 | DB CHECK constraint; `[33]byte` return type; CI grep | M4, M7 |
+| 6 — No real shard on vetting / no repair for synthetic | DM §3 | DB CHECK constraint; `EnqueueJob` debug panic; `IsVettingChunk` pre-check | M4, M9, M14 |
+| 7 — ShardSize compile-time constant | DM §3 | `const ShardSize = 262144`; `TestProfileShardSizeIsConstant` | M1, M3 |
+| Single-writer vLog | IC §5.3 | Channel to writer goroutine; `TestSingleWriterGoroutine` | M5 |
+| 0-RTT prohibited on audit/gc streams | IC §4 | Host middleware on protocol ID suffix; `DisableEarlyData: true` | M6 |
+| No JSON signing inputs | IC §3.2 | `SignBytes` comment; code review rule | M2 |
+| DHT HMAC key validator | IC §12 | Custom namespace validator; `TestDHTKeyValidatorPersists` | M6 |
+| No float in payment | IC §11 | `TestNoFloatArithmetic` CI check; debug panic in `InsertEscrowEvent` | M10 |
+
+---
+
+## Appendix C — Known Document Inconsistencies
+
+The following inconsistencies were found during BUILD file derivation and must be
+resolved via PR before the relevant session is closed.
+
+| ID | Document | Location | Inconsistency | Resolution |
+|----|----------|----------|---------------|------------|
+| INC-001 | IC §3.2 | Heartbeat section | Refers to `DeriveDKSKeystoreEncKey()` but IC §5.1 exports `DeriveKeystoreEncKey` | Use `DeriveKeystoreEncKey`; file PR to fix IC §3.2 |
+| INC-002 | IC §5.8 | `EscrowEventType` constants | `EscrowSeizure` constant name appears twice (for both SEIZURE and REVERSAL) | Use `EscrowReversal` for REVERSAL; file PR to fix IC §5.8 |
+| INC-003 | IC §4.1 Step 3 | Capability token expiry check | Step 3 says "reject with `0x03`" then says "Use `0x07 CAPABILITY_EXPIRED`" — contradictory | Use `0x07` for expiry per the explicit note; `0x03` is for signature failure |
+| INC-004 | IC §11 | Package import constraints section header | Section says "See §11" while referencing itself (should reference §9) | The import constraints are in §9; the §11 reference in the prohibition line is a typo |
+
+---
+
+*End of BUILD.md*  
+*Repository: https://github.com/masamasaowl/Vyomanaut_Research*  
