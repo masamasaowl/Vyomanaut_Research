@@ -388,7 +388,7 @@ components:
       properties:
         phone_number:
           $ref: '#/components/schemas/PhoneNumber'
-        otp_error_code:
+        otp_code:
           type: string
           pattern: '^\d{6}$'
           description: 6-digit OTP sent to the phone number.
@@ -1125,12 +1125,11 @@ components:
           $ref: '#/components/schemas/ChunkId'
         file_id:
           $ref: '#/components/schemas/UUID'
-          description: Pseudonymous file handle. (ADR-017, NFR-032)
-          nullable: true
           description: |
             Pseudonymous file handle. NULL for audits of synthetic vetting chunks
             (is_vetting_chunk = TRUE on the corresponding chunk_assignment).
             Non-null for all real shard audits. (ADR-030, ADR-017, NFR-032)
+          nullable: true 
         challenge_nonce:
           $ref: '#/components/schemas/ChallengeNonce'
         server_challenge_ts:

@@ -1116,7 +1116,7 @@ coordinated with heartbeat)
 **Task:** Create `internal/p2p/heartbeat.go`. Implement the heartbeat loop per IC §3.1
 pseudo-code:
 - Ticker interval: `profile.HeartbeatInterval` (NOT hardcoded 4h)
-- Token refresh check: if `tokenExpiresIn() < 24*time.Hour`, call `refreshToken()`
+- Token refresh check: if `tokenExpiresIn() < 24*time.Hour`, call `refreshToken()` (refer **Session 11.4.3** to call the token refresh endpoint)
 - Call `sendHeartbeat()` on each tick
 - Cold-start handling: if token is expired and grace period has passed, prompt
   re-registration (IC §3.1)
@@ -1213,6 +1213,7 @@ interface, `ErrSecretExpired`), MVP §8.2 (`secret.go`, `secrets_iface.go`)
 
 **Task:** Create `internal/audit/secrets_iface.go` with the `SecretsManagerClient`
 interface from IC §8. Create `internal/audit/secret.go` with `ClusterSecretCache`:
+
 - 5-minute TTL cache of the cluster audit secret
 - Reads `server_secret_vN` and `server_secret_v{N+1}` during rotation overlap window
 - Fail-closed on startup: if secrets manager is unreachable, return an error and the
@@ -1305,6 +1306,7 @@ The scoring package must check this flag before calling `ResetConsecutivePasses`
 #### Session 8.3.1 — Implement EWMA update functions
 
 **Task:** In `internal/scoring/rto.go`, implement:
+
 - EWMA update for `avg_rtt_ms` and `var_rtt_ms` after each audit response
 - EWMA update for `p95_throughput_kbps` (the 95th-percentile upload throughput)
 - `rto_sample_count` increment to track when to switch from pool-median RTO to
@@ -1541,27 +1543,26 @@ itself a prohibited change (IC §11).
 
 ## Milestone 11 — REST API Layer
 
-**⚠️ PARTIAL MILESTONE — AWAITING `openapi.yaml`**
-
 **Status:** The error envelope, readiness gate, and Razorpay webhook handler can be
 implemented from the documents in context. All other endpoint schemas require
 `openapi.yaml`. Stub handlers that return `501 Not Implemented` must be committed for
 every endpoint referenced in IC and DM so that the routing tree is established.
 
-**Reference:** IC §3 (all REST contracts), IC §3.3 (error envelope), IC §3.4 (readiness
+**Reference:** OAS (all sections) IC §3 (all REST contracts), IC §3.3 (error envelope), IC §3.4 (readiness
 gate), IC §7 (webhook contracts implemented in M10)
 
 ---
 
 ### Phase 11.1 — Error Envelope
 
-**Reference:** IC §3.3 (standard error body, HTTP status code table)
+**Reference:** OAS `components/schemas/Error.properties`, IC §3.3 (standard error body, HTTP status code table)
 
 #### Session 11.1.1 — Implement standard error response
 
 **Task:** Create `internal/api/errors.go` (new package `internal/api` for HTTP-layer
 concerns). Implement a `WriteError(w http.ResponseWriter, statusCode int, errorCode string,
 message string, retryAfter *int)` function that writes the exact JSON body from IC §3.3:
+
 ```json
 {
   "error_code": "...",
@@ -1570,23 +1571,25 @@ message string, retryAfter *int)` function that writes the exact JSON body from 
   "retry_after": null
 }
 ```
+
+The OAS confirms `retry_after` is `integer` (seconds), `nullable: true`, and is non-null for HTTP 429 and HTTP 503 responses with a known backoff (OAS `components/schemas/Error.properties.retry_after`). Add `field` (string, for validation errors) and `details` (object) as additional optional fields on the error struct per OAS
+
 The `request_id` must be a UUIDv7 matching the `X-Request-ID` response header (IC §3.3).
 Implement all error codes from the IC §3.3 table as typed constants.
 
-**`INSUFFICIENT_ASN_DIVERSITY` special case (IC §3.3):** This error code must include
-an additional `"available_asns": int` field. Handle this via a separate `WriteASNError`
-function or an extra parameter.
+**`INSUFFICIENT_ASN_DIVERSITY` special case (IC §3.3):** the `available_asns` field is a sibling of `error_code` inside the standard Error schema, not a wrapper type. Implement as an optional field on the shared error struct, populated only when `error_code == INSUFFICIENT_ASN_DIVERSITY`. (Resolved by OAS `components/schemas/Error.properties.available_asns`)
 
 ---
 
 ### Phase 11.2 — Readiness Gate Endpoint
 
-**Reference:** IC §3.4 (readiness gate contract, exact response body)
+**Reference:** OAS `components/schemas/ReadinessResponse`, IC §3.4 (readiness gate contract, exact response body)
 
 #### Session 11.2.1 — Implement `GET /api/v1/admin/readiness`
 
 **Task:** In `internal/api/readiness.go`, implement the readiness gate evaluator and
 HTTP handler per IC §3.4. All seven conditions must be evaluated simultaneously:
+
 1. Active vetted providers: `COUNT(*) WHERE status IN ('VETTING','ACTIVE') >= profile.MinActiveProviders`
 2. Distinct ASNs: `COUNT(DISTINCT asn) >= profile.MinDistinctASNs`
 3. Distinct metro regions: `COUNT(DISTINCT region) >= profile.MinMetroRegions`
@@ -1600,6 +1603,22 @@ HTTP handler per IC §3.4. All seven conditions must be evaluated simultaneously
 Response body must match IC §3.4 exactly. The `"threshold"` field is populated from
 `NetworkProfile.Min*` fields, not hardcoded constants (IC §3.4: "must not assume the
 value is always 56").
+
+**ReadinessResponse field set from OAS `components/schemas/ReadinessResponse`:**
+
+- `all_conditions_met` (bool)
+- `evaluated_at` (date-time)
+- `mode` (`"demo"` | `"prod"`) — must reflect active `NetworkProfile`
+- `conditions` object with exactly these seven keys, each a `ReadinessCondition`:
+  - `active_vetted_providers` — threshold = `NetworkProfile.MinActiveProviders`
+  - `distinct_asns` — threshold = `NetworkProfile.MinDistinctASNs`
+  - `distinct_metro_regions` — threshold = `NetworkProfile.MinMetroRegions`
+  - `microservice_quorum` — threshold: prod=3, demo=1 (`RequireQuorum=false`)
+  - `razorpay_accounts_ready` — threshold = `NetworkProfile.MinCooledAccounts`; **LIVE QUERY always** (OAS description: "MUST NOT cache this value")
+  - `relay_nodes_deployed` — threshold = `NetworkProfile.MinRelayNodes`
+  - `cluster_audit_secret_loaded` — bool from `ClusterSecretCache.IsLoaded()`
+
+Each `ReadinessCondition` carries: `name` (string), `satisfied` (bool), `current_value` (int), `required_value` (int), and `demo_value` (int, nullable — non-null only in demo mode) (OAS `components/schemas/ReadinessCondition`).
 
 ---
 
@@ -1616,20 +1635,248 @@ returning `501 Not Implemented` with error_code `INTERNAL_ERROR`. The purpose is
 establish the URL structure so that `openapi.yaml` can be validated against it once
 available.
 
-Endpoints to stub (from IC §2 and IC §3):
-- `POST /api/v1/provider/heartbeat` (IC §3.1)
-- `POST /api/v1/provider/register` (IC §2)
-- `POST /api/v1/provider/depart` (IC §2)
-- `POST /api/v1/upload/assign` (IC §3.4 — must return 503 until readiness gate passes)
-- `POST /api/v1/file/register` (IC §6 files table)
-- `GET /api/v1/file/{file_id}` (IC §2)
-- `DELETE /api/v1/file/{file_id}` (IC §6 files table)
-- `GET /api/v1/admin/readiness` (IC §3.4 — implemented in Phase 11.2)
-- `POST /webhooks/razorpay` (IC §7)
-- `GET /.well-known/jwks.json` (IC §4.1 capability token verification)
-- `POST /api/v1/provider/downtime` (IC §6 providers table)
+| Method | Path | OAS operationId | Auth |
+| --- | --- | --- | --- |
+| GET | `/.well-known/jwks.json` | `getJwks` | public |
+| POST | `/api/v1/auth/otp/send` | `sendOtp` | public |
+| POST | `/api/v1/auth/otp/verify` | `verifyOtp` | public |
+| POST | `/api/v1/owner/register` | `registerOwner` | BearerAuth |
+| POST | `/api/v1/owner/deposit` | `initiateDeposit` | BearerAuth |
+| GET | `/api/v1/owner/{owner_id}/balance` | `getOwnerBalance` | BearerAuth |
+| GET | `/api/v1/owner/{owner_id}/files` | `listOwnerFiles` | BearerAuth |
+| GET | `/api/v1/owner/{owner_id}/escrow` | `getOwnerEscrowHistory` | BearerAuth |
+| POST | `/api/v1/owner/withdraw` | `withdrawOwnerEscrow` | BearerAuth |
+| POST | `/api/v1/provider/register` | `registerProvider` | BearerAuth |
+| POST | `/api/v1/provider/heartbeat` | `providerHeartbeat` | BearerAuth |
+| POST | `/api/v1/provider/token/refresh` | `refreshProviderToken` | BearerAuth (grace) |
+| GET | `/api/v1/provider/{provider_id}/status` | `getProviderStatus` | BearerAuth |
+| GET | `/api/v1/provider/receipts` | `listProviderReceipts` | BearerAuth |
+| POST | `/api/v1/provider/downtime` | `announceDowntime` | BearerAuth |
+| GET | `/api/v1/provider/downtime` | `getActiveDowntime` | BearerAuth |
+| POST | `/api/v1/provider/depart` | `announceDeparture` | BearerAuth |
+| POST | `/api/v1/upload/assign` | `assignUpload` | BearerAuth |
+| POST | `/api/v1/file/register` | `registerFile` | BearerAuth |
+| GET | `/api/v1/file/{file_id}/pointer` | `getPointerFile` | BearerAuth |
+| DELETE | `/api/v1/file/{file_id}` | `deleteFile` | BearerAuth |
+| GET | `/api/v1/pricing/estimate` | `getPricingEstimate` | public |
+| GET | `/api/v1/pricing/provider-estimate` | `getProviderEarningsEstimate` | public |
+| POST | `/api/v1/audit/challenge` | `dispatchAuditChallenge` | AdminApiKey |
+| GET | `/api/v1/admin/readiness` | `getReadiness` | AdminApiKey |
+| GET | `/api/v1/admin/repair/queue` | `getRepairQueue` | AdminApiKey |
+| POST | `/api/v1/admin/repair/trigger` | `triggerRepair` | AdminApiKey |
+| GET | `/api/v1/admin/providers` | `listAdminProviders` | AdminApiKey |
+| GET | `/api/v1/admin/audit/stats` | `getAuditStats` | AdminApiKey |
+| GET | `/api/v1/admin/vetting/status` | `getVettingStatus` | AdminApiKey |
+| POST | `/api/v1/admin/vetting/gc/retry` | `retryVettingGC` | AdminApiKey |
+| POST | `/webhooks/razorpay` | *(IC §7, no OAS path)* | signature |
 
-**⚠️ All stub handlers must include:** `// TODO: implement per openapi.yaml §<section>`.
+**AdminApiKey middleware note (OAS `components/securitySchemes/AdminApiKey`):** `X-Admin-API-Key` header; must be ≥ 32 random bytes hex-encoded. Add a middleware that verifies this header on all `/api/v1/admin/*` and `/api/v1/audit/challenge` routes.
+
+---
+
+### Phase 11.4 — Authentication Endpoints
+
+#### Session 11.4.1 — OTP Send (`POST /api/v1/auth/otp/send`)
+
+**Reference:** OAS `paths./api/v1/auth/otp/send`, `OtpSendRequest`, `OtpSendResponse`
+
+Implement rate limiting: 3 OTP attempts per phone number per 10 minutes. On breach return HTTP 429 with `Retry-After: 600` and `error_code: OTP_RATE_LIMITED`. Response body: `expires_at` (OTP TTL, typically 10 minutes from issuance). Authentication: public endpoint — no JWT required.
+
+#### Session 11.4.2 — OTP Verify (`POST /api/v1/auth/otp/verify`)
+
+**Reference:** OAS `paths./api/v1/auth/otp/verify`, `OtpVerifyRequest`, `OtpVerifyResponse`
+
+On success: issue Ed25519-signed JWT. If phone not previously registered (`is_new_entity: true`): issue 1-hour registration token; `role` field in response is `null`. If already registered (`is_new_entity: false`): issue 24-hour (owner) or 7-day (provider) JWT; populate `entity_id` and `role`.
+
+#### Session 11.4.3 — Provider Token Refresh (`POST /api/v1/provider/token/refresh`)
+
+**Reference:** OAS `paths./api/v1/provider/token/refresh`, operationId `refreshProviderToken`
+
+Two-factor auth: (1) current JWT accepted if valid **or** expired within the last 1 hour (grace window); (2) Ed25519 body signature over `SHA-256(provider_id ‖ timestamp_string)`. Rate limit: one successful refresh per 30 minutes per `provider_id` (HTTP 429 with `Retry-After` on breach, `error_code: TOKEN_REFRESH_RATE_LIMITED`). On success: issue new 7-day JWT; return `token` and `expires_at`.
+
+This session also requires for **Session 6.3.1** (heartbeat goroutine) to call this endpoint when `tokenExpiresIn() < 24*time.Hour`, using the daemon's registered Ed25519 key to produce the body signature.
+
+---
+
+### Phase 11.5 — Owner Endpoints
+
+#### Session 11.5.1 — Owner Register (`POST /api/v1/owner/register`)
+
+**Reference:** OAS `paths./api/v1/owner/register`, `OwnerRegisterRequest`, `OwnerRegisterResponse`
+
+Verify `owner_sig`: Ed25519 over `{"ed25519_public_key": "<value>"}` (sorted keys, no trailing whitespace). Store `ed25519_public_key` against `owner_id`. Return 201 with new 24-hour JWT (`role=owner`, `sub=owner_id`). Return 409 `PHONE_ALREADY_REGISTERED` if phone already has an owner account.
+
+#### Session 11.5.2 — Deposit Initiate (`POST /api/v1/owner/deposit`)
+
+**Reference:** OAS `paths./api/v1/owner/deposit`, `DepositInitiateRequest`, `DepositInitiateResponse`
+
+Triggers Razorpay Smart Collect 2.0 VPA creation. Returns `vpa`, `qr_code_url`, `expires_at`. No `escrow_events` row is written here — the row is written only on receipt of the `virtual_account.payment.captured` webhook (M10 Phase 10.3.1). UPI Collect MUST NOT be used (OAS description, NFR-029).
+
+#### Session 11.5.3 — Owner Balance (`GET /api/v1/owner/{owner_id}/balance`)
+
+**Reference:** OAS `paths./api/v1/owner/{owner_id}/balance`, `OwnerBalance`
+
+Read from `mv_owner_escrow_balance` (up to 60s stale). Return `balance_paise`, `reserved_next_30d_paise`, `available_paise` (= balance − reserved). All values `int64`, minimum 0.
+
+#### Session 11.5.4 — Owner File List (`GET /api/v1/owner/{owner_id}/files`)
+
+**Reference:** OAS `paths./api/v1/owner/{owner_id}/files`, `FileListItem`
+
+Query params: `status` (default `ACTIVE`), `limit` (1–100, default 50), `cursor`. Availability field derived from `mv_segment_shard_counts`: `OK` ≥ 24 shards, `DEGRADED` < 24, `CRITICAL` < 16 (OAS `FileListItem.properties.availability`). Return `display_name_ciphertext/nonce/tag` when present (FR-019).
+
+#### Session 11.5.5 — Owner Escrow History (`GET /api/v1/owner/{owner_id}/escrow`)
+
+**Reference:** OAS `paths./api/v1/owner/{owner_id}/escrow`, `OwnerEscrowTransaction`
+
+Paginated `owner_escrow_events` log. Response envelope includes balance summary fields (`balance_paise`, `reserved_next_30d_paise`, `available_paise`) alongside the `events` array and `next_cursor`.
+
+#### Session 11.5.6 — Owner Withdraw (`POST /api/v1/owner/withdraw`)
+
+**Reference:** OAS `paths./api/v1/owner/withdraw`, `WithdrawRequest`, `WithdrawResponse`
+
+`idempotency_key` format: `SHA-256(owner_id ‖ withdrawal_request_id)`, hex-encoded (OAS `WithdrawRequest.properties.idempotency_key`). Block withdrawal while any file upload is in-flight (FR-059). On success: return Razorpay `payout_id` and initial status (`QUEUED`). Final `REVERSED` status arrives via the `payout.reversed` webhook (M10 Phase 10.3.1).
+
+---
+
+### Phase 11.6 — Provider REST Endpoints
+
+#### Session 11.6.1 — Provider Register (`POST /api/v1/provider/register`)
+
+**Reference:** OAS `paths./api/v1/provider/register`, `ProviderRegisterRequest`, `ProviderRegisterResponse`
+
+Verify `provider_sig` over canonical JSON of all other fields (sorted keys, `provider_sig` omitted). Store `ed25519_public_key`, `declared_storage_gb`, `city`, `region`, `asn`, `initial_multiaddrs`. In demo mode: accept `demo_asn` field (pattern `^SIM-AS\d+$`); if omitted, auto-assign next available from pool (OAS description, FR-068). In production: silently ignore `demo_asn`. Set `razorpay_cooling_until = NOW() + profile.RazorpayCoolingPeriod`. Return status `PENDING_ONBOARDING` and 7-day JWT.
+
+#### Session 11.6.2 — Provider Heartbeat (`POST /api/v1/provider/heartbeat`)
+
+**Reference:** OAS `paths./api/v1/provider/heartbeat`, `HeartbeatRequest`, `HeartbeatResponse`
+
+Verify `provider_sig` over canonical JSON body (sorted keys, `provider_sig` omitted). Reject timestamps with skew > ±5 minutes. Update `providers.current_multiaddrs` and `last_heartbeat_ts`. Return `received_at` and `microservice_sig` (Ed25519 countersignature over `{"received_at":"<value>","provider_id":"<value>"}` sorted keys). Daemon stores `microservice_sig` as proof of acknowledgement.
+
+#### Session 11.6.3 — Provider Status (`GET /api/v1/provider/{provider_id}/status`)
+
+**Reference:** OAS `paths./api/v1/provider/{provider_id}/status`, `ProviderStatusResponse`
+
+Join `providers` table with `mv_provider_scores` (up to 60s stale). Include vetting fields when `status = 'VETTING'`: `vetting_chunks_assigned`, `vetting_chunk_cap` (= `floor(declared_storage_gb × 400)`), `vetting_eligible_at` (= `first_chunk_assignment_at + 120 days`), `vetting_gc_pending`. Include `network_mode` field (`"demo"` | `"prod"`) from active profile (OAS `ProviderStatusResponse.properties.network_mode`).
+
+#### Session 11.6.4 — Provider Audit Receipts (`GET /api/v1/provider/receipts`)
+
+**Reference:** OAS `paths./api/v1/provider/receipts`, `AuditReceiptListItem`
+
+Filter params: `chunk_id`, `from`, `to`, `result` (PASS/FAIL/TIMEOUT), `limit` (1–200, default 100), `cursor`. Available even when `status = 'DEPARTED'` (FR-058). Response includes both `provider_sig` and `service_sig` per receipt. `file_id` is nullable on receipts for vetting chunks.
+
+#### Session 11.6.5 — Provider Downtime (`POST /api/v1/provider/downtime` and `GET /api/v1/provider/downtime`)
+
+**Reference:** OAS `paths./api/v1/provider/downtime`, `ProviderDowntimeRequest`, `ProviderDowntimeResponse`
+
+POST: `promised_return_at` must be between 0 and 72 hours from now; past timestamps rejected HTTP 400. Verify `provider_sig`. Return 409 `DOWNTIME_ALREADY_ACTIVE` if a window is already open. Return 409 `PROVIDER_DEPARTED` if status is DEPARTED. `penalty_fires_at` = `promised_return_at`.
+
+GET: Returns `{active: bool, promised_return_at: date-time|null, penalty_fires_at: date-time|null}`.
+
+#### Session 11.6.6 — Provider Depart (`POST /api/v1/provider/depart`)
+
+**Reference:** OAS `paths./api/v1/provider/depart`, `ProviderDepartRequest`, `ProviderDepartResponse`
+
+Verify `provider_sig`. Accept optional `depart_at` (if omitted or in past: immediate). Return `repair_jobs_queued` and `escrow_release_paise` (proportional to fraction of 30-day window completed). This endpoint wires M9 `repair.EnqueueJob()` and M10 `payment.ReleaseEscrow()` in the microservice entrypoint — consistent with the import constraint that prevents `repair` importing `payment` (IC §9).
+
+---
+
+### Phase 11.7 — Upload and File Endpoints
+
+#### Session 11.7.1 — Upload Assign (`POST /api/v1/upload/assign`)
+
+**Reference:** OAS `paths./api/v1/upload/assign`, `UploadAssignRequest`, `UploadAssignResponse`, `SegmentAssignment`, `ShardAssignment`
+
+Checks (in order):
+
+1. Readiness gate — HTTP 503 `NETWORK_NOT_READY` with `retry_after: 60` and `readiness_url` field if not satisfied.
+2. Escrow balance ≥ `cost_for_30_days(original_size_bytes)` — HTTP 409 `INSUFFICIENT_ESCROW_BALANCE` if not.
+3. ASN cap: no single ASN > 20% of 56 shards per segment — HTTP 503 `INSUFFICIENT_ASN_DIVERSITY` with `available_asns` field and `retry_after: 300` if unsatisfiable (OAS `paths./api/v1/upload/assign.post.responses.503`).
+
+Response includes `monthly_cost_paise`, `required_escrow_paise`, and per-shard `capability_token` (72-byte hex, 144 chars) in each `ShardAssignment`. Idempotent on `file_id`. `shard_index` 0–15 = data shards, 16–55 = parity shards (OAS `ShardAssignment.properties.shard_index`).
+
+#### Session 11.7.2 — File Register (`POST /api/v1/file/register`)
+
+**Reference:** OAS `paths./api/v1/file/register`, `FileRegisterRequest`, `FileRegisterResponse`
+
+Verify `owner_sig` over canonical JSON of all other fields. Store `pointer_ciphertext`, `pointer_nonce`, `pointer_tag`, `original_size_bytes`, `schema_version` (must be 1). Optionally store `display_name_ciphertext/nonce/tag` (FR-019). Return 404 if `file_id` was not created by a prior assign call. Return 409 `FILE_ALREADY_DELETED` if file exists in ACTIVE status (re-registration not permitted).
+
+#### Session 11.7.3 — Pointer File Retrieval (`GET /api/v1/file/{file_id}/pointer`)
+
+**Reference:** OAS `paths./api/v1/file/{file_id}/pointer`, `PointerFileResponse`
+
+Return `pointer_ciphertext`, `pointer_nonce`, `pointer_tag`, `schema_version`, `original_size_bytes`, and optional `display_name_*` fields. Client decrypts locally; microservice never decrypts.
+
+#### Session 11.7.4 — File Delete (`DELETE /api/v1/file/{file_id}`)
+
+**Reference:** OAS `paths./api/v1/file/{file_id}.delete`
+
+Mark all `chunk_assignments` as `PENDING_DELETION`. Notify reachable providers immediately. Return `assignments_marked`, `providers_notified`, `providers_pending`, `status: "DELETED"`. Return 409 `FILE_ALREADY_DELETED` if already deleted (OAS `paths./api/v1/file/{file_id}.delete.responses.409`).
+
+---
+
+### Phase 11.8 — Pricing Endpoints
+
+#### Session 11.8.1 — Storage Pricing Estimate (`GET /api/v1/pricing/estimate`)
+
+**Reference:** OAS `paths./api/v1/pricing/estimate`, `PricingEstimateResponse`
+
+Public endpoint (no auth). Optional `file_size_bytes` query param; default to 1 GB if omitted. Return `storage_rate_paise_per_gb_per_month`, `monthly_cost_paise`, `annual_cost_paise` (= monthly × 12), `min_escrow_balance_paise` (= 30 days cost). All values `int64` paise.
+
+#### Session 11.8.2 — Provider Earnings Estimate (`GET /api/v1/pricing/provider-estimate`)
+
+**Reference:** OAS `paths./api/v1/pricing/provider-estimate`
+
+Public endpoint. Required params: `storage_gb` (int, 10–100000) and `uptime_target_pct` (float, 0–100). Return `gross_monthly_paise` (= `storage_gb × rate × uptime_pct/100`), `estimated_escrow_hold_vetting_paise` (30% hold during vetting, ADR-024), `estimated_net_paise_vetting` (= gross × 0.50 release cap, FR-051), `estimated_net_paise_post_vetting` (= gross × release_multiplier at ≥0.95 score).
+
+---
+
+### Phase 11.9 — Audit Admin Endpoints
+
+#### Session 11.9.1 — Manual Audit Challenge (`POST /api/v1/audit/challenge`)
+
+**Reference:** OAS `paths./api/v1/audit/challenge`, `AuditChallengeDispatchRequest`, `AuditChallengeDispatchResponse`
+
+AdminApiKey auth. Dispatches an immediate out-of-cycle challenge to `(provider_id, chunk_id)`. Does not bypass the 24-hour deduplication window. Returns HTTP 202 with `challenge_nonce` (33-byte / 66 hex chars), `server_challenge_ts`, and `deadline_ms` (= `ceil((256 / p95_throughput_kbps) × 1500)`). Returns 403 if provider is `DEPARTED`.
+
+---
+
+### Phase 11.10 — Admin Endpoints
+
+#### Session 11.10.1 — Admin Providers List (`GET /api/v1/admin/providers`)
+
+**Reference:** OAS `paths./api/v1/admin/providers`, `AdminProvidersResponse`, `AdminProviderItem`
+
+Filter params: `status`, `asn`, `region`, `multiaddr_stale` (bool), `accelerated_reaudit` (bool), `vetting_gc_pending` (bool — filter to ACTIVE providers with incomplete GC, ADR-030), `limit` (1–200, default 100), `cursor`. Include `vetting_chunks_assigned`, `vetting_chunk_cap`, `vetting_gc_pending` fields for VETTING providers (OAS `AdminProviderItem`).
+
+#### Session 11.10.2 — Repair Queue (`GET /api/v1/admin/repair/queue`)
+
+**Reference:** OAS `paths./api/v1/admin/repair/queue`, `RepairQueueResponse`, `RepairJobItem`
+
+Filter params: `status` (default QUEUED), `priority`, `limit` (1–100, default 50), `cursor`. Return counts split by priority: `emergency_queued`, `permanent_departure_queued`, `pre_warning_queued`, `total_queued`. Alert threshold: `total_queued > 1000`; `emergency_queued > 0` fires immediately (OAS `RepairQueueResponse.properties.emergency_queued` description, NFR-027).
+
+#### Session 11.10.3 — Manual Repair Trigger (`POST /api/v1/admin/repair/trigger`)
+
+**Reference:** OAS `paths./api/v1/admin/repair/trigger`
+
+Required body fields: `chunk_id`, `segment_id`, `trigger_type`. Optional: `provider_id` (nullable for threshold-triggered repairs). Return 202 with the created `RepairJobItem`. Wires directly to M9 `repair.EnqueueJob()`.
+
+#### Session 11.10.4 — Audit Statistics (`GET /api/v1/admin/audit/stats`)
+
+**Reference:** OAS `paths./api/v1/admin/audit/stats`, `AuditStatsResponse`
+
+Query params: `from` (default NOW()-1h), `to` (default NOW()), `provider_id` (optional). Backed by `audit_receipts WHERE abandoned_at IS NULL`. Return `challenges_issued`, breakdown `{pass, fail, timeout, pending}`, `pass_rate` (= pass/(pass+fail+timeout)), `timeout_rate`, `content_hash_failures` (0x02 status codes), `jit_flags_raised`. Alert: `timeout_rate > 0.05` (NFR-027).
+
+#### Session 11.10.5 — Vetting Status (`GET /api/v1/admin/vetting/status`)
+
+**Reference:** OAS `paths./api/v1/admin/vetting/status`, `VettingStatusSummary`
+
+Query param: `include_gc_pending_only` (bool, default false). Return `total_vetting_providers`, `total_synthetic_chunks_active`, `total_synthetic_chunks_pending_gc`, and per-provider `vetting_summary` (OAS `VettingStatusSummary`: `chunks_assigned`, `chunk_cap`, `cap_utilisation_pct`, `chunks_pending_gc`).
+
+#### Session 11.10.6 — Vetting GC Retry (`POST /api/v1/admin/vetting/gc/retry`)
+
+**Reference:** OAS `paths./api/v1/admin/vetting/gc/retry`
+
+Required body: `provider_id` (must be ACTIVE with `chunks_pending_gc > 0`). Attempt libp2p connection and GC instruction delivery immediately. Return `delivery_attempted` (false if provider unreachable), `chunks_pending_gc_before`, `chunks_pending_gc_after`. If provider offline: return 200 with `delivery_attempted: false`; background retry continues. Wires to M14 `vettingchunk.DeliverGCInstruction()`.
 
 ---
 
@@ -1653,18 +1900,28 @@ MVP §2.3 (guard rails)
 #### Session 12.1.1 — Wire microservice `main()`
 
 **Task:** Replace the stub in `cmd/microservice/main.go` with full startup wiring:
+
 1. Call `config.SelectProfile()` — print startup banner
 2. Call `config.ValidateStartupGuards(profile)` — halt on violation
-3. Initialise `ClusterSecretCache` — fail-closed if `RequireSecretsManager == true`
-   and secrets manager is unreachable (IC §8)
+3. Initialise `ClusterSecretCache` — fail-closed if `RequireSecretsManager == true` and secrets manager is unreachable (IC §8)
 4. Initialise database connection pool (PostgreSQL)
-5. Drop and recreate `mv_provider_scores` view using `profile.ScoreWindow*` values
-   (DM §7, MVP §5.5 — this is an application-layer step at startup, not a migration)
+5. Drop and recreate `mv_provider_scores` view using `profile.ScoreWindow*` values (DM §7, MVP §5.5 — this is an application-layer step at startup, not a migration)
 6. Start the readiness gate evaluator goroutine (60-second cycle per IC §3.4)
 7. Start the HTTP server with the routing tree from Phase 11.3
 8. Start the audit challenge scheduler goroutine (interval: `profile.PollingInterval`)
 9. Start the departure detector goroutine
 10. Start the release computation goroutine (ticker or calendar per profile)
+
+**The authoritative JWT claim set from OAS `components/securitySchemes/BearerAuth`:**
+
+- `sub` = entity UUID
+- `role` = `"owner"` | `"provider"`
+- `iss` = `"vyomanaut-microservice-v1"`
+- `exp` = Unix timestamp
+
+TTL: 24 hours for owners, 7 days for provider daemons (OAS `OtpVerifyResponse.properties.token` description).
+
+Registration token TTL (short-lived, single-use): 1 hour, valid only for the matching register call (OAS `OtpVerifyResponse.properties.token` description, `is_new_entity = true` case).
 
 **⚠️ AWAITING architecture.md** for: gossip cluster initialisation, replica synchronisation.
 Stub with `if profile.RequireQuorum { log.Fatal("quorum: awaiting architecture.md") }`.
@@ -1722,17 +1979,18 @@ IC §4 (common rules: transport auth, 0-RTT, framing)
 
 ### Phase 13.2 — Chunk Upload Stream Handler
 
-**Reference:** IC §4.1 (complete wire format, all status codes, capability token verification)
+**Reference:** OAS `components/schemas/ShardAssignment.capability_token` description and `UploadAssignResponse`, OAS `components/schemas/ShardAssignment.properties`, IC §4.1 (complete wire format, all status codes, capability token verification)
 
 #### Session 13.2.1 — Implement `/vyomanaut/chunk-upload/1.0.0` handler
 
 **Task:** Register the stream handler for `/vyomanaut/chunk-upload/1.0.0` on the
 provider daemon. The handler must implement the full Frame 1 verification per IC §4.1:
+
 1. Read the 4-byte length prefix; reject with `0x01` if `length > 262252`
 2. Parse `chunk_id` (32B), `shard_index` (4B), `capability_token` (72B), `chunk_data` (262144B)
 3. Capability token verification steps 1–5 exactly per IC §4.1:
-   - `len(capability_token) == 72` → reject `0x03`
-   - Parse `expiry_unix_ms` from bytes 0–7
+   - `len(capability_token) == 72 = 8-byte expiry_unix_ms (big-endian int64) ‖ 64-byte Ed25519 signature` → reject `0x03` (Wire encoding on the HTTP side: hex string, pattern `^[0-9a-f]{144}$`)
+   - Parse bytes 0–7 as big-endian int64 `expiry_unix_ms`
    - Check `expiry_unix_ms > NOW_unix_ms - 30_000` → reject `0x07` (CAPABILITY_EXPIRED)
    - Verify Ed25519 signature (bytes 8–71) → reject `0x03` if invalid
    - `chunk_id` mismatch via signing input → same `0x03` path
@@ -1854,6 +2112,7 @@ The caller is responsible for checking `CurrentCount < Cap` before calling `Gene
 
 **Task:** In `internal/vettingchunk/gc.go`, implement `DeliverGCInstruction()` per
 IC §5.10. Triggered immediately after `providers.status` transitions to `ACTIVE`:
+
 1. Query all synthetic chunk IDs: `WHERE is_vetting_chunk = TRUE AND provider_id = $1
    AND status = 'ACTIVE'`
 2. Batch into frames of ≤ 10,000 chunk IDs (IC §4.5)
@@ -1887,6 +2146,7 @@ IC §11 (forbidden: no business logic in cmd/)
 #### Session 15.1.1 — Implement registration and keystore
 
 **Task:** In `internal/client/account/register.go` and `keystore.go`:
+
 - `Register()`: generate Ed25519 key pair, derive master secret via `DeriveMasterSecret`
   with `profile.Argon2*` params (NOT hardcoded), display BIP-39 mnemonic, run
   `SelectConfirmationWords()` gate if `!profile.SkipMnemonicConfirm`
@@ -1899,11 +2159,12 @@ IC §11 (forbidden: no business logic in cmd/)
 ### Phase 15.2 — Upload Orchestrator
 
 **Reference:** IC §5.9 (`UploadOrchestrator` ERRATA note — capability tokens),
-IC §4.1 (chunk upload stream client side), IC §5.9 (session state for FR-060 resume)
+IC §4.1 (chunk upload stream client side), IC §5.9 (session state for FR-060 resume), `OAS §components/schemas/PointerFilePlaintextSegment` for the pointer file struct layout when building the ciphertext payload passed to `POST /api/v1/file/register`.
 
 #### Session 15.2.1 — Implement `UploadFile()` with capability token handling
 
 **Task:** In `internal/client/upload/orchestrator.go`, implement the upload lifecycle:
+
 1. Segment the file (padding to `DataShards × ShardSize` minimum)
 2. AONT encode each segment via `crypto.AONTEncodeSegment()`
 3. RS encode via `erasure.Engine.EncodeSegment()`
@@ -1915,6 +2176,8 @@ IC §4.1 (chunk upload stream client side), IC §5.9 (session state for FR-060 r
 7. Register the encrypted pointer file with the microservice
 8. Persist session state for resume (FR-060): `file_id`, `chunk_ids`, `ack_status[TotalShards]`
 
+**Note:** The OAS `FileRegisterRequest` includes `display_name_ciphertext`, `display_name_nonce`, `display_name_tag` as optional fields (FR-019). Populate these from the client's locally-encrypted filename before calling `POST /api/v1/file/register`. Key derivation: `HKDF-SHA256(master_secret, salt=owner_id, info="vyomanaut-filename-v1" ‖ file_id`(OAS `FileRegisterRequest.properties.display_name_ciphertext` description).
+
 #### Session 15.2.2 — Implement `ResumeUpload()`
 
 **Task:** Load persisted session state, identify unacknowledged shards, re-upload only
@@ -1925,11 +2188,12 @@ those (FR-060 — do not retransmit acknowledged shards, IC §5.9).
 ### Phase 15.3 — Retrieval Orchestrator
 
 **Reference:** IC §5.9 (`RetrieveFile`, `ErrPointerTagMismatch`, `ErrTooFewShards`,
-`ErrCanaryMismatch`), IC §5.1 (`DecryptPointerFile`, `AONTDecodePackage`)
+`ErrCanaryMismatch`), IC §5.1 (`DecryptPointerFile`, `AONTDecodePackage`), `OAS §components/schemas/PointerFilePlaintextSegment` while parsing the decrypted pointer file on retrieval.
 
 #### Session 15.3.1 — Implement `RetrieveFile()`
 
 **Task:** In `internal/client/retrieve/orchestrator.go`:
+
 1. Fetch pointer ciphertext from microservice
 2. Derive pointer key via `DerivePointerEncKey()`
 3. Call `DecryptPointerFile()` — on `ErrTagMismatch`, return `ErrPointerTagMismatch`
@@ -1971,6 +2235,8 @@ requirements), MVP §8.4 (CI checks 14–15)
 - Kill one simulated daemon; assert departure detection within `profile.DepartureThreshold`
   (10 min in demo)
 - Assert repair job created and completed
+
+**One more assertion:** Readiness response `mode` field equals `"demo"` when `VYOMANAUT_MODE=demo`. The OAS `ReadinessResponse.properties.mode` and the `DemoReady` example confirm this field is present in both modes (OAS `paths./api/v1/admin/readiness.get.responses.200.examples.DemoReady`). Demo thresholds: `active_vetted_providers.required_value=5`, `distinct_asns.required_value=5`, `distinct_metro_regions.required_value=1`, `microservice_quorum.required_value=1`, `relay_nodes_deployed.required_value=0`.
 
 This test is tagged `//go:build integration` and runs separately from unit tests.
 
@@ -2182,15 +2448,13 @@ The following table records every implementation decision deferred pending missi
 documents. Each entry must be resolved before the corresponding session is closed.
 
 | Gap ID | Session | Missing Document | Blocked Decision |
-|--------|---------|-----------------|-----------------|
+| --- | --- | --- | --- |
 | GAP-001 | M8 Phase 8.2 | architecture.md | Gossip cluster quorum check in readiness gate |
 | GAP-002 | M10 Phase 10.4.1 | requirements.md | Exact score-to-release-multiplier table |
-| GAP-003 | M11 Phase 11.3.1 | openapi.yaml | All endpoint request/response schemas |
 | GAP-004 | M12 Phase 12.1.1 | architecture.md | Gossip cluster initialisation (replicas 3,2,2) |
 | GAP-005 | M17 Phase 17.2.1 | architecture.md | HA microservice replica sync and relay deployment |
 | GAP-006 | M18 Phase 18.2.1 | requirements.md | Exact benchmark thresholds (requirements.md §7.4) |
 | GAP-007 | M18 Phase 18.3.1 | requirements.md | Additional security NFR checklist items |
-| GAP-008 | M11 all stubs | openapi.yaml | All REST endpoint implementation beyond error envelope and readiness |
 
 When a missing document is shared, search this register for the corresponding gap IDs,
 implement the blocked decisions, and update the session log.
@@ -2230,6 +2494,8 @@ resolved via PR before the relevant session is closed.
 | INC-002 | IC §5.8 | `EscrowEventType` constants | `EscrowSeizure` constant name appears twice (for both SEIZURE and REVERSAL) | Use `EscrowReversal` for REVERSAL; file PR to fix IC §5.8 |
 | INC-003 | IC §4.1 Step 3 | Capability token expiry check | Step 3 says "reject with `0x03`" then says "Use `0x07 CAPABILITY_EXPIRED`" — contradictory | Use `0x07` for expiry per the explicit note; `0x03` is for signature failure |
 | INC-004 | IC §11 | Package import constraints section header | Section says "See §11" while referencing itself (should reference §9) | The import constraints are in §9; the §11 reference in the prohibition line is a typo |
+| INC-005 | openapi.yaml | `OtpVerifyRequest.properties` | Field named `otp_error_code` instead of `otp_code` | Implement as `otp_code`; file correction PR against OAS |
+| INC-006 | openapi.yaml | `AuditReceiptListItem.properties.file_id` | Two `description` keys on the same property (duplicate YAML key — second wins; first is dropped by parsers) | Use the second description (nullable for vetting chunks, per ADR-030); file correction PR |
 
 ---
 
