@@ -120,6 +120,8 @@
   - [Phase 18.3 — Security Verification Checklist](#phase-183--security-verification-checklist)
   - [Phase 18.4 — Final CI Gate](#phase-184--final-ci-gate)
 - [Appendix A — Invariant Enforcement Traceability](#appendix-a--invariant-enforcement-traceability)
+- [Appendix B - Session Registry](#appendix-b--session-registry)
+- [Appendix C - File Creation Index](#appendix-c--file-creation-index)
 
 ---
 
@@ -2739,6 +2741,284 @@ A PR that breaks any row here must be rejected.
 | INV-CEIL | Chunk ceiling enforced at assignment time | NFR-044 | Assignment service; HTTP 503 `INSUFFICIENT_PROVIDER_CAPACITY` | M11 |
 | INV-RAM | Provider RAM checked before daemon starts | NFR-045 | `memcheck_*.go` at startup; WARN + reduce `declared_storage_gb` | M13 |
 | INV-RELAY | Relay ≤ 128 concurrent reservations per node | ARCH §13 | `cmd/relay` constant; gauge alert | M17 |
+
+---
+
+## Appendix B — Session Registry
+
+> Update Status column as sessions complete
+
+| Session | Milestone | Title | Status |
+| --- | --- | --- | --- |
+| 0.1.1 | M0 | Initialise Go module and top-level directories | ☐ |
+| 0.1.2 | M0 | Create `cmd/` entrypoint stubs | ☐ |
+| 0.1.3 | M0 | Create `internal/` package stubs | ☐ |
+| 0.2.1 | M0 | Configure `.golangci.yml` | ☐ |
+| 0.2.2 | M0 | Configure forbidden-pattern grep checks | ☐ |
+| 0.3.1 | M0 | Create `.github/workflows/ci.yml` | ☐ |
+| 0.3.2 | M0 | Create `.github/CODEOWNERS` | ☐ |
+| 0.4.1 | M0 | Create `deployments/dev/docker-compose.yml` | ☐ |
+| 1.1.1 | M1 | Define `NetworkProfile` struct | ☐ |
+| 1.1.2 | M1 | Define `ProductionProfile` and `DemoProfile` | ☐ |
+| 1.2.1 | M1 | `TestProfileShardSizeIsConstant` | ☐ |
+| 1.2.2 | M1 | `TestProfileBothFullySpecified` | ☐ |
+| 1.2.3 | M1 | `TestDemoDiffersFromProduction` | ☐ |
+| 1.3.1 | M1 | Implement `SelectProfile()` | ☐ |
+| 1.3.2 | M1 | Implement startup guard rails | ☐ |
+| 1.3.3 | M1 | Guard rail tests | ☐ |
+| 2.1.1 | M2 | Implement `DetectAESNI()` | ☐ |
+| 2.2.1 | M2 | Implement HKDF-SHA256 derivation functions | ☐ |
+| 2.2.2 | M2 | HKDF known-answer tests | ☐ |
+| 2.3.1 | M2 | Implement `DeriveMasterSecret()` | ☐ |
+| 2.3.2 | M2 | `DeriveMasterSecret` performance test | ☐ |
+| 2.4.1 | M2 | Implement AONT canary constant | ☐ |
+| 2.4.2 | M2 | Implement `AONTEncodeSegment()` | ☐ |
+| 2.4.3 | M2 | Implement `AONTDecodePackage()` | ☐ |
+| 2.4.4 | M2 | AONT tests | ☐ |
+| 2.5.1 | M2 | Implement pointer file AEAD | ☐ |
+| 2.6.1 | M2 | Embed BIP-39 English wordlist | ☐ |
+| 2.6.2 | M2 | Implement `MasterSecretToMnemonic()` | ☐ |
+| 2.6.3 | M2 | Implement `MnemonicToMasterSecret()` | ☐ |
+| 2.6.4 | M2 | Implement `SelectConfirmationWords()` | ☐ |
+| 2.6.5 | M2 | BIP-39 round-trip and error tests | ☐ |
+| 2.7.1 | M2 | Ed25519 signing conventions | ☐ |
+| 3.1.1 | M3 | Define `ShardSize` constant and `Engine` struct | ☐ |
+| 3.1.2 | M3 | Implement `NewEngine()` | ☐ |
+| 3.2.1 | M3 | Implement `EncodeSegment()` | ☐ |
+| 3.2.2 | M3 | Implement `DecodeSegment()` | ☐ |
+| 3.2.3 | M3 | Erasure coding tests | ☐ |
+| 4.1.1 | M4 | Implement `migrations/generator.go` | ☐ |
+| 4.2.1 | M4 | Define all PostgreSQL ENUMs | ☐ |
+| 4.3.1 | M4 | `owners` table | ☐ |
+| 4.3.2 | M4 | `providers` table | ☐ |
+| 4.3.3 | M4 | `files` table | ☐ |
+| 4.3.4 | M4 | `segments` table | ☐ |
+| 4.3.5 | M4 | `chunk_assignments` table | ☐ |
+| 4.4.1 | M4 | `audit_periods` table | ☐ |
+| 4.4.2 | M4 | `audit_receipts` table | ☐ |
+| 4.4.3 | M4 | `escrow_events` table | ☐ |
+| 4.4.4 | M4 | `owner_escrow_events` table | ☐ |
+| 4.4.5 | M4 | `repair_jobs` table | ☐ |
+| 4.5.1 | M4 | Create all indexes | ☐ |
+| 4.6.1 | M4 | `audit_receipts` RSP | ☐ |
+| 4.6.2 | M4 | `escrow_events` RSP | ☐ |
+| 4.6.3 | M4 | `chunk_assignments` soft-delete policy | ☐ |
+| 4.7.1 | M4 | `mv_provider_scores` | ☐ |
+| 4.7.2 | M4 | `mv_provider_escrow_balance` | ☐ |
+| 4.7.3 | M4 | `mv_owner_escrow_balance` | ☐ |
+| 4.7.4 | M4 | `mv_segment_shard_counts` | ☐ |
+| 4.7.5 | M4 | Unique indexes on materialised views | ☐ |
+| 4.8.1 | M4 | Run and document DM §9 checklist | ☐ |
+| 5.1.1 | M5 | Define `ChunkStore` interface and sentinel errors | ☐ |
+| 5.1.2 | M5 | Implement append-only vLog | ☐ |
+| 5.1.3 | M5 | Implement RocksDB index wrapper | ☐ |
+| 5.1.4 | M5 | Implement `LookupChunk()` | ☐ |
+| 5.1.5 | M5 | Implement `DeleteChunk()`, `RecoverFromCrash()`, `RunGC()` | ☐ |
+| 5.2.1 | M5 | Implement `TestSingleWriterGoroutine` | ☐ |
+| 5.2.2 | M5 | Storage round-trip and crash recovery tests | ☐ |
+| 6.1.1 | M6 | Implement `Host` interface | ☐ |
+| 6.1.2 | M6 | NAT traversal stack | ☐ |
+| 6.1.3 | M6 | Provider identity persistence | ☐ |
+| 6.2.1 | M6 | Define DHT namespace constant | ☐ |
+| 6.2.2 | M6 | Implement custom HMAC key validator | ☐ |
+| 6.2.3 | M6 | Implement `TestDHTKeyValidatorPersists` | ☐ |
+| 6.3.1 | M6 | Implement heartbeat goroutine | ☐ |
+| 7.1.1 | M7 | Implement `ChallengeNonce()` | ☐ |
+| 7.2.1 | M7 | Implement `ValidateResponse()` | ☐ |
+| 7.3.1 | M7 | Implement `WriteReceiptPhase1()` | ☐ |
+| 7.3.2 | M7 | Implement `WriteReceiptPhase2()` | ☐ |
+| 7.4.1 | M7 | `SecretsManagerClient` interface and cache | ☐ |
+| 7.5.1 | M7 | Implement JIT threshold computation | ☐ |
+| 8.1.1 | M8 | Implement `GetScore()` | ☐ |
+| 8.2.1 | M8 | Implement `IncrementConsecutivePasses()` | ☐ |
+| 8.3.1 | M8 | Implement EWMA update functions | ☐ |
+| 9.1.1 | M9 | Implement `EnqueueJob()` | ☐ |
+| 9.1.2 | M9 | Implement `DequeueNextJob()` | ☐ |
+| 9.1.3 | M9 | Implement `IsVettingChunk()` and `DeleteVettingChunksOnDeparture()` | ☐ |
+| 9.2.1 | M9 | Implement repair download client | ☐ |
+| 9.2.2 | M9 | Implement `RepairPromotionTimeout()` | ☐ |
+| 9.3.1 | M9 | Implement departure detector loop | ☐ |
+| 10.1.1 | M10 | Define `PaymentProvider` interface | ☐ |
+| 10.1.2 | M10 | Implement mock payment provider | ☐ |
+| 10.2.1 | M10 | Implement `InsertEscrowEvent()` | ☐ |
+| 10.3.1 | M10 | Implement Razorpay webhook handlers | ☐ |
+| 10.4.1 | M10 | Implement monthly release computation | ☐ |
+| 10.4.2 | M10 | `TestNoFloatArithmetic` (CI check 6) | ☐ |
+| 11.1.1 | M11 | Implement standard error response | ☐ |
+| 11.2.1 | M11 | Implement `GET /api/v1/admin/readiness` | ☐ |
+| 11.3.1 | M11 | Establish HTTP routing tree with stubs | ☐ |
+| 11.4.1 | M11 | OTP Send | ☐ |
+| 11.4.2 | M11 | OTP Verify | ☐ |
+| 11.4.3 | M11 | Provider Token Refresh | ☐ |
+| 11.5.1 | M11 | Owner Register | ☐ |
+| 11.5.2 | M11 | Deposit Initiate | ☐ |
+| 11.5.3 | M11 | Owner Balance | ☐ |
+| 11.5.4 | M11 | Owner File List | ☐ |
+| 11.5.5 | M11 | Owner Escrow History | ☐ |
+| 11.5.6 | M11 | Owner Withdraw | ☐ |
+| 11.6.1 | M11 | Provider Register | ☐ |
+| 11.6.2 | M11 | Provider Heartbeat | ☐ |
+| 11.6.3 | M11 | Provider Status | ☐ |
+| 11.6.4 | M11 | Provider Audit Receipts | ☐ |
+| 11.6.5 | M11 | Provider Downtime | ☐ |
+| 11.6.6 | M11 | Provider Depart | ☐ |
+| 11.7.1 | M11 | Upload Assign | ☐ |
+| 11.7.2 | M11 | File Register | ☐ |
+| 11.7.3 | M11 | Pointer File Retrieval | ☐ |
+| 11.7.4 | M11 | File Delete | ☐ |
+| 11.8.1 | M11 | Storage Pricing Estimate | ☐ |
+| 11.8.2 | M11 | Provider Earnings Estimate | ☐ |
+| 11.9.1 | M11 | Manual Audit Challenge | ☐ |
+| 11.10.1 | M11 | Admin Providers List | ☐ |
+| 11.10.2 | M11 | Repair Queue | ☐ |
+| 11.10.3 | M11 | Manual Repair Trigger | ☐ |
+| 11.10.4 | M11 | Audit Statistics | ☐ |
+| 11.10.5 | M11 | Vetting Status | ☐ |
+| 11.10.6 | M11 | Vetting GC Retry | ☐ |
+| 11.11.1 | M11 | Per-Provider Chunk Count Ceiling | ☐ |
+| 12.1.1 | M12 | Wire microservice `main()` | ☐ |
+| 12.1.2 | M12 | Audit challenge dispatch loop | ☐ |
+| OBS.1.1 | M-OBS | Register microservice Prometheus metrics | ☐ |
+| OBS.1.2 | M-OBS | Wire metric increments at call sites | ☐ |
+| OBS.2.1 | M-OBS | Register provider daemon Prometheus metrics | ☐ |
+| OBS.3.1 | M-OBS | Define Grafana alert rules | ☐ |
+| OBS.4.1 | M-OBS | Implement `TestNoOrphanMetricName` | ☐ |
+| 13.1.1 | M13 | Wire provider `main()` | ☐ |
+| 13.2.1 | M13 | Chunk upload stream handler | ☐ |
+| 13.3.1 | M13 | Audit challenge stream handler | ☐ |
+| 13.4.1 | M13 | Repair download stream handler | ☐ |
+| 13.5.1 | M13 | Vetting GC stream handler | ☐ |
+| 13.6.1 | M13 | Provider RAM check at installation | ☐ |
+| 14.1.1 | M14 | Implement `Generator` | ☐ |
+| 14.2.1 | M14 | Implement `DeliverGCInstruction()` | ☐ |
+| 15.1.1 | M15 | Registration and keystore | ☐ |
+| 15.2.1 | M15 | `UploadFile()` with capability token handling | ☐ |
+| 15.2.2 | M15 | `ResumeUpload()` | ☐ |
+| 15.3.1 | M15 | `RetrieveFile()` | ☐ |
+| 16.1.1 | M16 | `TestDemoTimeline` integration test | ☐ |
+| 16.1.2 | M16 | Viability fact-check tests | ☐ |
+| 16.2.1 | M16 | `--sim-count` multi-instance provider | ☐ |
+| 17.1.1 | M17 | Secrets manager adapters | ☐ |
+| 17.2.1 | M17 | Gossip cluster (`internal/cluster`) | ☐ |
+| 17.2.2 | M17 | Relay node binary and deployment configuration | ☐ |
+| 18.1.1 | M18 | Create 8 required runbooks | ☐ |
+| 18.2.1 | M18 | Create benchmark scripts | ☐ |
+| 18.3.1 | M18 | Security verification checklist | ☐ |
+| 18.4.1 | M18 | All-green CI verification | ☐ |
+
+---
+
+## Appendix C — File Creation Index
+
+> Reverse lookup: which session creates or primarily modifies each file.
+
+| File | Created By | Modified By |
+| --- | --- | --- |
+| `go.mod` | 0.1.1 | — |
+| `.golangci.yml` | 0.2.1 | — |
+| `scripts/ci/grep_checks.sh` | 0.2.2 | 7.1.1, OBS.4.1 |
+| `.github/workflows/ci.yml` | 0.3.1 | — |
+| `.github/CODEOWNERS` | 0.3.2 | — |
+| `deployments/dev/docker-compose.yml` | 0.4.1 | — |
+| `cmd/microservice/main.go` | 0.1.2 | 12.1.1, 12.1.2 |
+| `cmd/provider/main.go` | 0.1.2 | 13.1.1, 13.6.1 |
+| `cmd/client/main.go` | 0.1.2 | — |
+| `cmd/relay/main.go` | 17.2.2 | — |
+| `internal/config/network_profile.go` | 1.1.1 | — |
+| `internal/config/profiles.go` | 1.1.2 | — |
+| `internal/config/profiles_test.go` | 1.2.1 | 1.2.2, 1.2.3 |
+| `internal/config/select.go` | 1.3.1 | — |
+| `internal/config/guards.go` | 1.3.2 | — |
+| `internal/crypto/aesni.go` | 2.1.1 | — |
+| `internal/crypto/aesni_other.go` | 2.1.1 | — |
+| `internal/crypto/hkdf.go` | 2.2.1 | — |
+| `internal/crypto/hkdf_test.go` | 2.2.2 | — |
+| `internal/crypto/argon2.go` | 2.3.1 | — |
+| `internal/crypto/aont_canary.go` | 2.4.1 | — |
+| `internal/crypto/aont.go` | 2.4.2 | 2.4.3 |
+| `internal/crypto/aont_test.go` | 2.4.4 | — |
+| `internal/crypto/chacha20poly1305.go` | 2.5.1 | — |
+| `internal/crypto/errors.go` | 2.5.1 | — |
+| `internal/crypto/wordlist_en.txt` | 2.6.1 | — |
+| `internal/crypto/bip39.go` | 2.6.2 | 2.6.3, 2.6.4 |
+| `internal/crypto/ed25519.go` | 2.7.1 | — |
+| `internal/erasure/params.go` | 3.1.1 | — |
+| `internal/erasure/engine.go` | 3.1.2 | 3.2.1, 3.2.2 |
+| `internal/erasure/engine_test.go` | 3.2.3 | — |
+| `migrations/generator.go` | 4.1.1 | — |
+| `migrations/001_initial_schema.sql` | 4.1.1–4.8.1 | — |
+| `scripts/ci/migration_check.sh` | 4.8.1 | — |
+| `internal/storage/store.go` | 5.1.1 | — |
+| `internal/storage/errors.go` | 5.1.1 | — |
+| `internal/storage/vlog.go` | 5.1.2 | — |
+| `internal/storage/rotational.go` | 5.1.2 | — |
+| `internal/storage/rotational_other.go` | 5.1.2 | — |
+| `internal/storage/index.go` | 5.1.3 | — |
+| `internal/storage/single_writer_test.go` | 5.2.1 | — |
+| `internal/p2p/host.go` | 6.1.1 | — |
+| `internal/p2p/nat.go` | 6.1.2 | — |
+| `internal/p2p/identity.go` | 6.1.3 | — |
+| `internal/p2p/dht_namespace.go` | 6.2.1 | — |
+| `internal/p2p/dht.go` | 6.2.2 | — |
+| `internal/p2p/dht_test.go` | 6.2.3 | — |
+| `internal/p2p/heartbeat.go` | 6.3.1 | — |
+| `internal/audit/challenge.go` | 7.1.1 | — |
+| `internal/audit/validate.go` | 7.2.1 | — |
+| `internal/audit/receipt.go` | 7.3.1 | 7.3.2 |
+| `internal/audit/secrets_iface.go` | 7.4.1 | — |
+| `internal/audit/secret.go` | 7.4.1 | — |
+| `internal/audit/jit.go` | 7.5.1 | — |
+| `internal/scoring/score.go` | 8.1.1 | — |
+| `internal/scoring/passes.go` | 8.2.1 | — |
+| `internal/scoring/rto.go` | 8.3.1 | — |
+| `internal/repair/queue.go` | 9.1.1 | 9.1.2 |
+| `internal/repair/executor.go` | 9.2.1 | — |
+| `internal/repair/departure.go` | 9.3.1 | — |
+| `internal/payment/provider.go` | 10.1.1 | — |
+| `internal/payment/mock.go` | 10.1.2 | — |
+| `internal/payment/ledger.go` | 10.2.1 | — |
+| `internal/payment/razorpay.go` | 10.3.1 | — |
+| `internal/payment/release.go` | 10.4.1 | — |
+| `internal/payment/payment_test.go` | 10.4.2 | — |
+| `internal/api/errors.go` | 11.1.1 | — |
+| `internal/api/readiness.go` | 11.2.1 | — |
+| `internal/api/router.go` | 11.3.1 | 11.4.1–11.10.6 |
+| `internal/cluster/gossip.go` | 17.2.1 | — |
+| `internal/cluster/router.go` | 17.2.1 | — |
+| `internal/cluster/mock_cluster.go` | 17.2.1 | — |
+| `internal/secrets/vault.go` | 17.1.1 | — |
+| `internal/secrets/aws_ssm.go` | 17.1.1 | — |
+| `internal/secrets/gcp_secret.go` | 17.1.1 | — |
+| `internal/metrics/microservice.go` | OBS.1.1 | OBS.1.2 |
+| `internal/metrics/daemon.go` | OBS.2.1 | — |
+| `deployments/grafana/alerts.yaml` | OBS.3.1 | — |
+| `deployments/grafana/dashboards/vyomanaut.json` | OBS.3.1 | — |
+| `deployments/production/relay/docker-compose.yml` | 17.2.2 | — |
+| `internal/vettingchunk/generator.go` | 14.1.1 | — |
+| `internal/vettingchunk/gc.go` | 14.2.1 | — |
+| `internal/client/account/register.go` | 15.1.1 | — |
+| `internal/client/account/keystore.go` | 15.1.1 | — |
+| `internal/client/upload/orchestrator.go` | 15.2.1 | 15.2.2 |
+| `internal/client/retrieve/orchestrator.go` | 15.3.1 | — |
+| `internal/storage/memcheck_linux.go` | 13.6.1 | — |
+| `internal/storage/memcheck_darwin.go` | 13.6.1 | — |
+| `internal/storage/memcheck_windows.go` | 13.6.1 | — |
+| `scripts/test/demo_timeline_test.go` | 16.1.1 | — |
+| `runbooks/microservice-failover.md` | 18.1.1 | — |
+| `runbooks/postgres-failover.md` | 18.1.1 | — |
+| `runbooks/relay-node-replacement.md` | 18.1.1 | — |
+| `runbooks/secrets-manager-outage.md` | 18.1.1 | — |
+| `runbooks/razorpay-api-outage.md` | 18.1.1 | — |
+| `runbooks/provider-mass-departure.md` | 18.1.1 | — |
+| `runbooks/rbi-holiday-table-update.md` | 18.1.1 | — |
+| `runbooks/audit-secret-rotation.md` | 18.1.1 | — |
+| `scripts/benchmarks/aont_encode.sh` | 18.2.1 | — |
+| `scripts/benchmarks/argon2id.sh` | 18.2.1 | — |
+| `scripts/benchmarks/rocksdb_ssd.sh` | 18.2.1 | — |
+| `scripts/benchmarks/rocksdb_hdd.sh` | 18.2.1 | — |
+| `scripts/benchmarks/postgres_insert_ceiling.sh` | 18.2.1 | — |
+| `scripts/benchmarks/e2e_upload.sh` | 18.2.1 | — |
+| `docs/system-design/security-verification-checklist.md` | 18.3.1 | — |
 
 ---
 
