@@ -6,14 +6,120 @@
 **Repository:** https://github.com/masamasaowl/Vyomanaut_Research  
 **Derived from:**
 
-- `docs/system-design/interface-contracts.md` (IC) — wire contracts, Go package interfaces, forbidden patterns
-- `docs/system-design/data-model.md` (DM) — PostgreSQL schema, invariants, indexes, row security policies
-- `docs/system-design/mvp.md` (MVP) — NetworkProfile, demo/prod mode, repository layout, CI pipeline
-- `docs/system-design/api/openapi.yaml` (OAS) — authoritative REST/HTTP surface; all endpoint schemas
-- `docs/system-design/architecture.md` (ARCH) — system overview, deployment topology, relay infrastructure
-- `docs/system-design/requirements.md` (REQ) — FR/NFR completeness gates, capacity calculations
+1. `docs/system-design/requirements.md` (REQ) — FR/NFR completeness gates, capacity calculations
+2. `docs/system-design/architecture.md` (ARCH) — system overview, deployment topology, relay infrastructure
+3. `docs/system-design/data-model.md` (DM) — PostgreSQL schema, invariants, indexes, row security policies
+4. `docs/system-design/interface-contracts.md` (IC) — wire contracts, Go package interfaces, forbidden patterns
+5. `docs/system-design/mvp.md` (MVP) — NetworkProfile, demo/prod mode, repository layout, CI pipeline
+6. `docs/system-design/api/openapi.yaml` (OAS) — authoritative REST/HTTP surface; all endpoint schemas
 
 > **Reading convention.** Each session carries a `[REF]` tag pointing to the exact document section that governs it. Every session is atomic: it produces a passing `go test` or a passing migration apply before the next session begins. Logical errors discovered during implementation are fixed in the current session with a note appended to the session log — do not silently carry forward broken invariants.
+
+---
+
+## Table of Contents
+
+- [Build Dependency Graph](#build-dependency-graph)
+- [Milestone 0 — Project Setup & Repository Foundation](#milestone-0--project-setup--repository-foundation)
+  - [Phase 0.1 — Repository Layout](#phase-01--repository-layout)
+  - [Phase 0.2 — Toolchain & Linter Configuration](#phase-02--toolchain--linter-configuration)
+  - [Phase 0.3 — CI Pipeline Skeleton](#phase-03--ci-pipeline-skeleton)
+  - [Phase 0.4 — Development Docker Compose](#phase-04--development-docker-compose)
+- [Milestone 1 — Configuration & NetworkProfile](#milestone-1--configuration--networkprofile)
+  - [Phase 1.1 — NetworkProfile Struct](#phase-11--networkprofile-struct)
+  - [Phase 1.2 — Profile Tests](#phase-12--profile-tests)
+  - [Phase 1.3 — Profile Selection & Guard Rails](#phase-13--profile-selection--guard-rails)
+- [Milestone 2 — Core Cryptography (`internal/crypto`)](#milestone-2--core-cryptography-internalcrypto)
+  - [Phase 2.1 — AES-NI Detection](#phase-21--aes-ni-detection)
+  - [Phase 2.2 — HKDF Key Derivation](#phase-22--hkdf-key-derivation)
+  - [Phase 2.3 — Argon2id Master Secret Derivation](#phase-23--argon2id-master-secret-derivation)
+  - [Phase 2.4 — AONT Cipher](#phase-24--aont-cipher)
+  - [Phase 2.5 — Pointer File AEAD](#phase-25--pointer-file-aead)
+  - [Phase 2.6 — BIP-39 Mnemonic System](#phase-26--bip-39-mnemonic-system)
+  - [Phase 2.7 — Ed25519 Signing Conventions](#phase-27--ed25519-signing-conventions)
+- [Milestone 3 — Erasure Coding Engine (`internal/erasure`)](#milestone-3--erasure-coding-engine-internalerasure)
+  - [Phase 3.1 — Engine Construction](#phase-31--engine-construction)
+  - [Phase 3.2 — Encode & Decode](#phase-32--encode--decode)
+- [Milestone 4 — Database Schema & Migrations](#milestone-4--database-schema--migrations)
+  - [Phase 4.1 — Migration Generator](#phase-41--migration-generator)
+  - [Phase 4.2 — Core Type Definitions](#phase-42--core-type-definitions)
+  - [Phase 4.3 — Core Tables](#phase-43--core-tables)
+  - [Phase 4.4 — Audit, Escrow, and Repair Tables](#phase-44--audit-escrow-and-repair-tables)
+  - [Phase 4.5 — Index Catalogue](#phase-45--index-catalogue)
+  - [Phase 4.6 — Row Security Policies](#phase-46--row-security-policies)
+  - [Phase 4.7 — Materialised Views](#phase-47--materialised-views)
+  - [Phase 4.8 — Migration Checklist Verification](#phase-48--migration-checklist-verification)
+- [Milestone 5 — Provider Storage Engine (`internal/storage`)](#milestone-5--provider-storage-engine-internalstorage)
+  - [Phase 5.1 — ChunkStore Interface & vLog](#phase-51--chunkstore-interface--vlog)
+  - [Phase 5.2 — Storage Tests](#phase-52--storage-tests)
+- [Milestone 6 — P2P Network Layer (`internal/p2p`)](#milestone-6--p2p-network-layer-internalp2p)
+  - [Phase 6.1 — libp2p Host](#phase-61--libp2p-host)
+  - [Phase 6.2 — Kademlia DHT with Custom HMAC Validator](#phase-62--kademlia-dht-with-custom-hmac-validator)
+  - [Phase 6.3 — Heartbeat Goroutine](#phase-63--heartbeat-goroutine)
+- [Milestone 7 — Audit System (`internal/audit`)](#milestone-7--audit-system-internalaudit)
+  - [Phase 7.1 — Challenge Nonce Generation](#phase-71--challenge-nonce-generation)
+  - [Phase 7.2 — Response Validation](#phase-72--response-validation)
+  - [Phase 7.3 — Two-Phase Receipt Write](#phase-73--two-phase-receipt-write)
+  - [Phase 7.4 — Cluster Secret Cache](#phase-74--cluster-secret-cache)
+  - [Phase 7.5 — JIT Detection](#phase-75--jit-detection)
+- [Milestone 8 — Scoring System (`internal/scoring`)](#milestone-8--scoring-system-internalscoring)
+  - [Phase 8.1 — Score Retrieval](#phase-81--score-retrieval)
+  - [Phase 8.2 — Consecutive Pass Counter](#phase-82--consecutive-pass-counter)
+  - [Phase 8.3 — EWMA RTO Tracking](#phase-83--ewma-rto-tracking)
+- [Milestone 9 — Repair System (`internal/repair`)](#milestone-9--repair-system-internalrepair)
+  - [Phase 9.1 — Repair Job Queue](#phase-91--repair-job-queue)
+  - [Phase 9.2 — Repair Executor](#phase-92--repair-executor)
+  - [Phase 9.3 — Departure Detector](#phase-93--departure-detector)
+- [Milestone 10 — Payment System (`internal/payment`)](#milestone-10--payment-system-internalpayment)
+  - [Phase 10.1 — PaymentProvider Interface & Mock](#phase-101--paymentprovider-interface--mock)
+  - [Phase 10.2 — Escrow Ledger](#phase-102--escrow-ledger)
+  - [Phase 10.3 — Razorpay Implementation](#phase-103--razorpay-implementation)
+  - [Phase 10.4 — Release Computation & Seizure](#phase-104--release-computation--seizure)
+- [Milestone 11 — REST API Layer](#milestone-11--rest-api-layer)
+  - [Phase 11.1 — Error Envelope](#phase-111--error-envelope)
+  - [Phase 11.2 — Readiness Gate Endpoint](#phase-112--readiness-gate-endpoint)
+  - [Phase 11.3 — Endpoint Routing Stubs](#phase-113--endpoint-routing-stubs)
+  - [Phase 11.4 — Authentication Endpoints](#phase-114--authentication-endpoints)
+  - [Phase 11.5 — Owner Endpoints](#phase-115--owner-endpoints)
+  - [Phase 11.6 — Provider REST Endpoints](#phase-116--provider-rest-endpoints)
+  - [Phase 11.7 — Upload and File Endpoints](#phase-117--upload-and-file-endpoints)
+  - [Phase 11.8 — Pricing Endpoints](#phase-118--pricing-endpoints)
+  - [Phase 11.9 — Audit Admin Endpoints](#phase-119--audit-admin-endpoints)
+  - [Phase 11.10 — Admin Endpoints](#phase-1110--admin-endpoints)
+  - [Phase 11.11 — Per-Provider Chunk Count Ceiling](#phase-1111--per-provider-chunk-count-ceiling)
+- [Milestone 12 — Coordination Microservice (`cmd/microservice`)](#milestone-12--coordination-microservice-cmdmicroservice)
+  - [Phase 12.1 — Microservice Startup](#phase-121--microservice-startup)
+- [Milestone 13 — Provider Daemon Core (`cmd/provider`)](#milestone-13--provider-daemon-core-cmdprovider)
+  - [Phase 13.1 — Provider Startup](#phase-131--provider-startup)
+  - [Phase 13.2 — Chunk Upload Stream Handler](#phase-132--chunk-upload-stream-handler)
+  - [Phase 13.3 — Audit Challenge Stream Handler](#phase-133--audit-challenge-stream-handler)
+  - [Phase 13.4 — Repair Download Stream Handler](#phase-134--repair-download-stream-handler)
+  - [Phase 13.5 — Vetting GC Stream Handler](#phase-135--vetting-gc-stream-handler)
+  - [Phase 13.6 — Provider RAM Check at Installation](#phase-136--provider-ram-check-at-installation)
+- [Milestone 14 — Vetting & Synthetic Chunks (`internal/vettingchunk`)](#milestone-14--vetting--synthetic-chunks-internalvettingchunk)
+  - [Phase 14.1 — Synthetic Chunk Generator](#phase-141--synthetic-chunk-generator)
+  - [Phase 14.2 — GC Delivery](#phase-142--gc-delivery)
+- [Milestone 15 — Client SDK (`internal/client`)](#milestone-15--client-sdk-internalclient)
+  - [Phase 15.1 — Account Management](#phase-151--account-management)
+  - [Phase 15.2 — Upload Orchestrator](#phase-152--upload-orchestrator)
+  - [Phase 15.3 — Retrieval Orchestrator](#phase-153--retrieval-orchestrator)
+- [Milestone 16 — Demo Mode Validation](#milestone-16--demo-mode-validation)
+  - [Phase 16.1 — End-to-End Demo Test](#phase-161--end-to-end-demo-test)
+  - [Phase 16.2 — Simulation Mode](#phase-162--simulation-mode)
+- [Milestone 17 — Production Hardening](#milestone-17--production-hardening)
+  - [Phase 17.1 — Secrets Manager Adapters](#phase-171--secrets-manager-adapters)
+  - [Phase 17.2 — HA Microservice & Relay Nodes](#phase-172--ha-microservice--relay-nodes)
+- [Milestone M-OBS — Observability & Metrics](#milestone-m-obs--observability--metrics)
+  - [Phase OBS.1 — Microservice Metrics](#phase-obs1--microservice-metrics)
+  - [Phase OBS.2 — Provider Daemon Metrics](#phase-obs2--provider-daemon-metrics)
+  - [Phase OBS.3 — Operational Alerts](#phase-obs3--operational-alerts)
+  - [Phase OBS.4 — Prometheus Metric Naming CI Gate](#phase-obs4--prometheus-metric-naming-ci-gate)
+- [Milestone 18 — Launch Readiness](#milestone-18--launch-readiness)
+  - [Phase 18.1 — Runbooks](#phase-181--runbooks)
+  - [Phase 18.2 — Benchmark Scripts](#phase-182--benchmark-scripts)
+  - [Phase 18.3 — Security Verification Checklist](#phase-183--security-verification-checklist)
+  - [Phase 18.4 — Final CI Gate](#phase-184--final-ci-gate)
+- [Appendix A — Invariant Enforcement Traceability](#appendix-a--invariant-enforcement-traceability)
 
 ---
 
@@ -33,12 +139,12 @@ M0 (Setup)
              │   └─ M10 (Repair)
              ├─ M11 (Payment)
              └─ M12 (REST API Layer)
+                 ├─ M-OBS (Observability & Metrics)
                  └─ M13 (Coordination Microservice)
                      └─ M14 (Vetting & Synthetic Chunks)
                          └─ M15 (Client SDK)
                              └─ M16 (Demo Mode Validation)
                                  ├─ M17 (Production Hardening) 
-                                 └─ M-OBS (Observability & Metrics)
                                     └─ M18 (Launch Readiness)
 ```
 
@@ -74,7 +180,7 @@ a corresponding ADR (IC §11 — no communication link not shown in the diagram)
 #### Session 0.1.2 — Create `cmd/` entrypoint stubs
 
 **Task:** Create three entrypoint packages: `cmd/microservice/main.go`,
-`cmd/provider/main.go`, `cmd/client/main.go`. Each file must contain only:
+`cmd/provider/main.go`, `cmd/client/main.go` (# TODO: `cmd/relay` added in M17 and does not contain an entry in MVP §8.1). Each file must contain only:
 
 1. `package main`
 2. An empty `func main()` that prints the startup banner format from MVP §2.1:
@@ -94,7 +200,7 @@ the description in MVP §8.2. Packages to stub: `internal/config`, `internal/cry
 `internal/erasure`, `internal/storage`, `internal/p2p`, `internal/audit`,
 `internal/scoring`, `internal/repair`, `internal/payment`, `internal/vettingchunk`,
 `internal/client/account`, `internal/client/upload`, `internal/client/retrieve`,
-`internal/client/manage`.
+`internal/client/manage`, `internal/cluster`.
 
 Verify: `go build ./internal/...` succeeds. `go vet ./internal/...` produces zero output.
 
@@ -342,10 +448,12 @@ by the package invariant in IC §5.1)
 `internal/crypto/aesni_other.go` (build tag `//go:build !amd64`) returning `false`.
 The function is called once at startup and stored; it must never be called again at
 runtime (IC §5.1 post-condition: "Never re-checked at runtime"). Store the result in a
-package-level `var aesNIAvailable = DetectAESNI()` that callers use — but this variable
+package-level `var aesNIAvailable = DetectAESNI()` (`var aesNIAvailable` is explicitly scoped as a test helper only) that callers use — but this variable
 must not be exported (callers pass the result as a parameter per IC §5.1).
 
 Verify: Compiles on amd64 and arm64. On amd64 with AES-NI hardware, returns true.
+
+**Note:**  `DetectAESNI()` is called once in `cmd/provider/main.go` at daemon startup, stored in a local variable there, and passed down as a parameter to every `AONTEncodeSegment` and `AONTDecodePackage` call
 
 ---
 
@@ -952,8 +1060,7 @@ the exact warning: `*** SINGLE WRITER ONLY — NOT goroutine-safe ***` as specif
 #### Session 5.1.2 — Implement append-only vLog
 
 **Task:** Create `internal/storage/vlog.go`. The vLog is an append-only file. Each entry
-stores: `chunk_id` (32 bytes), `content_hash = SHA-256(chunk_data)` (32 bytes), chunk
-length (4 bytes), raw `chunk_data` (262144 bytes). The `AppendChunk` method must:
+stores: `chunk_id (32)`, `chunk_size (4)`, `chunk_data (262144)`, `content_hash (32)`. The `AppendChunk` method must:
 1. Verify `SHA-256(chunkData) == chunkID` before writing (IC §5.3 pre-condition)
 2. Write the entry to the vLog file
 3. Call `fsync` before returning
@@ -1414,12 +1521,12 @@ SELECT provider_id FROM providers
 WHERE status = 'ACTIVE'
   AND last_heartbeat_ts < NOW() - $1  -- profile.DepartureThreshold
 ```
+
 For each departed provider:
+
 1. Set `status = 'DEPARTED'`, `frozen = TRUE`, `departed_at = NOW()`
-2. Call `IsVettingChunk()` for each assigned chunk — if true, call
-   `DeleteVettingChunksOnDeparture()` instead of `EnqueueJob()`
-3. Call `payment.Penalise()` (the departure handler wires payment — but repair package
-   cannot import payment; this call is in the microservice entrypoint that orchestrates both)
+2. Call `IsVettingChunk()` for each assigned chunk — if true, call `DeleteVettingChunksOnDeparture()` instead of `EnqueueJob()`
+3. Call `payment.Penalise()` (the departure handler wires payment — but repair package cannot import payment; This violates IC §9 which explicitly prohibits `internal/repair` from importing `internal/payment`. This can be added to Session 12.1.1 where the departure detector goroutine is wired into the microservice)
 4. Call `EnqueueJob()` for each real shard (Invariant 3: no physical deletion)
 
 **IC §6 DML constraint:** `UPDATE providers SET status = 'DEPARTED'` is only permitted by
@@ -1474,18 +1581,12 @@ DM §4.8
 
 **Task:** Create `internal/payment/ledger.go`. `InsertEscrowEvent()` is the only
 permitted write to `escrow_events` (Invariant 2). The function must:
+
 - Accept `amountPaise int64` — never accept float via a type check or debug panic
 - Handle `ErrDuplicateIdempotencyKey` on UNIQUE constraint violation (idempotent retry)
 
 Define `EscrowEventType` constants per IC §5.8: `EscrowDeposit`, `EscrowRelease`,
-`EscrowSeizure`, and `EscrowReversal` (note: IC §5.8 has a duplicate `EscrowSeizure`
-constant name for REVERSAL — this is an error in the document. Use `EscrowReversal`
-for the `"REVERSAL"` event type per DM §4.8 and DM §7 which adds REVERSAL).
-
-**Document the IC §5.8 inconsistency:** Add a code comment: "IC §5.8 contains a
-duplicate constant name for REVERSAL (shows EscrowSeizure twice). This implementation
-uses EscrowReversal for the REVERSAL event type per DM §4.8. The inconsistency in
-IC §5.8 requires a correction PR."
+`EscrowSeizure`, and `EscrowReversal` 
 
 ---
 
@@ -1547,11 +1648,6 @@ itself a prohibited change (IC §11).
 ---
 
 ## Milestone 11 — REST API Layer
-
-**Status:** The error envelope, readiness gate, and Razorpay webhook handler can be
-implemented from the documents in context. All other endpoint schemas require
-`openapi.yaml`. Stub handlers that return `501 Not Implemented` must be committed for
-every endpoint referenced in IC and DM so that the routing tree is established.
 
 **Reference:** OAS (all sections) IC §3 (all REST contracts), IC §3.3 (error envelope), IC §3.4 (readiness
 gate), IC §7 (webhook contracts implemented in M10)
@@ -1926,6 +2022,8 @@ MVP §2.3 (guard rails), OAS `components/securitySchemes, ARCH §18, REQ NFR-028
 9. Start the departure detector goroutine
 10. Start the release computation goroutine (ticker or calendar per profile)
 
+**Note:** We faced an import constraint violation in departure detector (Session 9.3.1). Step 3 of the departure handler lists Call `payment.Penalise()`. So please implement it in this session.  
+
 **The authoritative JWT claim set from OAS `components/securitySchemes/BearerAuth`:**
 
 - `sub` = entity UUID
@@ -1942,6 +2040,8 @@ Registration token TTL (short-lived, single-use): 1 hour, valid only for the mat
 1. Reading two seed node addresses from environment variables `VYOMANAUT_SEED_NODE_1` and `VYOMANAUT_SEED_NODE_2` (pre-configured stable addresses per architecture.md §18; fail-fast at startup if absent in production mode).
 2. Initialising `internal/cluster/gossip.GossipCluster` with a per-second reconciliation ticker: each tick selects one randomly chosen peer from the membership view and exchanges membership histories.
 3. Waiting for at least 2 peers to ack membership before the readiness gate evaluator loop starts (prevents split-brain false-ready on cold start).
+
+**Note:** Use `MockClusterMembership` (from `internal/cluster/mock_cluster.go`) until M17 Phase 17.2.1 is complete.
 
 **Client-driven routing** (architecture.md §18). For latency-sensitive hot paths — audit challenge dispatch and chunk assignment decisions — the microservice must bypass the load balancer and route directly to the responsible replica. Implement `internal/cluster/router.ResponsibleReplica(opType string) *url.URL` which reads the in-memory cluster membership view and returns the direct address of the replica owning the operation shard. This reduces p99 latency by 30+ ms (architecture.md §18).
 
@@ -1965,6 +2065,96 @@ For each active chunk in `active_chunk_assignments`:
 
 **Concurrency (IC §4.2):** The microservice may open multiple concurrent challenge streams
 to a single provider. Use a goroutine per chunk assignment, bounded by a semaphore.
+
+---
+
+## Milestone M-OBS — Observability & Metrics
+
+**Deliverable:** All Prometheus metrics defined in NFR-025 and NFR-026 are exported with the correct naming convention (NFR-046). Grafana alert rules are defined. The background throttle metric is wired. The `TestNoOrphanMetricName` CI check passes.
+
+**Reference:** architecture.md §23 (metric catalogue, alert thresholds), requirements.md §5.6 (NFR-025, NFR-026, NFR-027, NFR-028, NFR-046)
+
+---
+
+### Phase OBS.1 — Microservice Metrics
+
+#### Session OBS.1.1 — Register all microservice Prometheus metrics
+
+**Reference:** NFR-025 (requirements.md §5.6), architecture.md §23, NFR-046
+
+Create `internal/metrics/microservice.go`. Register every metric from NFR-025 using the `vyomanaut_{subsystem}_{name}_{unit}` naming pattern from NFR-046, where `{subsystem}` matches the `internal/` package name:
+
+| Metric name | Type | Labels | Package |
+| --- | --- | --- | --- |
+| `vyomanaut_audit_challenges_issued_total` | Counter | — | audit |
+| `vyomanaut_audit_results_total` | Counter | `result` (PASS/FAIL/TIMEOUT) | audit |
+| `vyomanaut_provider_score` | Histogram | — | scoring |
+| `vyomanaut_repair_queue_depth` | Gauge | — | repair |
+| `vyomanaut_repair_jobs_completed_total` | Counter | — | repair |
+| `vyomanaut_escrow_events_total` | Counter | `type` (DEPOSIT/RELEASE/SEIZURE/REVERSAL) | payment |
+| `vyomanaut_microservice_replica_count` | Gauge | `state` (healthy/degraded) | cluster |
+| `vyomanaut_db_read_latency_seconds` | Histogram | percentile p99 | audit |
+
+The `vyomanaut_db_read_latency_seconds` histogram bucket boundaries must include 0.01, 0.025, 0.05 (the throttle threshold), 0.1 seconds. The background throttle goroutine in M12 Session 12.1.1 reads `vyomanaut_db_read_latency_seconds` p99 from the in-process registry — no external scrape needed for the throttle decision.
+
+Expose all metrics at `/metrics` on a separate admin port (configurable, default 9090).
+
+#### Session OBS.1.2 — Wire metric increments at call sites
+
+Add `metrics.AuditResultsTotal.With(prometheus.Labels{"result": result.String()}).Inc()` at the Phase 2 receipt write call site (M7 Session 7.3.2). Add `metrics.RepairQueueDepth.Set(float64(depth))` in the repair enqueue/dequeue call sites (M9 Phase 9.1). Add `metrics.EscrowEventsTotal.With(...).Inc()` in `InsertEscrowEvent` (M10 Phase 10.2.1). These increments must use the exact metric names from Session OBS.1.1 — any rename is a breaking change per NFR-046.
+
+---
+
+### Phase OBS.2 — Provider Daemon Metrics
+
+#### Session OBS.2.1 — Register all provider daemon Prometheus metrics
+
+**Reference:** NFR-026, architecture.md §23
+
+Create `internal/metrics/daemon.go`. Register:
+
+| Metric name | Type |
+| --- | --- |
+| `vyomanaut_chunks_stored_total` | Counter |
+| `vyomanaut_audit_responses_sent_total` | Counter |
+| `vyomanaut_audit_response_latency_milliseconds` | Histogram |
+| `vyomanaut_vlog_append_latency_milliseconds` | Histogram |
+| `vyomanaut_content_hash_failures_total` | Counter |
+| `vyomanaut_heartbeat_sent_total` | Counter |
+| `vyomanaut_daemon_ram_constrained` | Gauge (label: `constrained`) |
+
+Expose at a local-only HTTP server on `localhost:9091` (not publicly reachable). The provider daemon CLI status interface (FR-029) reads its data from this endpoint rather than maintaining a separate in-memory state.
+
+---
+
+### Phase OBS.3 — Operational Alerts
+
+#### Session OBS.3.1 — Define Grafana alert rules**
+
+**Reference:** NFR-027 (requirements.md §5.6), architecture.md §23
+
+Create `deployments/grafana/alerts.yaml` with the four mandatory alert rules from NFR-027:
+
+| Alert name | Condition | Severity |
+| --- | --- | --- |
+| `RepairQueueDepthHigh` | `vyomanaut_repair_queue_depth > 1000` | warning |
+| `AuditTimeoutRateHigh` | `rate(vyomanaut_audit_results_total{result="TIMEOUT"}[1h]) / rate(vyomanaut_audit_results_total[1h]) > 0.05` | critical |
+| `ContentHashFailureDetected` | `increase(vyomanaut_content_hash_failures_total[7d]) > 0` | critical |
+| `MicroserviceReplicasDegraded` | `vyomanaut_microservice_replica_count{state="healthy"} < 3` | critical |
+
+`AuditTimeoutRateHigh` at > 5% in a 1-hour window triggers the relay infrastructure runbook. `ContentHashFailureDetected` for any provider in a 7-day window triggers accelerated re-audit of all that provider's chunks (architecture.md §23).
+
+**Add the Grafana dashboard JSON:** to `deployments/grafana/dashboards/vyomanaut.json`. The dashboard JSON must reference metric names by exact string — any metric rename without simultaneous dashboard update is a breaking change (NFR-046). Add a CI check `TestGrafanaMetricNamesMatchRegistry` in `scripts/ci/grep_checks.sh` that greps all metric name strings from the dashboard JSON and verifies they exist in `internal/metrics/*.go`.
+
+---
+
+### Phase OBS.4 — Prometheus Metric Naming CI Gate
+
+#### Session OBS.4.1 — Implement `TestNoOrphanMetricName`
+
+**Reference:** NFR-046 (requirements.md §5.5)
+
+Add to `scripts/ci/grep_checks.sh` a fifth grep-fail check: extract all metric name strings from `deployments/grafana/dashboards/vyomanaut.json` and `deployments/grafana/alerts.yaml`, then verify each appears in at least one `.go` file under `internal/metrics/`. A metric name present in dashboards/alerts but not in the Go registry (or vice versa) fails the check with the message `"orphan metric name: {name} — update metrics/*.go and dashboards simultaneously"`. This check is CI check 16 (add it to Phase 0.3 Session 0.3.1 step list).
 
 ---
 
@@ -2373,96 +2563,6 @@ Create `deployments/production/relay/docker-compose.yml` for the three-node rela
 
 ---
 
-## Milestone M-OBS — Observability & Metrics
-
-**Deliverable:** All Prometheus metrics defined in NFR-025 and NFR-026 are exported with the correct naming convention (NFR-046). Grafana alert rules are defined. The background throttle metric is wired. The `TestNoOrphanMetricName` CI check passes.
-
-**Reference:** architecture.md §23 (metric catalogue, alert thresholds), requirements.md §5.6 (NFR-025, NFR-026, NFR-027, NFR-028, NFR-046)
-
----
-
-### Phase OBS.1 — Microservice Metrics
-
-#### Session OBS.1.1 — Register all microservice Prometheus metrics
-
-**Reference:** NFR-025 (requirements.md §5.6), architecture.md §23, NFR-046
-
-Create `internal/metrics/microservice.go`. Register every metric from NFR-025 using the `vyomanaut_{subsystem}_{name}_{unit}` naming pattern from NFR-046, where `{subsystem}` matches the `internal/` package name:
-
-| Metric name | Type | Labels | Package |
-| --- | --- | --- | --- |
-| `vyomanaut_audit_challenges_issued_total` | Counter | — | audit |
-| `vyomanaut_audit_results_total` | Counter | `result` (PASS/FAIL/TIMEOUT) | audit |
-| `vyomanaut_provider_score` | Histogram | — | scoring |
-| `vyomanaut_repair_queue_depth` | Gauge | — | repair |
-| `vyomanaut_repair_jobs_completed_total` | Counter | — | repair |
-| `vyomanaut_escrow_events_total` | Counter | `type` (DEPOSIT/RELEASE/SEIZURE/REVERSAL) | payment |
-| `vyomanaut_microservice_replica_count` | Gauge | `state` (healthy/degraded) | cluster |
-| `vyomanaut_db_read_latency_seconds` | Histogram | percentile p99 | audit |
-
-The `vyomanaut_db_read_latency_seconds` histogram bucket boundaries must include 0.01, 0.025, 0.05 (the throttle threshold), 0.1 seconds. The background throttle goroutine in M12 Session 12.1.1 reads `vyomanaut_db_read_latency_seconds` p99 from the in-process registry — no external scrape needed for the throttle decision.
-
-Expose all metrics at `/metrics` on a separate admin port (configurable, default 9090).
-
-#### Session OBS.1.2 — Wire metric increments at call sites
-
-Add `metrics.AuditResultsTotal.With(prometheus.Labels{"result": result.String()}).Inc()` at the Phase 2 receipt write call site (M7 Session 7.3.2). Add `metrics.RepairQueueDepth.Set(float64(depth))` in the repair enqueue/dequeue call sites (M9 Phase 9.1). Add `metrics.EscrowEventsTotal.With(...).Inc()` in `InsertEscrowEvent` (M10 Phase 10.2.1). These increments must use the exact metric names from Session OBS.1.1 — any rename is a breaking change per NFR-046.
-
----
-
-### Phase OBS.2 — Provider Daemon Metrics
-
-#### Session OBS.2.1 — Register all provider daemon Prometheus metrics
-
-**Reference:** NFR-026, architecture.md §23
-
-Create `internal/metrics/daemon.go`. Register:
-
-| Metric name | Type |
-| --- | --- |
-| `vyomanaut_chunks_stored_total` | Counter |
-| `vyomanaut_audit_responses_sent_total` | Counter |
-| `vyomanaut_audit_response_latency_milliseconds` | Histogram |
-| `vyomanaut_vlog_append_latency_milliseconds` | Histogram |
-| `vyomanaut_content_hash_failures_total` | Counter |
-| `vyomanaut_heartbeat_sent_total` | Counter |
-| `vyomanaut_daemon_ram_constrained` | Gauge (label: `constrained`) |
-
-Expose at a local-only HTTP server on `localhost:9091` (not publicly reachable). The provider daemon CLI status interface (FR-029) reads its data from this endpoint rather than maintaining a separate in-memory state.
-
----
-
-### Phase OBS.3 — Operational Alerts
-
-#### Session OBS.3.1 — Define Grafana alert rules**
-
-**Reference:** NFR-027 (requirements.md §5.6), architecture.md §23
-
-Create `deployments/grafana/alerts.yaml` with the four mandatory alert rules from NFR-027:
-
-| Alert name | Condition | Severity |
-| --- | --- | --- |
-| `RepairQueueDepthHigh` | `vyomanaut_repair_queue_depth > 1000` | warning |
-| `AuditTimeoutRateHigh` | `rate(vyomanaut_audit_results_total{result="TIMEOUT"}[1h]) / rate(vyomanaut_audit_results_total[1h]) > 0.05` | critical |
-| `ContentHashFailureDetected` | `increase(vyomanaut_content_hash_failures_total[7d]) > 0` | critical |
-| `MicroserviceReplicasDegraded` | `vyomanaut_microservice_replica_count{state="healthy"} < 3` | critical |
-
-`AuditTimeoutRateHigh` at > 5% in a 1-hour window triggers the relay infrastructure runbook. `ContentHashFailureDetected` for any provider in a 7-day window triggers accelerated re-audit of all that provider's chunks (architecture.md §23).
-
-**Add the Grafana dashboard JSON:** to `deployments/grafana/dashboards/vyomanaut.json`. The dashboard JSON must reference metric names by exact string — any metric rename without simultaneous dashboard update is a breaking change (NFR-046). Add a CI check `TestGrafanaMetricNamesMatchRegistry` in `scripts/ci/grep_checks.sh` that greps all metric name strings from the dashboard JSON and verifies they exist in `internal/metrics/*.go`.
-
----
-
-### Phase OBS.4 — Prometheus Metric Naming CI Gate
-
-#### Session OBS.4.1 — Implement `TestNoOrphanMetricName`
-
-**Reference:** NFR-046 (requirements.md §5.5)
-
-Add to `scripts/ci/grep_checks.sh` a fifth grep-fail check: extract all metric name strings from `deployments/grafana/dashboards/vyomanaut.json` and `deployments/grafana/alerts.yaml`, then verify each appears in at least one `.go` file under `internal/metrics/`. A metric name present in dashboards/alerts but not in the Go registry (or vice versa) fails the check with the message `"orphan metric name: {name} — update metrics/*.go and dashboards simultaneously"`. This check is CI check 16 (add it to Phase 0.3 Session 0.3.1 step list).
-
----
-
 ## Milestone 18 — Launch Readiness
 
 **Status:** Runbooks and benchmark scripts are structurally defined by document references.
@@ -2620,25 +2720,25 @@ commit with the message `milestone: M18 launch-readiness all-green CI`.
 Every design invariant from DM §3 and IC must be enforced at the layer shown below.
 A PR that breaks any row here must be rejected.
 
-| Invariant | Source | Enforced at | Milestone |
-|-----------|--------|-------------|-----------|
-| 1 — Append-only audit log | DM §3 | DB RSP (DM §6); `WriteReceiptPhase2` WHERE clause | M4, M7 |
-| 2 — Append-only escrow ledger | DM §3 | DB RSP (DM §6); `InsertEscrowEvent` only write | M4, M10 |
-| 3 — No physical provider deletion | DM §3 | IC §6 DML table; departure sets `status='DEPARTED'` | M4, M9 |
-| 4 — All amounts integer paise | DM §3 | DB BIGINT constraint; `TestNoFloatArithmetic`; debug panic | M4, M10 |
-| 5 — Challenge nonce 33 bytes | DM §3 | DB CHECK constraint; `[33]byte` return type; CI grep | M4, M7 |
-| 6 — No real shard on vetting / no repair for synthetic | DM §3 | DB CHECK constraint; `EnqueueJob` debug panic; `IsVettingChunk` pre-check | M4, M9, M14 |
-| 7 — ShardSize compile-time constant | DM §3 | `const ShardSize = 262144`; `TestProfileShardSizeIsConstant` | M1, M3 |
-| Single-writer vLog | IC §5.3 | Channel to writer goroutine; `TestSingleWriterGoroutine` | M5 |
-| 0-RTT prohibited on audit/gc streams | IC §4 | Host middleware on protocol ID suffix; `DisableEarlyData: true` | M6 |
-| No JSON signing inputs | IC §3.2 | `SignBytes` comment; code review rule | M2 |
-| DHT HMAC key validator | IC §12 | Custom namespace validator; `TestDHTKeyValidatorPersists` | M6 |
-| No float in payment | IC §11 | `TestNoFloatArithmetic` CI check; debug panic in `InsertEscrowEvent` | M10 |
-| Background throttle fires at DB p99 ≥ 50 ms | NFR-028, architecture.md §18 | `backgroundThrottle` goroutine in M12; `vyomanaut_db_read_latency_seconds` histogram | M12, M-OBS |
-| Metric names follow `vyomanaut_{subsystem}_{name}_{unit}` pattern | NFR-046 | `TestNoOrphanMetricName` CI check 16; `internal/metrics/*.go` is the single source | M-OBS |
-| Chunk ceiling enforced at assignment time | NFR-044 | Assignment service rejects providers over BWavg ceiling; `INSUFFICIENT_PROVIDER_CAPACITY` HTTP 503 | M11 Phase 11.11 |
-| Provider RAM checked before daemon starts accepting assignments | NFR-045 | `internal/storage/memcheck_*.go` at startup; WARN logged and `declared_storage_gb` reduced | M13 Phase 13.6 |
-| Relay node capacity does not exceed 128 concurrent reservations per node | architecture.md §13, §27.5 | `cmd/relay` configuration constant; `vyomanaut_relay_reservations_active` gauge alert | M17, M-OBS |
+| ID | Name | Source | Enforced At | Milestone |
+|----|------|---------|-------------|-----------|
+| INV-1 | Append-only audit log | DM §3 | DB RSP + `WriteReceiptPhase2` WHERE clause | M4, M7 |
+| INV-2 | Append-only escrow ledger | DM §3 | DB RSP + `InsertEscrowEvent` sole write path | M4, M10 |
+| INV-3 | No physical provider deletion | DM §3 | IC §6 DML; departure sets `status='DEPARTED'` | M4, M9 |
+| INV-4 | All amounts integer paise | DM §3 | DB BIGINT; `TestNoFloatArithmetic`; debug panic | M4, M10 |
+| INV-5 | Challenge nonce = 33 bytes | DM §3 | DB CHECK; `[33]byte` return type; CI grep-check 8 | M4, M7 |
+| INV-6 | No real shard on vetting / no repair for synthetic | DM §3 | DB CHECK; `EnqueueJob` debug panic; `IsVettingChunk` pre-check | M4, M9, M14 |
+| INV-7 | `ShardSize` compile-time constant = 262144 | DM §3 | `const ShardSize`; `TestProfileShardSizeIsConstant` | M1, M3 |
+| INV-SW | Single-writer vLog | IC §5.3 | Channel to writer goroutine; `TestSingleWriterGoroutine` | M5 |
+| INV-0RTT | 0-RTT prohibited on audit/gc streams | IC §4 | Host middleware on protocol ID suffix | M6 |
+| INV-SIGN | No JSON signing inputs | IC §3.2 | `SignBytes` comment; code-review rule | M2 |
+| INV-DHT | DHT HMAC key validator | IC §12 | Custom namespace validator; CI check 5 | M6 |
+| INV-FLOAT | No float in payment | IC §11 | CI check 6; debug panic in `InsertEscrowEvent` | M10 |
+| INV-THROTTLE | Background throttle fires at DB p99 ≥ 50 ms | NFR-028 | `backgroundThrottle` goroutine; histogram | M12, M-OBS |
+| INV-METRIC | Metric names follow `vyomanaut_{subsystem}_{name}_{unit}` | NFR-046 | CI check 16; `internal/metrics/*.go` sole source | M-OBS |
+| INV-CEIL | Chunk ceiling enforced at assignment time | NFR-044 | Assignment service; HTTP 503 `INSUFFICIENT_PROVIDER_CAPACITY` | M11 |
+| INV-RAM | Provider RAM checked before daemon starts | NFR-045 | `memcheck_*.go` at startup; WARN + reduce `declared_storage_gb` | M13 |
+| INV-RELAY | Relay ≤ 128 concurrent reservations per node | ARCH §13 | `cmd/relay` constant; gauge alert | M17 |
 
 ---
 
