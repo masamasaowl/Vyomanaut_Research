@@ -5,22 +5,15 @@
 **Date:** May 2026  
 **Repository:** https://github.com/masamasaowl/Vyomanaut_Research  
 **Derived from:**
+
 - `docs/system-design/interface-contracts.md` (IC) — wire contracts, Go package interfaces, forbidden patterns
 - `docs/system-design/data-model.md` (DM) — PostgreSQL schema, invariants, indexes, row security policies
 - `docs/system-design/mvp.md` (MVP) — NetworkProfile, demo/prod mode, repository layout, CI pipeline
-
-**Awaiting (documents not yet in context):**
+- `docs/system-design/api/openapi.yaml` (OAS) — authoritative REST/HTTP surface; all endpoint schemas
 - `docs/system-design/architecture.md` (ARCH) — system overview, deployment topology, relay infrastructure
 - `docs/system-design/requirements.md` (REQ) — FR/NFR completeness gates, capacity calculations
-- `docs/system-design/api/openapi.yaml` (OAS) — authoritative REST/HTTP surface; all endpoint schemas
 
-> **Reading convention.** Each session carries a `[REF]` tag pointing to the exact document
-> section that governs it. Sessions marked `⚠️ AWAITING` cannot be completed until the
-> missing document is provided; a stub must be committed that compiles and fails its own
-> placeholder test. Every session is atomic: it produces a passing `go test` or a passing
-> migration apply before the next session begins. Logical errors discovered during
-> implementation are fixed in the current session with a note appended to the session log —
-> do not silently carry forward broken invariants.
+> **Reading convention.** Each session carries a `[REF]` tag pointing to the exact document section that governs it. Every session is atomic: it produces a passing `go test` or a passing migration apply before the next session begins. Logical errors discovered during implementation are fixed in the current session with a note appended to the session log — do not silently carry forward broken invariants.
 
 ---
 
@@ -39,17 +32,18 @@ M0 (Setup)
              │   ├─ M9 (Scoring)
              │   └─ M10 (Repair)
              ├─ M11 (Payment)
-             └─ M12 (REST API Layer)  ← ⚠️ AWAITING openapi.yaml
+             └─ M12 (REST API Layer)
                  └─ M13 (Coordination Microservice)
                      └─ M14 (Vetting & Synthetic Chunks)
                          └─ M15 (Client SDK)
                              └─ M16 (Demo Mode Validation)
-                                 └─ M17 (Production Hardening)  ← ⚠️ AWAITING architecture.md
-                                     └─ M18 (Launch Readiness)  ← ⚠️ AWAITING requirements.md
+                                 ├─ M17 (Production Hardening) 
+                                 └─ M-OBS (Observability & Metrics)
+                                    └─ M18 (Launch Readiness)
 ```
 
 The import constraint DAG (IC §9) enforces that `crypto` and `erasure` have zero internal
-dependencies; all data-layer packages flow upward only to the microservice entrypoint.
+dependencies; all data-layer packages flow upward only to the microservice entrypoint. M-OBS depends on M12 and M13 for metric name definitions; it does not export to any `internal/` package.
 
 ---
 
@@ -81,6 +75,7 @@ a corresponding ADR (IC §11 — no communication link not shown in the diagram)
 
 **Task:** Create three entrypoint packages: `cmd/microservice/main.go`,
 `cmd/provider/main.go`, `cmd/client/main.go`. Each file must contain only:
+
 1. `package main`
 2. An empty `func main()` that prints the startup banner format from MVP §2.1:
    `[STARTUP] Vyomanaut <binary> v0.1.0 — mode=UNKNOWN — stub`
@@ -160,6 +155,9 @@ checklist first item).
 Verify: The CI workflow file parses valid YAML. `act` (local GitHub Actions runner) or
 manual inspection confirms all 15 steps are present.
 
+An additional CI check 16 is added by Phase OBS.4 — Prometheus Metric Naming CI Gate (NFR-046)
+**Check 16 — `TestNoOrphanMetricName`:** grep all metric name strings from `deployments/grafana/dashboards/vyomanaut.json` and `deployments/grafana/alerts.yaml`; verify each appears in `internal/metrics/*.go` and vice versa. Guarded with `continue-on-error: false`. Stub step present from session 0 with a placeholder that fails with `t.Skip("not yet implemented — M-OBS")`.
+
 #### Session 0.3.2 — Create `.github/CODEOWNERS`
 
 **Task:** Create `.github/CODEOWNERS` with the rule from MVP §8.4: the `/migrations/`
@@ -179,13 +177,15 @@ lists at least three owner handles (can be duplicates at this stage).
 #### Session 0.4.1 — Create `deployments/dev/docker-compose.yml`
 
 **Task:** Create a docker-compose file satisfying the requirements in MVP §8.5:
+
 - One microservice replica (points to stub binary; will start and exit immediately at
   this stage)
 - One Postgres 16 instance with `btree_gist` pre-installed (init SQL:
   `CREATE EXTENSION IF NOT EXISTS btree_gist;`)
-- One relay node stub (can be a simple echo server at this stage; full implementation
-  in M17)
+- One relay node stub (`--relay-mode=dev` (single node, 32 concurrent reservations) full implementation in M17)
 - One provider daemon in `--sim-count=5 --sim-asn-count=5` mode (stub binary)
+
+**Scale Trigger Note:** Add 4th relay node when provider count exceeds 570 (45% Indian CGNAT assumption) or 850 (30% global baseline) per architecture.md §27.5.
 
 The Postgres instance must expose port 5432 and have health-check configured. The
 connection string format must match what the migration runner expects.
@@ -251,6 +251,7 @@ filling any field.
 
 **Task:** In `internal/config/profiles_test.go`, implement `TestProfileShardSizeIsConstant`
 (CI check 14 in MVP §8.4). The test must assert:
+
 - `ProductionProfile.ShardSize == 262144`
 - `DemoProfile.ShardSize == 262144`
 - Both equal the constant exported from `internal/erasure` (import will be added once
@@ -357,6 +358,7 @@ Verify: Compiles on amd64 and arm64. On amd64 with AES-NI hardware, returns true
 
 **Task:** Create `internal/crypto/hkdf.go`. Implement the five HKDF functions from
 IC §5.1, each with the exact `info` string specified:
+
 - `DeriveFileKey`: info = `"vyomanaut-file-v1" || fileID`
 - `DerivePointerEncKey`: info = `"vyomanaut-pointer-v1" || fileID`
 - `DeriveKeystoreEncKey`: info = `"vyomanaut-keystore-v1"` (no fileID)
@@ -542,6 +544,7 @@ IC §5.1 (no JSON serialisation for signing inputs)
 
 **Task:** Create `internal/crypto/ed25519.go`. This file does NOT wrap the standard
 library — it provides:
+
 1. A `SignBytes(privateKey ed25519.PrivateKey, inputBytes []byte) [64]byte` helper that
    computes `Ed25519(private_key, SHA-256(inputBytes))` per IC §3.2 canonical procedure
 2. A `VerifyBytes(publicKey [32]byte, inputBytes []byte, sig [64]byte) bool` helper
@@ -641,6 +644,7 @@ MVP §5.5 (schema parameterisation), MVP §6.4 (migration requirements)
 **Task:** Create `migrations/generator.go` implementing `GenerateInitialSchema(profile
 config.NetworkProfile) string` per MVP §5.5. The function produces two profile-dependent
 CHECK constraints:
+
 1. `chunk_assignments.shard_index`: `BETWEEN 0 AND {profile.TotalShards-1} OR shard_index IS NULL`
 2. `repair_jobs.available_shard_count`: `BETWEEN {profile.DataShards} AND {profile.TotalShards}`
 
@@ -847,6 +851,7 @@ this filter must be dropped").
 #### Session 4.6.3 — `chunk_assignments` soft-delete policy
 
 **Task:** Add the `chunk_assignments` RSP per DM §6:
+
 - A policy that prohibits hard DELETE for all roles
 - The only permitted status-to-`DELETED` transition is via `UPDATE status = 'DELETED'`
   by `vyomanaut_app`
@@ -1514,18 +1519,18 @@ forbidden. All deposit flows use UPI Intent only (deprecated 28 February 2026).
 
 ### Phase 10.4 — Release Computation & Seizure
 
-**Reference:** IC §5.8 (`ReleaseEscrow`, `Penalise`), MVP §5.4 (release computation
+**Reference:** REQ FR-049 and FR-050, IC §5.8 (`ReleaseEscrow`, `Penalise`), MVP §5.4 (release computation
 cycle: calendar date in prod, ticker in demo), DM §4.2 (`frozen` column)
 
 #### Session 10.4.1 — Implement monthly release computation
 
 **Task:** Create `internal/payment/release.go`. The release computation:
+
 1. For each provider with `release_computed = FALSE` for the current audit period
-2. Compute the release multiplier from the score (score-to-multiplier table — ⚠️ AWAITING
-   `requirements.md` for the exact multiplier table; use a placeholder linear function
-   and mark `// TODO: replace with exact multiplier table from requirements.md §...`)
-3. Call `ReleaseEscrow()` with idempotency key `SHA-256(provider_id || audit_period_id)`
-4. Set `release_computed = TRUE`
+2. Compute the release multiplier from the 30-day reliability score using the table from FR-049: score ≥ 0.95 → multiplier 1.00 (full release); 0.80–0.94 → 0.75; 0.65–0.79 → 0.50; < 0.65 → 0.00 (hold in full). 
+3. Apply the dual-window deterioration signal from FR-050: if `(score_30d − score_7d) > 0.20`, use the lower of the two score windows' multipliers. Withheld amounts must roll into the next month's escrow window, not be seized. Rolling amounts held for more than 90 days are flagged for operations team review (FR-049).
+4. Call `ReleaseEscrow()` with idempotency key `SHA-256(provider_id || audit_period_id)`
+5. Set `release_computed = TRUE`
 
 In demo mode, the computation fires on `profile.ReleaseComputationInterval` ticker
 (MVP §5.4). In prod mode, it fires on the 23rd of each month calendar trigger
@@ -1593,8 +1598,7 @@ HTTP handler per IC §3.4. All seven conditions must be evaluated simultaneously
 1. Active vetted providers: `COUNT(*) WHERE status IN ('VETTING','ACTIVE') >= profile.MinActiveProviders`
 2. Distinct ASNs: `COUNT(DISTINCT asn) >= profile.MinDistinctASNs`
 3. Distinct metro regions: `COUNT(DISTINCT region) >= profile.MinMetroRegions`
-4. Quorum: depends on `profile.RequireQuorum` — ⚠️ AWAITING `architecture.md` for
-   gossip cluster details; stub as `true` when `profile.RequireQuorum == false`
+4. Microservice quorum: when `profile.RequireQuorum == true` (production), query the gossip cluster's in-memory membership view: `clusterMembership.HealthyCount() >= 3`. When `profile.RequireQuorum == false` (demo mode), always return `satisfied: true, current_value: 1, required_value: 1`. The gossip membership object is injected at startup by M17 Phase 17.2.1; stub with a `MockClusterMembership` that always returns healthy=3 until M17 completes. The `readiness_condition.threshold` field in the response must read from `NetworkProfile.MinActiveProviders` (not hardcoded 3) per IC §3.4.
 5. Razorpay cooled accounts: **LIVE QUERY** every 60-second cycle — must NOT cache
    (IC §3.4: "MUST NOT cache this value")
 6. Relay nodes: `COUNT(relay heartbeat entries) >= profile.MinRelayNodes`
@@ -1880,6 +1884,16 @@ Required body: `provider_id` (must be ACTIVE with `chunks_pending_gc > 0`). Atte
 
 ---
 
+### Phase 11.11 — Per-Provider Chunk Count Ceiling
+
+#### Session 11.11.1 — Enforce chunk ceiling in assignment service**
+
+**Reference:** NFR-044 (requirements.md §5.5), architecture.md §27.3
+
+In `POST /api/v1/upload/assign` (Session 11.7.1), before generating shard assignments, the assignment service must verify that each candidate provider's current chunk count will not push their steady-state repair bandwidth above 100 Kbps. The ceiling is derived from the provider's observed MTTF tier and the Giroire Formula 1: at MTTF=180 days approximately 70 GB; at MTTF=300 days approximately 130 GB. Providers whose current allocation would exceed their ceiling must be excluded from the candidate pool for that assignment. If the pool drops below 56 eligible providers after applying the ceiling, return HTTP 503 `INSUFFICIENT_PROVIDER_CAPACITY` with a `retry_after: 3600`. Add this check to the readiness gate evaluator as an informational field (not a hard gate condition) surfacing `providers_near_ceiling_count`. NFR-044 requires this ceiling be surfaced in the provider onboarding UI as a declared storage limit advisory — add a `storage_advisory_gb` field to `ProviderRegisterResponse` and `ProviderStatusResponse` populated from `ceil(mttf_days / 300 * 130)` GB.
+
+---
+
 ## Milestone 12 — Coordination Microservice (`cmd/microservice`)
 
 **Deliverable:** Fully wired microservice that starts up, passes guard rails, loads the
@@ -1895,7 +1909,7 @@ scoring, repair, payment), IC §2 (component communication map)
 ### Phase 12.1 — Microservice Startup
 
 **Reference:** MVP §5.3 (profile selection), IC §8 (startup fail-closed on secret),
-MVP §2.3 (guard rails)
+MVP §2.3 (guard rails), OAS `components/securitySchemes, ARCH §18, REQ NFR-028
 
 #### Session 12.1.1 — Wire microservice `main()`
 
@@ -1923,13 +1937,21 @@ TTL: 24 hours for owners, 7 days for provider daemons (OAS `OtpVerifyResponse.pr
 
 Registration token TTL (short-lived, single-use): 1 hour, valid only for the matching register call (OAS `OtpVerifyResponse.properties.token` description, `is_new_entity = true` case).
 
-**⚠️ AWAITING architecture.md** for: gossip cluster initialisation, replica synchronisation.
-Stub with `if profile.RequireQuorum { log.Fatal("quorum: awaiting architecture.md") }`.
+**Gossip cluster initialisation** (architecture.md §18). When `profile.RequireQuorum == true`, initialise the gossip cluster by:
+
+1. Reading two seed node addresses from environment variables `VYOMANAUT_SEED_NODE_1` and `VYOMANAUT_SEED_NODE_2` (pre-configured stable addresses per architecture.md §18; fail-fast at startup if absent in production mode).
+2. Initialising `internal/cluster/gossip.GossipCluster` with a per-second reconciliation ticker: each tick selects one randomly chosen peer from the membership view and exchanges membership histories.
+3. Waiting for at least 2 peers to ack membership before the readiness gate evaluator loop starts (prevents split-brain false-ready on cold start).
+
+**Client-driven routing** (architecture.md §18). For latency-sensitive hot paths — audit challenge dispatch and chunk assignment decisions — the microservice must bypass the load balancer and route directly to the responsible replica. Implement `internal/cluster/router.ResponsibleReplica(opType string) *url.URL` which reads the in-memory cluster membership view and returns the direct address of the replica owning the operation shard. This reduces p99 latency by 30+ ms (architecture.md §18).
+
+**Background task throttling** (architecture.md §18, NFR-028). Start a `backgroundThrottle` goroutine that samples `db_read_p99_latency_ms` every 60 seconds. If the metric approaches 50 ms, reduce background task concurrency (view refresh, repair queuing, Merkle log compaction) by calling `backgroundSemaphore.Reduce()`. Restore full concurrency when p99 drops below 30 ms.
 
 #### Session 12.1.2 — Audit challenge dispatch loop
 
 **Task:** In `cmd/microservice/`, implement the audit challenge dispatch logic.
 For each active chunk in `active_chunk_assignments`:
+
 1. Generate nonce via `audit.ChallengeNonce()`
 2. Determine provider multiaddrs (heartbeat record primary, DHT fallback if `multiaddr_stale = true`)
 3. Open libp2p stream to provider via `/vyomanaut/audit-challenge/1.0.0`
@@ -2068,6 +2090,16 @@ runs in a goroutine; `LookupChunk` is goroutine-safe.
 
 The protocol handler must remain in the daemon binary indefinitely (IC §13 versioning):
 "Removing the protocol handler from the daemon requires a coordinated network-wide migration."
+
+---
+
+### Phase 13.6 — Provider RAM Check at Installation
+
+#### Session 13.6.1 — Implement pre-installation RAM check**
+
+**Reference:** NFR-045 (requirements.md §5.5), architecture.md §27.5
+
+In `cmd/provider/main.go` during the startup sequence, before `ChunkStore` is initialised, compute the minimum free RAM required for the DHT record cache: `required_mb = ceil(declared_storage_gb × 400 × 200 / 1_048_576)`. At 50 GB declared this is approximately 40 MB; at 200 GB approximately 160 MB; at 500 GB approximately 400 MB. Read available free memory via a platform-appropriate syscall (`/proc/meminfo` on Linux, `sysctl` on macOS, `GlobalMemoryStatusEx` on Windows — implement in `internal/storage/memcheck_linux.go`, `_darwin.go`, `_windows.go`). If available free RAM < required, print a human-readable warning: `"[WARN] Declared storage requires ~{required_mb} MB free RAM for DHT cache; only {available_mb} MB detected. Chunk assignment will be limited until RAM is freed."` — and reduce `declared_storage_gb` to the safe ceiling for the available RAM. Do not halt the daemon; log the advisory at WARN level and emit the `vyomanaut_daemon_ram_constrained{constrained="true"}` gauge metric. The installer (packaged binary) must run this check before completing the installation wizard and surface the shortfall with a plain-language advisory screen.
 
 ---
 
@@ -2243,6 +2275,7 @@ This test is tagged `//go:build integration` and runs separately from unit tests
 #### Session 16.1.2 — Validate all viability fact-checks from MVP §7
 
 **Task:** Add individual tests for each fact-check in MVP §7:
+
 - MVP §7.1 (ASN cap): assert `MinDistinctASNs=5` in DemoProfile (already in M1 tests)
 - MVP §7.2 (RS math): assert repair succeeds when 2 of 5 providers are offline
 - MVP §7.3 (vetting timing): assert ACTIVE transition happens at ~10 min in demo
@@ -2259,6 +2292,7 @@ This test is tagged `//go:build integration` and runs separately from unit tests
 
 **Task:** In `cmd/provider/main.go`, when `--sim-count=N`, spawn N goroutines each
 running an independent provider daemon instance with:
+
 - Separate Ed25519 identity
 - Separate RocksDB instance at `/tmp/vyomanaut-sim/{zero-padded-index}/db/`
 - Separate vLog at `/tmp/vyomanaut-sim/{zero-padded-index}/vlog/chunks.vlog`
@@ -2270,8 +2304,6 @@ zero-padded to 4 digits (e.g. `0000`, `0001`).
 ---
 
 ## Milestone 17 — Production Hardening
-
-**⚠️ PARTIAL MILESTONE — AWAITING `architecture.md`**
 
 **Status:** Circuit relay integration and HA microservice clustering require deployment
 topology details from `architecture.md`. The Razorpay live integration and secrets manager
@@ -2302,31 +2334,138 @@ convention). Each must handle the 24-hour rotation overlap window: read both `v{
 
 ### Phase 17.2 — HA Microservice & Relay Nodes
 
-**⚠️ AWAITING `architecture.md`**
+#### Session 17.2.1 — Implement gossip cluster (`internal/cluster`)
 
-#### Session 17.2.1 — STUB: Gossip cluster initialisation
+**Reference:** ARCH §18
 
-**Task:** Stub `internal/cluster/gossip.go` with `// TODO: implement per architecture.md
-§{section} — requires gossip membership, quorum (3,2,2) configuration, and replica sync
-for cluster audit secret`. The stub must compile and return `ErrNotImplemented`. The
-readiness gate `quorum_healthy` condition must return `false` until this is implemented.
+Create `internal/cluster/gossip.go` implementing the three-replica gossip membership per architecture.md §18. The `GossipCluster` struct must expose:
 
-#### Session 17.2.2 — STUB: Relay node deployment configuration
+- `HealthyCount() int` — returns the count of peers with a last-seen timestamp within the last 5 seconds
+- `MemberAddresses() []url.URL` — returns the current membership list for client-driven routing
+- A `reconcile()` loop running at 1-second intervals: select one randomly-chosen peer, exchange membership histories via a `POST /internal/membership/sync` HTTP call carrying a vector clock
+- Two pre-configured seed node addresses read from `VYOMANAUT_SEED_NODE_1` and `VYOMANAUT_SEED_NODE_2`; these prevent partition on restart (architecture.md §18)
 
-**Task:** Stub `deployments/production/relay/` with a placeholder `README.md`:
-"Relay node configuration awaits architecture.md §{section} — relay nodes are
-Vyomanaut-operated, co-located in Indian cloud regions, each supporting 128 concurrent
-reservations (IC §4.3 capacity.md §5.2)." The 50ms RTT overhead constraint (IC §4.3
-NFR-006) is a validation gate in M18.
+Quorum check: `HealthyCount() >= 2` satisfies the (3,2,2) write quorum (architecture.md §18). A read or write that cannot reach 2 replicas must return `ErrQuorumUnavailable`.
+
+Add `internal/cluster/router.go` implementing `ResponsibleReplica(opType string) *url.URL` per the client-driven routing description in M12 Session 12.1.1.
+
+Add `internal/cluster/mock_cluster.go` (build tag `test`) providing `MockClusterMembership` that returns configurable healthy counts for unit testing without a live cluster.
+
+Wire into `cmd/microservice/main.go`: after guard rails pass, initialise `GossipCluster`, wait for 2-peer ack, then start the readiness evaluator.
+
+#### Session 17.2.2 — Relay node binary and deployment configuration
+
+**Reference:** ARCH §13, §24, §27.5
+
+Create `cmd/relay/main.go` as the relay node binary. The relay runs a libp2p host with Circuit Relay v2 enabled and no DHT, chunk storage, or audit logic. Configuration:
+
+- 128 concurrent relay reservations per node (architecture.md §13, §27.5)
+- Reservation TTL: 30 minutes (libp2p default)
+- Relay multiaddrs are reported via a `GET /relay/status` HTTP health endpoint returning `{"reservation_count": N, "capacity": 128}`
+- Metrics: expose `vyomanaut_relay_reservations_active` gauge at `/metrics`
+
+Create `deployments/production/relay/docker-compose.yml` for the three-node relay deployment:
+
+- Node 1: Mumbai AZ1 (`ap-south-1a`)
+- Node 2: Mumbai AZ2 (`ap-south-1b`)
+- Node 3: Chennai/Hyderabad (`ap-south-2` or `ap-southeast-1`)
+- Minimum spec per node: 1 vCPU, 1 GB RAM, 1 Gbps network (architecture.md §24)
+
+---
+
+## Milestone M-OBS — Observability & Metrics
+
+**Deliverable:** All Prometheus metrics defined in NFR-025 and NFR-026 are exported with the correct naming convention (NFR-046). Grafana alert rules are defined. The background throttle metric is wired. The `TestNoOrphanMetricName` CI check passes.
+
+**Reference:** architecture.md §23 (metric catalogue, alert thresholds), requirements.md §5.6 (NFR-025, NFR-026, NFR-027, NFR-028, NFR-046)
+
+---
+
+### Phase OBS.1 — Microservice Metrics
+
+#### Session OBS.1.1 — Register all microservice Prometheus metrics
+
+**Reference:** NFR-025 (requirements.md §5.6), architecture.md §23, NFR-046
+
+Create `internal/metrics/microservice.go`. Register every metric from NFR-025 using the `vyomanaut_{subsystem}_{name}_{unit}` naming pattern from NFR-046, where `{subsystem}` matches the `internal/` package name:
+
+| Metric name | Type | Labels | Package |
+| --- | --- | --- | --- |
+| `vyomanaut_audit_challenges_issued_total` | Counter | — | audit |
+| `vyomanaut_audit_results_total` | Counter | `result` (PASS/FAIL/TIMEOUT) | audit |
+| `vyomanaut_provider_score` | Histogram | — | scoring |
+| `vyomanaut_repair_queue_depth` | Gauge | — | repair |
+| `vyomanaut_repair_jobs_completed_total` | Counter | — | repair |
+| `vyomanaut_escrow_events_total` | Counter | `type` (DEPOSIT/RELEASE/SEIZURE/REVERSAL) | payment |
+| `vyomanaut_microservice_replica_count` | Gauge | `state` (healthy/degraded) | cluster |
+| `vyomanaut_db_read_latency_seconds` | Histogram | percentile p99 | audit |
+
+The `vyomanaut_db_read_latency_seconds` histogram bucket boundaries must include 0.01, 0.025, 0.05 (the throttle threshold), 0.1 seconds. The background throttle goroutine in M12 Session 12.1.1 reads `vyomanaut_db_read_latency_seconds` p99 from the in-process registry — no external scrape needed for the throttle decision.
+
+Expose all metrics at `/metrics` on a separate admin port (configurable, default 9090).
+
+#### Session OBS.1.2 — Wire metric increments at call sites
+
+Add `metrics.AuditResultsTotal.With(prometheus.Labels{"result": result.String()}).Inc()` at the Phase 2 receipt write call site (M7 Session 7.3.2). Add `metrics.RepairQueueDepth.Set(float64(depth))` in the repair enqueue/dequeue call sites (M9 Phase 9.1). Add `metrics.EscrowEventsTotal.With(...).Inc()` in `InsertEscrowEvent` (M10 Phase 10.2.1). These increments must use the exact metric names from Session OBS.1.1 — any rename is a breaking change per NFR-046.
+
+---
+
+### Phase OBS.2 — Provider Daemon Metrics
+
+#### Session OBS.2.1 — Register all provider daemon Prometheus metrics
+
+**Reference:** NFR-026, architecture.md §23
+
+Create `internal/metrics/daemon.go`. Register:
+
+| Metric name | Type |
+| --- | --- |
+| `vyomanaut_chunks_stored_total` | Counter |
+| `vyomanaut_audit_responses_sent_total` | Counter |
+| `vyomanaut_audit_response_latency_milliseconds` | Histogram |
+| `vyomanaut_vlog_append_latency_milliseconds` | Histogram |
+| `vyomanaut_content_hash_failures_total` | Counter |
+| `vyomanaut_heartbeat_sent_total` | Counter |
+| `vyomanaut_daemon_ram_constrained` | Gauge (label: `constrained`) |
+
+Expose at a local-only HTTP server on `localhost:9091` (not publicly reachable). The provider daemon CLI status interface (FR-029) reads its data from this endpoint rather than maintaining a separate in-memory state.
+
+---
+
+### Phase OBS.3 — Operational Alerts
+
+#### Session OBS.3.1 — Define Grafana alert rules**
+
+**Reference:** NFR-027 (requirements.md §5.6), architecture.md §23
+
+Create `deployments/grafana/alerts.yaml` with the four mandatory alert rules from NFR-027:
+
+| Alert name | Condition | Severity |
+| --- | --- | --- |
+| `RepairQueueDepthHigh` | `vyomanaut_repair_queue_depth > 1000` | warning |
+| `AuditTimeoutRateHigh` | `rate(vyomanaut_audit_results_total{result="TIMEOUT"}[1h]) / rate(vyomanaut_audit_results_total[1h]) > 0.05` | critical |
+| `ContentHashFailureDetected` | `increase(vyomanaut_content_hash_failures_total[7d]) > 0` | critical |
+| `MicroserviceReplicasDegraded` | `vyomanaut_microservice_replica_count{state="healthy"} < 3` | critical |
+
+`AuditTimeoutRateHigh` at > 5% in a 1-hour window triggers the relay infrastructure runbook. `ContentHashFailureDetected` for any provider in a 7-day window triggers accelerated re-audit of all that provider's chunks (architecture.md §23).
+
+**Add the Grafana dashboard JSON:** to `deployments/grafana/dashboards/vyomanaut.json`. The dashboard JSON must reference metric names by exact string — any metric rename without simultaneous dashboard update is a breaking change (NFR-046). Add a CI check `TestGrafanaMetricNamesMatchRegistry` in `scripts/ci/grep_checks.sh` that greps all metric name strings from the dashboard JSON and verifies they exist in `internal/metrics/*.go`.
+
+---
+
+### Phase OBS.4 — Prometheus Metric Naming CI Gate
+
+#### Session OBS.4.1 — Implement `TestNoOrphanMetricName`
+
+**Reference:** NFR-046 (requirements.md §5.5)
+
+Add to `scripts/ci/grep_checks.sh` a fifth grep-fail check: extract all metric name strings from `deployments/grafana/dashboards/vyomanaut.json` and `deployments/grafana/alerts.yaml`, then verify each appears in at least one `.go` file under `internal/metrics/`. A metric name present in dashboards/alerts but not in the Go registry (or vice versa) fails the check with the message `"orphan metric name: {name} — update metrics/*.go and dashboards simultaneously"`. This check is CI check 16 (add it to Phase 0.3 Session 0.3.1 step list).
 
 ---
 
 ## Milestone 18 — Launch Readiness
 
-**⚠️ PARTIAL MILESTONE — AWAITING `requirements.md`**
-
 **Status:** Runbooks and benchmark scripts are structurally defined by document references.
-FR/NFR completion gates require `requirements.md`.
 
 **Reference:** MVP §8.5 (runbooks list), MVP §8.5 (benchmark scripts), IC §10 (runbook
 filenames — must match exactly)
@@ -2342,6 +2481,7 @@ required runbooks, all must exist before M8 private beta)
 
 **Task:** Create all 8 runbook files in `runbooks/` using EXACT filenames per IC §10
 (Grafana alert links depend on these names):
+
 1. `microservice-failover.md`
 2. `postgres-failover.md`
 3. `relay-node-replacement.md`
@@ -2352,6 +2492,7 @@ required runbooks, all must exist before M8 private beta)
 8. `audit-secret-rotation.md`
 
 Each runbook must include:
+
 - Trigger conditions (Prometheus alert name)
 - Step-by-step recovery procedure
 - Rollback procedure
@@ -2369,15 +2510,27 @@ Each runbook must include:
 #### Session 18.2.1 — Create benchmark scripts
 
 **Task:** Create `scripts/benchmarks/` with the four scripts from MVP §8.5:
+
 - `aont_encode.sh` (Q16-1): AONT encode benchmarks on minimum-spec hardware
   (dual-core, no AES-NI, 2 GB RAM, 7200 RPM HDD)
 - `argon2id.sh` (Q18-1): Argon2id performance benchmarks (must show demo vs prod params)
 - `rocksdb_ssd.sh` (Q27-1 SSD): RocksDB throughput on SSD
 - `rocksdb_hdd.sh` (Q27-1 HDD): RocksDB throughput on HDD
 
-Each script must output pass/fail against a defined threshold. These are launch gate
-criteria per `requirements.md §7.4` (⚠️ exact thresholds await `requirements.md`; use
-placeholder thresholds from IC pre-condition comments as temporary values).
+Each script must output pass/fail against the following thresholds from `requirements.md §7.4`:
+
+- **`aont_encode.sh` (Q16-1):** median ≤ 200 ms, p99 ≤ 400 ms. If median > 200 ms in the Go implementation, re-evaluate segment size; any change requires a coordinated ADR-003 + ADR-004 update.
+- **`argon2id.sh` (Q18-1):** median ≤ 500 ms at production parameters (t=3, m=64 MB, p=4). Acceptable with spinner UI up to 1000 ms. Fallback ladder: try t=2/m=64 MB, then t=3/m=32 MB, then t=2/m=32 MB. Do not go below m=32768 KiB (OWASP 2023 minimum). Demo parameters (t=1, m=4 MB, p=1) are not benchmarked on this script.
+- **`rocksdb_ssd.sh` (Q27-1 SSD):** p99 audit latency ≤ 100 ms at the highest RocksDB rate limiter setting that does not violate it. Write throughput at the chosen rate must be ≥ 2 MB/s.
+- **`rocksdb_hdd.sh` (Q27-1 HDD):** p99 audit latency ≤ 200 ms on a 7200 RPM consumer HDD under concurrent compaction.
+
+A fifth script must be added:
+
+- **`postgres_insert_ceiling.sh` (NFR-043):** measure the sustained INSERT rate on the `audit_receipts` schema with row security policy enabled at which p99 write latency first exceeds 50 ms. This measured ceiling must be written back into `architecture.md §27.4` replacing the `5,000–10,000 rows/sec` planning estimate. This benchmark is a V2 launch blocker per NFR-043.
+
+A sixth script for end-to-end upload latency:
+
+- **`e2e_upload.sh` (NFR-033):** measure p50 time from upload start (encoding begins) to all 56 signed receipts collected and pointer file stored. Pass criterion: p50 ≤ 3 minutes for a 100 MB file on a provider network where p50 upload throughput is 10 Mbps (requirements.md §5.9 NFR-033).
 
 ---
 
@@ -2409,8 +2562,27 @@ verifiable security properties derivable from the three documents in context:
 - [ ] `TestDHTKeyValidatorPersists` re-run after every `go-libp2p` upgrade (IC §12)
 - [ ] Relay overhead < 50ms RTT from Indian cloud nodes (IC §4.3 NFR-006) — measured
 
-**⚠️ AWAITING `requirements.md`:** Additional security NFR items from the requirements
-document must be added to this checklist when shared.
+Add the following entries to `docs/system-design/security-verification-checklist.md`:
+
+**From requirements.md §5.4 (NFR-014 through NFR-020):**
+
+- [ ]  NFR-014: `grep -r "pointer_key\|pointer_enc_key\|file_key" internal/api/` returns zero results — decryption keys never flow through the microservice layer
+- [ ]  NFR-015: `ValidateResponse()` in `internal/audit/validate.go` only verifies the Ed25519 signature, never the `response_hash` preimage — and the comment `LIMITATION: microservice cannot verify response_hash` is present (IC §5.5)
+- [ ]  NFR-016: All libp2p connections use TLS 1.3 (QUIC) or Noise XX (TCP); `TestTransportAuthentication` passes in M6 test suite
+- [ ]  NFR-017: `DeriveD HTKey()` in `internal/crypto/hkdf.go` uses HMAC-SHA256 and the DHT validator rejects plaintext CID-format keys — `TestDHTKeyValidatorPersists` (CI check 5)
+- [ ]  NFR-018: `VYOMANAUT_CLUSTER_MASTER_SEED` is absent from all production environment configs; `TestProdModeEnvSecretGuard` (M1 Session 1.3.3) passes
+- [ ]  NFR-019: `DecryptPointerFile()` uses `crypto/subtle.ConstantTimeCompare` for the Poly1305 tag — confirmed by `TestConstantTimeTagComparison` in M2 Phase 2.5
+- [ ]  NFR-020: Every `ChallengeNonce()` call returns a `[33]byte` with version byte at index 0 — confirmed by CI grep check 8 and the return type annotation
+
+**From requirements.md §5.5 (NFR-021 through NFR-031):**
+
+- [ ]  NFR-021: The `audit_receipts` RSP (DM §6) allows only the single PENDING→terminal UPDATE; `TestAuditReceiptRSPBlocksDelete` in M4 migration check script passes
+- [ ]  NFR-022: No UPDATE or DELETE policy exists on `escrow_events`; `TestEscrowEventsRSPInsertOnly` passes
+- [ ]  NFR-023: `TestSingleWriterGoroutine` (CI check 4) passes with `race` flag
+- [ ]  NFR-024: `RecoverFromCrash()` is called before the writer goroutine starts; confirmed by startup sequence order in M13 Session 13.1.1
+- [ ]  NFR-029: No UPI Collect API endpoint strings in any source file — confirmed by CI grep check 11
+- [ ]  NFR-030: Every Razorpay payout call in `internal/payment/razorpay.go` includes `X-Payout-Idempotency` header — confirmed by `TestPayoutIdempotencyHeaderPresent`
+- [ ]  NFR-031: `rbi_bank_holidays_YYYY` table is present for the current year and next year in `internal/payment/`; the `rbi-holiday-table-update.md` runbook has been executed for the current December cycle
 
 ---
 
@@ -2421,6 +2593,7 @@ document must be added to this checklist when shared.
 #### Session 18.4.1 — All-green CI verification
 
 **Task:** Verify all 15 CI checks from MVP §8.4 pass on a clean build:
+
 1. `go build ./...` — zero warnings
 2. `go vet ./...` — zero output
 3. `golangci-lint run` — zero findings
@@ -2442,26 +2615,7 @@ commit with the message `milestone: M18 launch-readiness all-green CI`.
 
 ---
 
-## Appendix A — Document Gap Register
-
-The following table records every implementation decision deferred pending missing
-documents. Each entry must be resolved before the corresponding session is closed.
-
-| Gap ID | Session | Missing Document | Blocked Decision |
-| --- | --- | --- | --- |
-| GAP-001 | M8 Phase 8.2 | architecture.md | Gossip cluster quorum check in readiness gate |
-| GAP-002 | M10 Phase 10.4.1 | requirements.md | Exact score-to-release-multiplier table |
-| GAP-004 | M12 Phase 12.1.1 | architecture.md | Gossip cluster initialisation (replicas 3,2,2) |
-| GAP-005 | M17 Phase 17.2.1 | architecture.md | HA microservice replica sync and relay deployment |
-| GAP-006 | M18 Phase 18.2.1 | requirements.md | Exact benchmark thresholds (requirements.md §7.4) |
-| GAP-007 | M18 Phase 18.3.1 | requirements.md | Additional security NFR checklist items |
-
-When a missing document is shared, search this register for the corresponding gap IDs,
-implement the blocked decisions, and update the session log.
-
----
-
-## Appendix B — Invariant Enforcement Traceability
+## Appendix A — Invariant Enforcement Traceability
 
 Every design invariant from DM §3 and IC must be enforced at the layer shown below.
 A PR that breaks any row here must be rejected.
@@ -2480,22 +2634,11 @@ A PR that breaks any row here must be rejected.
 | No JSON signing inputs | IC §3.2 | `SignBytes` comment; code review rule | M2 |
 | DHT HMAC key validator | IC §12 | Custom namespace validator; `TestDHTKeyValidatorPersists` | M6 |
 | No float in payment | IC §11 | `TestNoFloatArithmetic` CI check; debug panic in `InsertEscrowEvent` | M10 |
-
----
-
-## Appendix C — Known Document Inconsistencies
-
-The following inconsistencies were found during BUILD file derivation and must be
-resolved via PR before the relevant session is closed.
-
-| ID | Document | Location | Inconsistency | Resolution |
-|----|----------|----------|---------------|------------|
-| INC-001 | IC §3.2 | Heartbeat section | Refers to `DeriveDKSKeystoreEncKey()` but IC §5.1 exports `DeriveKeystoreEncKey` | Use `DeriveKeystoreEncKey`; file PR to fix IC §3.2 |
-| INC-002 | IC §5.8 | `EscrowEventType` constants | `EscrowSeizure` constant name appears twice (for both SEIZURE and REVERSAL) | Use `EscrowReversal` for REVERSAL; file PR to fix IC §5.8 |
-| INC-003 | IC §4.1 Step 3 | Capability token expiry check | Step 3 says "reject with `0x03`" then says "Use `0x07 CAPABILITY_EXPIRED`" — contradictory | Use `0x07` for expiry per the explicit note; `0x03` is for signature failure |
-| INC-004 | IC §11 | Package import constraints section header | Section says "See §11" while referencing itself (should reference §9) | The import constraints are in §9; the §11 reference in the prohibition line is a typo |
-| INC-005 | openapi.yaml | `OtpVerifyRequest.properties` | Field named `otp_error_code` instead of `otp_code` | Implement as `otp_code`; file correction PR against OAS |
-| INC-006 | openapi.yaml | `AuditReceiptListItem.properties.file_id` | Two `description` keys on the same property (duplicate YAML key — second wins; first is dropped by parsers) | Use the second description (nullable for vetting chunks, per ADR-030); file correction PR |
+| Background throttle fires at DB p99 ≥ 50 ms | NFR-028, architecture.md §18 | `backgroundThrottle` goroutine in M12; `vyomanaut_db_read_latency_seconds` histogram | M12, M-OBS |
+| Metric names follow `vyomanaut_{subsystem}_{name}_{unit}` pattern | NFR-046 | `TestNoOrphanMetricName` CI check 16; `internal/metrics/*.go` is the single source | M-OBS |
+| Chunk ceiling enforced at assignment time | NFR-044 | Assignment service rejects providers over BWavg ceiling; `INSUFFICIENT_PROVIDER_CAPACITY` HTTP 503 | M11 Phase 11.11 |
+| Provider RAM checked before daemon starts accepting assignments | NFR-045 | `internal/storage/memcheck_*.go` at startup; WARN logged and `declared_storage_gb` reduced | M13 Phase 13.6 |
+| Relay node capacity does not exceed 128 concurrent reservations per node | architecture.md §13, §27.5 | `cmd/relay` configuration constant; `vyomanaut_relay_reservations_active` gauge alert | M17, M-OBS |
 
 ---
 
