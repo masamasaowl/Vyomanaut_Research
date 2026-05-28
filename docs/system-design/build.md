@@ -171,28 +171,166 @@ IC §10 (naming conventions), IC §11 (forbidden code patterns — linter rules 
 
 #### Session 0.1.1 — Initialise Go module and top-level directories
 
-**Task:** Create the repository at `github.com/masamasaowl/Vyomanaut_Research`. Run
-`go mod init github.com/masamasaowl/vyomanaut`. Create every top-level directory listed
-in MVP §8.1: `cmd/`, `internal/`, `migrations/`, `deployments/`, `scripts/`, `runbooks/`,
-`docs/`. Within each, place a `.gitkeep` or a stub `doc.go` so the tree is committed.
+**Task:** Initialise Go module and directory skeleton.
 
-Verify: `ls` matches the tree in MVP §8.1 exactly. No extra top-level directories without
-a corresponding ADR (IC §11 — no communication link not shown in the diagram).
+**PRECONDITIONS:**
 
-#### Session 0.1.2 — Create `cmd/` entrypoint stubs
+- Git repository exists at:
+  - `github.com/masamasaowl/Vyomanaut_Research (Research repo)`
+  - `github.com/masamasaowl/Vyomanaut_V2 (Working repo)`
+- docs/ directory exists with: architecture.md, data-model.md, interface-contracts.md, mvp.md, requirements.md, api/openapi.yaml
 
-**Task:** Create three entrypoint packages: `cmd/microservice/main.go`,
-`cmd/provider/main.go`, `cmd/client/main.go` (# TODO: `cmd/relay` added in M17 and does not contain an entry in MVP §8.1). Each file must contain only:
+**COMMANDS TO RUN:**
 
-1. `package main`
-2. An empty `func main()` that prints the startup banner format from MVP §2.1:
-   `[STARTUP] Vyomanaut <binary> v0.1.0 — mode=UNKNOWN — stub`
-3. A `// TODO: wire subsystems` comment
+```go
+  cd <repo_root>
+  go mod init github.com/masamasaowl/vyomanaut
+  go mod tidy
+```
 
-Verify: `go build ./cmd/...` succeeds with zero warnings.
+**DIRECTORIES TO CREATE (docs/ is pre-existing; skip it):**
 
-**Note:** Business logic — including mode flag parsing — is deferred to M1. These stubs
-exist only to confirm the package structure compiles.
+```go
+  cmd/microservice/
+  cmd/provider/
+  cmd/client/
+  internal/config/
+  internal/crypto/
+  internal/erasure/
+  internal/storage/
+  internal/p2p/
+  internal/audit/
+  internal/scoring/
+  internal/repair/
+  internal/payment/
+  internal/vettingchunk/
+  internal/client/account/
+  internal/client/upload/
+  internal/client/retrieve/
+  internal/client/manage/
+  internal/cluster/
+  internal/api/
+  internal/metrics/
+  internal/secrets/
+  migrations/
+  deployments/dev/
+  deployments/production/
+  deployments/grafana/dashboards/
+  scripts/ci/
+  scripts/benchmarks/
+  scripts/test/
+  runbooks/
+```
+
+For each internal/ subdirectory, create doc.go:
+  FILE: `internal/<package>/doc.go`
+  CONTENT:
+
+  ```go
+    // Package <package> <one-line description from MVP §8.2>.
+    package <package>
+  ```
+
+**VERIFY:**
+
+  COMPILE:
+
+  ```go
+    $ go build ./...
+    EXPECT: exit 0
+  ```
+
+  FILES_EXIST:
+
+  ```go
+    $ for f in go.mod cmd/microservice cmd/provider cmd/client \
+        internal/config internal/crypto internal/erasure \
+        internal/storage internal/p2p internal/audit internal/scoring \
+        internal/repair internal/payment internal/vettingchunk \
+        internal/client/account internal/client/upload \
+        internal/client/retrieve internal/client/manage \
+        internal/cluster internal/api internal/metrics \
+        internal/secrets migrations deployments/dev \
+        scripts/ci scripts/benchmarks runbooks; do
+        test -e "$f" && echo "PASS: $f" || echo "FAIL: $f missing"
+      done
+  ```
+
+  NEGATIVE_CHECKS:
+
+  ```go
+    $ test -d docs && echo "PASS: docs pre-existing" || echo "FAIL: docs missing"
+    $ test -d cmd/relay && echo "FAIL: cmd/relay must not exist until M17" || echo "PASS"
+  ```
+  
+  CONTENT_CHECKS:
+
+  ```go
+    $ grep -c "vyomanaut" go.mod
+    EXPECT: 1  (module declaration)
+  ```
+
+---
+
+#### Session 0.1.2 — `cmd/` entrypoint stubs
+
+**TASK:** Create cmd/ entrypoint stubs.
+
+For each binary, create main.go:
+
+FILE: cmd/microservice/main.go
+FILE: cmd/provider/main.go  
+FILE: cmd/client/main.go
+
+Each file follows this exact template (substitute <binary> with
+microservice, provider, client respectively):
+
+``` go
+  package main
+
+  import "fmt"
+
+  func main() {
+      // TODO: wire subsystems (M12/M13/M15)
+      fmt.Printf("[STARTUP] Vyomanaut %s v0.1.0 — mode=STUB\n", "<binary>")
+  }
+```
+
+**NOTE:** cmd/relay is created in M17 Session 17.2.2. Do not create it here.
+
+**NOTE:** mode=STUB is intentional. mode=UNKNOWN would conflict with MVP §2.3guard-rail semantics. mode=PROD/DEMO are wired in M1.
+
+**VERIFY:**
+
+COMPILE:
+
+```go
+$ go build ./cmd/...
+EXPECT: exit 0; zero warnings
+```
+
+CONTENT_CHECKS:
+
+```go
+$ grep -c "mode=STUB" cmd/microservice/main.go
+EXPECT: 1
+
+$ grep -c "mode=STUB" cmd/provider/main.go
+EXPECT: 1
+
+$ grep -c "mode=STUB" cmd/client/main.go
+EXPECT: 1
+```
+
+NEGATIVE_CHECKS:
+
+```go
+$ test -f cmd/relay/main.go && echo "FAIL: cmd/relay must not exist" || echo "PASS"
+
+$ grep -rn "mode=UNKNOWN" cmd/ && echo "FAIL" || echo "PASS"
+```
+
+---
 
 #### Session 0.1.3 — Create `internal/` package stubs
 
@@ -214,32 +352,157 @@ Verify: `go build ./internal/...` succeeds. `go vet ./internal/...` produces zer
 
 #### Session 0.2.1 — Configure `.golangci.yml`
 
-**Task:** Create `.golangci.yml` enabling exactly the linters listed in MVP §8.4:
-`gofmt`, `govet`, `errcheck`, `exhaustive`, `godot`, `gomnd`. Configure `exhaustive` to
-require all cases on the types: `AuditResult`, `ProviderStatus`, `EscrowEventType`,
-`RepairPriority` (these types do not exist yet; add them to the `exhaustive.check` list
-by name so they are enforced once defined). Configure `gomnd` to catch magic numbers that
-should be `NetworkProfile` fields (IC §11 — forbidden: hardcoded Argon2id parameters,
-hardcoded shard counts).
+**TASK:** Create .golangci.yml with the linters from MVP §8.4.
 
-Add a `# TODO: add type names as they are defined` comment for the `exhaustive` section.
+**FILE:** `.golangci.yml`
+**CONTENT:**
 
-Verify: `golangci-lint run ./...` on the stub-only repository produces zero lint errors
-(stubs have no logic to trigger the configured rules).
+```go
+
+  run:
+    timeout: 5m
+
+  linters:
+    enable:
+      - gofmt
+      - govet
+      - errcheck
+      - exhaustive
+      - godot
+      - gomnd
+
+  linters-settings:
+    exhaustive:
+      # Types added here as they are defined in subsequent milestones.
+      # Format: <package_import_path>.<TypeName>
+      # M7: internal/audit.AuditResult
+      # M9: internal/repair.Priority, internal/repair.TriggerType
+      # M10: internal/payment.EscrowEventType
+      # Update this list when each type is defined.
+      default-signifies-exhaustive: false
+    errcheck:
+      check-type-assertions: true
+    gomnd:
+      ignored-functions:
+        # Argon2id parameters must come from NetworkProfile, not literals.
+        # gomnd will flag any integer literal in argon2.New() calls.
+        - "argon2.IDKey"
+
+  issues:
+    exclude-rules:
+      - path: "_test.go"
+        linters: [gomnd]
+```
+
+**NOTE:** The exhaustive linter section is intentionally sparse at M0. It is updated incrementally as each type is defined (sessions 7.1.1, 9.1.1, 10.2.1). The comment block above is the authoritative tracking list.
+
+**VERIFY:**
+
+FILES_EXIST:
+
+```go
+$ test -f .golangci.yml && echo PASS || echo FAIL
+```
+
+CONTENT_CHECKS:
+
+```go
+$ grep -c "exhaustive" .golangci.yml
+EXPECT: >= 2 (linter name + settings section)
+
+$ grep -c "gomnd" .golangci.yml
+EXPECT: >= 2
+```
+
+LINT_CHECK:
+
+```go
+$ golangci-lint run ./...
+EXPECT: exit 0; zero findings on stub-only repository
+```
+
+---
 
 #### Session 0.2.2 — Configure forbidden-pattern grep checks
 
-**Task:** Create `scripts/ci/grep_checks.sh` implementing the exact grep-fail checks
-listed in MVP §8.4 checks 8–11:
-- Fail if `challenge_nonce BYTEA(32)` appears in any file (IC §11, DM §3 Invariant 5)
-- Fail if `float64|float32|FLOAT|DECIMAL|NUMERIC` appears in `internal/payment/` context (IC §11)
-- Fail if any ADR reference above ADR-031 appears (IC §11 — no non-existent ADR references)
-- Fail if the UPI Collect API endpoint string appears (IC §11)
+**TASK:** Create scripts/ci/grep_checks.sh implementing four grep-fail checks.
 
-Each check must print the offending file and line on failure. The script exits 0 only if
-all four checks pass.
+**FILE:** scripts/ci/grep_checks.sh
+**CONTENT:**
 
-Verify: Running the script against the current stub-only repository exits 0.
+```go
+  #!/usr/bin/env bash
+  set -euo pipefail
+  REPO_ROOT="$(git rev-parse --show-toplevel)"
+  FAIL=0
+
+  check() {
+    local name="$1"; local pattern="$2"; local scope="$3"
+    if grep -rn --include="*.go" --include="*.sql" \
+         -E "$pattern" "$REPO_ROOT/$scope" 2>/dev/null | grep -q .; then
+      echo "FAIL [$name]: pattern '$pattern' found in '$scope':"
+      grep -rn --include="*.go" --include="*.sql" \
+           -E "$pattern" "$REPO_ROOT/$scope"
+      FAIL=1
+    else
+      echo "PASS [$name]"
+    fi
+  }
+
+  # Check 8: challenge_nonce must be BYTEA(33), never BYTEA(32)
+  check "NONCE_LENGTH" \
+    "challenge_nonce[[:space:]]+BYTEA\(32\)" \
+    "."
+
+  # Check 9: no float types in payment package
+  check "NO_FLOAT_PAYMENT" \
+    "(float64|float32|FLOAT|DECIMAL|NUMERIC)" \
+    "internal/payment"
+
+  # Check 10: no references to non-existent ADRs (above ADR-031)
+  # Pattern: ADR-0[3-9][2-9]|ADR-[1-9][0-9]{2,}
+  check "ADR_REFERENCE" \
+    "ADR-0[3-9][2-9]|ADR-[1-9][0-9]{2,}" \
+    "."
+
+  # Check 11: no UPI Collect API endpoint calls
+  check "NO_UPI_COLLECT" \
+    "virtual_accounts|upi/collect|collect/request" \
+    "internal"
+
+  exit $FAIL
+```
+
+**MAKE EXECUTABLE:** chmod +x scripts/ci/grep_checks.sh
+
+**VERIFY:**
+
+FILES_EXIST:
+
+```go
+$ test -f scripts/ci/grep_checks.sh && echo PASS || echo FAIL
+
+$ test -x scripts/ci/grep_checks.sh && echo PASS || echo FAIL
+```
+
+SCRIPT_RUNS:
+
+```go
+$ bash scripts/ci/grep_checks.sh
+EXPECT: exit 0; all four lines print "PASS [...]"
+```
+
+SELF_TEST (inject a violation and confirm detection):
+
+```go
+$ echo "challenge_nonce BYTEA(32)" > /tmp/test_violation.go
+
+$ bash scripts/ci/grep_checks.sh /tmp/test_violation.go 2>/dev/null \
+&& echo "FAIL: check did not catch violation" \
+|| echo "PASS: violation detected"
+
+CLEANUP: rm /tmp/test_violation.go
+```
 
 ---
 
@@ -249,22 +512,137 @@ Verify: Running the script against the current stub-only repository exits 0.
 
 #### Session 0.3.1 — Create `.github/workflows/ci.yml`
 
-**Task:** Implement the CI workflow with all 15 checks listed in MVP §8.4, in order.
-Checks that depend on code not yet written (5, 6, 7, 14, 15) must be present as steps
-but guarded with `continue-on-error: false` and a placeholder Go test file that
-deliberately fails with `t.Skip("not yet implemented — M1+")`. This ensures the CI
-step exists and will fail loudly until the corresponding milestone is complete, rather
-than being silently absent.
+**TASK:** Create ``.github/workflows/ci.yml` with all 16 CI checks.
 
-The migration step (check 7) must target the CI Postgres instance; document the required
-`btree_gist` extension setup in `.github/workflows/ci.yml` comments (DM §9 migration
-checklist first item).
+**FILE:** ``.github/workflows/ci.yml`
 
-Verify: The CI workflow file parses valid YAML. `act` (local GitHub Actions runner) or
-manual inspection confirms all 15 steps are present.
+The workflow triggers on: [push, pull_request]
+Uses: `ubuntu-latest`, `go: '1.22'`
 
-An additional CI check 16 is added by Phase OBS.4 — Prometheus Metric Naming CI Gate (NFR-046)
-**Check 16 — `TestNoOrphanMetricName`:** grep all metric name strings from `deployments/grafana/dashboards/vyomanaut.json` and `deployments/grafana/alerts.yaml`; verify each appears in `internal/metrics/*.go` and vice versa. Guarded with `continue-on-error: false`. Stub step present from session 0 with a placeholder that fails with `t.Skip("not yet implemented — M-OBS")`.
+**Services block:** postgres:16 with `POSTGRES_DB=vyomanaut_test`,
+`POSTGRES_USER=vyomanaut_app`,
+`POSTGRES_PASSWORD=testpass`,
+options: `--health-cmd pg_isready`
+
+**Steps (in order, each with id matching check number):**
+
+```go
+  check-01: go build ./...
+    run: go build ./...
+
+  check-02: go vet ./...
+    run: go vet ./...
+
+  check-03: golangci-lint
+    uses: golangci/golangci-lint-action@v4
+    with: {version: v1.57.0, args: --timeout=5m}
+
+  check-04: go test with race detector
+    run: go test -race -count=1 ./...
+
+  check-05: TestDHTKeyValidatorPersists (M6 gate)
+    run: |
+      go test -run TestDHTKeyValidatorPersists ./internal/p2p/... \
+        || (echo "PENDING: session 6.2.3" && exit 0)
+    # Set continue-on-error: false AFTER M6 completes.
+    # Until then: placeholder exits 0 with message.
+    continue-on-error: true
+
+  check-06: TestNoFloatArithmetic (M10 gate)
+    run: |
+      go test -run TestNoFloatArithmetic ./internal/payment/... \
+        || (echo "PENDING: session 10.4.2" && exit 0)
+    continue-on-error: true
+
+  check-07: Migration apply + rollback
+    run: |
+      export PGPASSWORD=testpass
+      psql -h localhost -U vyomanaut_app -d vyomanaut_test \
+        -c "CREATE EXTENSION IF NOT EXISTS btree_gist;"
+      go run migrations/generator.go --profile=prod \
+        > /tmp/001_prod.sql
+      psql -h localhost -U vyomanaut_app -d vyomanaut_test \
+        -f /tmp/001_prod.sql
+      go run migrations/generator.go --profile=demo \
+        > /tmp/001_demo.sql
+      # Demo schema applied to separate DB to avoid cross-contamination
+      psql -h localhost -U vyomanaut_app \
+        -c "CREATE DATABASE vyomanaut_demo_test;"
+      psql -h localhost -U vyomanaut_app -d vyomanaut_demo_test \
+        -c "CREATE EXTENSION IF NOT EXISTS btree_gist;"
+      psql -h localhost -U vyomanaut_app -d vyomanaut_demo_test \
+        -f /tmp/001_demo.sql
+    # PENDING until M4. Until M4: stub exits 0.
+    continue-on-error: true
+
+  check-08 through check-11: grep checks
+    run: bash scripts/ci/grep_checks.sh
+
+  check-12: Mermaid render
+    run: |
+      npx --yes @mermaid-js/mermaid-cli -V \
+        || (echo "PENDING: mermaid diagrams" && exit 0)
+    continue-on-error: true
+
+  check-13: Hyperlink check
+    run: |
+      npx --yes markdown-link-check docs/**/*.md \
+        || (echo "PENDING: links may be stale" && exit 0)
+    continue-on-error: true
+
+  check-14: TestProfileShardSizeIsConstant
+    run: |
+      go test -run TestProfileShardSizeIsConstant ./internal/config/... \
+        || (echo "PENDING: session 1.2.1" && exit 0)
+    continue-on-error: true
+
+  check-15: TestProfileBothFullySpecified
+    run: |
+      go test -run TestProfileBothFullySpecified ./internal/config/... \
+        || (echo "PENDING: session 1.2.2" && exit 0)
+    continue-on-error: true
+
+  check-16: TestNoOrphanMetricName (M-OBS gate)
+    run: |
+      bash scripts/ci/grep_checks.sh --check=metric-names \
+        || (echo "PENDING: session OBS.4.1" && exit 0)
+    continue-on-error: true
+```
+
+**TRANSITION RULE:** When a milestone completes, remove `continue-on-error: true`
+and the `|| (echo "PENDING..." && exit 0)` fallback from its corresponding
+check. That check then becomes a hard gate.
+
+**VERIFY:**
+
+FILES_EXIST:
+
+```go
+$ test -f .github/workflows/ci.yml && echo PASS || echo FAIL
+```
+
+CONTENT_CHECKS:
+
+```go
+$ grep -c "^ check-" .github/workflows/ci.yml
+EXPECT: 16 (checks 01 through 16)
+```
+
+YAML_VALID:
+
+```go
+$ python3 -c "import yaml; yaml.safe_load(open('.github/workflows/ci.yml'))" \
+&& echo PASS || echo FAIL
+```
+
+STEP_COUNT:
+
+```go
+$ grep -c "name: check-" .github/workflows/ci.yml
+EXPECT: 16
+```
+
+---
 
 #### Session 0.3.2 — Create `.github/CODEOWNERS`
 
@@ -284,22 +662,133 @@ lists at least three owner handles (can be duplicates at this stage).
 
 #### Session 0.4.1 — Create `deployments/dev/docker-compose.yml`
 
-**Task:** Create a docker-compose file satisfying the requirements in MVP §8.5:
+**TASK:** Create deployments/dev/docker-compose.yml for local development.
 
-- One microservice replica (points to stub binary; will start and exit immediately at
-  this stage)
-- One Postgres 16 instance with `btree_gist` pre-installed (init SQL:
-  `CREATE EXTENSION IF NOT EXISTS btree_gist;`)
-- One relay node stub (`--relay-mode=dev` (single node, 32 concurrent reservations) full implementation in M17)
-- One provider daemon in `--sim-count=5 --sim-asn-count=5` mode (stub binary)
+**FILE:** ``deployments/dev/docker-compose.yml`
 
-**Scale Trigger Note:** Add 4th relay node when provider count exceeds 570 (45% Indian CGNAT assumption) or 850 (30% global baseline) per architecture.md §27.5.
+**Requirements from MVP §8.5:**
 
-The Postgres instance must expose port 5432 and have health-check configured. The
-connection string format must match what the migration runner expects.
+1. One postgres:16 instance, port 5432, with `btree_gist` pre-installed
+2. One microservice stub (`cmd/microservice` binary or placeholder)
+3. One relay placeholder (`cmd/relay` does not exist until M17)
+4. One provider stub in `--sim-count=5` `--sim-asn-count=5` mode
 
-Verify: `docker-compose up` brings up Postgres. `psql` connects. `\dx` shows
-`btree_gist` installed.
+**CONTENT:**
+
+```yaml
+  version: "3.9"
+  services:
+    postgres:
+      image: postgres:16
+      environment:
+        POSTGRES_DB: vyomanaut_dev
+        POSTGRES_USER: vyomanaut_app
+        POSTGRES_PASSWORD: devpass
+      ports: ["5432:5432"]
+      volumes:
+        - ./init-db.sql:/docker-entrypoint-initdb.d/init.sql
+      healthcheck:
+        test: ["CMD-SHELL", "pg_isready -U vyomanaut_app"]
+        interval: 5s
+        timeout: 5s
+        retries: 5
+
+    # cmd/relay binary created in M17 Session 17.2.2.
+    # Placeholder keeps docker-compose valid until M17.
+    relay:
+      image: alpine:3.19
+      command: ["sh", "-c", "echo 'relay placeholder — implement M17' && sleep infinity"]
+      # TODO(M17): replace with:
+      #   build: {context: ..., dockerfile: Dockerfile.relay}
+      #   command: ["./relay", "--listen=/ip4/0.0.0.0/udp/4001/quic-v1"]
+
+    # Provider daemon in simulation mode.
+    # Binary built from cmd/provider after M13.
+    provider:
+      image: alpine:3.19
+      command: ["sh", "-c",
+        "echo 'provider stub — implement M13' && sleep infinity"]
+      environment:
+        VYOMANAUT_MODE: demo
+      # TODO(M13): replace with:
+      #   command: ["./provider",
+      #     "--microservice-url=http://microservice:8080",
+      #     "--sim-count=5", "--sim-asn-count=5",
+      #     "--declared-storage-gb=50"]
+
+    microservice:
+      image: alpine:3.19
+      command: ["sh", "-c",
+        "echo 'microservice stub — implement M12' && sleep infinity"]
+      environment:
+        VYOMANAUT_MODE: demo
+        VYOMANAUT_CLUSTER_MASTER_SEED: "devonlysecret00000000000000000000"
+      ports: ["8080:8080"]
+      depends_on:
+        postgres:
+          condition: service_healthy
+      # TODO(M12): replace with cmd/microservice binary
+```
+
+**COMPANION FILE:** `deployments/dev/init-db.sql`
+  `CREATE EXTENSION IF NOT EXISTS btree_gist`;
+
+**Scale trigger (from architecture.md §27.5):** provision 4th relay node before provider count reaches 400 in production deployment. This dev compose runs 0 real relay nodes; NAT traversal is not tested here.
+
+**VERIFY:**
+
+FILES_EXIST:
+
+```go
+$ test -f deployments/dev/docker-compose.yml && echo PASS || echo FAIL
+
+$ test -f deployments/dev/init-db.sql && echo PASS || echo FAIL
+```
+
+YAML_VALID:
+
+```go
+$ docker-compose -f deployments/dev/docker-compose.yml config > /dev/null \
+&& echo PASS || echo FAIL
+```
+
+CONTENT_CHECKS:
+
+```go
+$ grep -c "btree_gist" deployments/dev/init-db.sql
+EXPECT: 1
+
+$ grep -c "TODO(M17)" deployments/dev/docker-compose.yml
+EXPECT: >= 1 (relay placeholder comment)
+
+$ grep -c "TODO(M13)" deployments/dev/docker-compose.yml
+EXPECT: >= 1 (provider placeholder comment)
+```
+
+POSTGRES_STARTS:
+
+```go
+$ docker-compose -f deployments/dev/docker-compose.yml up -d postgres
+
+$ sleep 5
+
+$ docker-compose -f deployments/dev/docker-compose.yml exec -T postgres \
+psql -U vyomanaut_app -d vyomanaut_dev -c "\dx" | grep btree_gist \
+&& echo PASS || echo FAIL
+```
+
+CLEANUP:
+
+```go
+$ docker-compose -f deployments/dev/docker-compose.yml down -v
+```
+
+NEGATIVE_CHECKS:
+
+```go
+$ grep "relay-mode" deployments/dev/docker-compose.yml \
+&& echo "FAIL: unspecified flag present" || echo "PASS"
+```
 
 ---
 
@@ -321,33 +810,253 @@ IC §11 (guard rails — DEMO_MODE_REAL_PAYMENT, PROD_MODE_ENV_SECRET error code
 
 #### Session 1.1.1 — Define the `NetworkProfile` struct
 
-**Task:** Create `internal/config/network_profile.go` containing the `NetworkProfile`
-struct with every field listed in MVP §5.1, in the exact groupings shown (erasure coding,
-readiness gate, ASN cap, time windows, scoring windows, vetting, cryptographic cost,
-infrastructure, release cycle, GC retry backoff). Every field must have a comment citing
-the ADR that governs it (as shown in MVP §5.1).
+**TASK:** Create `internal/config/network_profile.go` defining the NetworkProfile struct.
 
-**Critical constraint:** `ShardSize int` must be present in the struct (for compiler
-enforcement in tests) but its value must always equal the constant `262144` (DM Invariant
-7). Add a compile-time assertion: `var _ = [1]struct{}{}[ShardSize-262144]` — this will
-not compile if anyone sets ShardSize to a non-262144 value in a profile. Also add a
-`const ShardSize = 262144` to `internal/erasure/` (set up in M3) as the canonical
-definition; the profile field must match it.
+**FILE:** `internal/config/network_profile.go`
 
-Verify: `go build ./internal/config/` succeeds. The struct has exactly the fields in
-MVP §5.1 — no additions, no omissions. Use `go vet` struct-literal completeness to
-enforce this once profiles are defined.
+The struct must contain every field from MVP §5.1 in the exact groupings shown.
+Each field must have a comment citing its governing ADR.
+
+**CRITICAL CONSTRAINTS:**
+
+1. ShardSize int is present in the struct ONLY for Go compiler completeness
+   enforcement (struct literal syntax). Its value MUST always equal 262144.
+2. Do NOT add any compile-time assertion involving `internal/erasure.ShardSize`
+   here — that package doesn't exist until M3. The cross-check is deferred to
+   M3 Session 3.1.1 and the test in Session 1.2.1 (which uses literal 262144
+   until M3 completes).
+3. No imports from other `internal/ packages (IC §9)`.
+
+**FIELD GROUPS AND TYPES (exact — no additions, no omissions):**
+
+```sql
+  // Erasure coding (ADR-003)
+  DataShards   int
+  ParityShards int
+  TotalShards  int
+  ShardSize    int   // MUST equal 262144 in both profiles; see Invariant 7
+  LazyRepairR0 int
+
+  // Readiness gate (ADR-029)
+  MinActiveProviders int
+  MinDistinctASNs    int
+  MinMetroRegions    int
+  MinRelayNodes      int
+  MinCooledAccounts  int
+
+  // ASN cap (ADR-014)
+  ASNCapFraction float64
+
+  // Time windows
+  HeartbeatInterval       time.Duration  // ADR-028
+  HeartbeatJitter         time.Duration  // ADR-028
+  PollingInterval         time.Duration  // ADR-006
+  DHTRepublishInterval    time.Duration  // ADR-001
+  DHTExpiryDuration       time.Duration  // ADR-001
+  DepartureThreshold      time.Duration  // ADR-006, ADR-007
+  PromisedDowntimeMaximum time.Duration  // ADR-007
+  AuditPeriodDuration     time.Duration  // ADR-016
+  EscrowHoldWindow        time.Duration  // ADR-024
+  VettingHoldWindow       time.Duration  // ADR-024
+  PendingReceiptGCAge     time.Duration  // ADR-015
+  RepairPromotionTimeout  time.Duration  // ADR-004, FR-043
+
+  // Scoring windows (ADR-008)
+  ScoreWindowShort  time.Duration
+  ScoreWindowMedium time.Duration
+  ScoreWindowLong   time.Duration
+  DualWindowDrop    float64  // always 0.20; never mode-variable
+
+  // Vetting (ADR-005)
+  VettingMinPasses   int
+  VettingMinDuration time.Duration
+  VettingCapFraction float64  // always 0.10; never mode-variable
+
+  // Cryptographic cost (ADR-020)
+  Argon2Time    uint32
+  Argon2Memory  uint32
+  Argon2Threads uint8
+
+  // Infrastructure
+  RequireSecretsManager bool
+  RequireQuorum         bool
+  PaymentMode           string        // "razorpay_live"|"razorpay_test"|"mock"
+  SkipMnemonicConfirm   bool
+  RazorpayCoolingPeriod time.Duration
+
+  // Release computation cycle
+  // 0 = calendar-driven (prod); >0 = ticker interval (demo)
+  ReleaseComputationInterval time.Duration  // ADR-024, ADR-031
+
+  // GC retry backoff (IC §4.5)
+  GCRetryBackoff []time.Duration
+
+  // Mode identifier (printed at startup; never used for branching in business logic)
+  Mode string  // "demo" | "prod"
+```
+
+**IMPORTS REQUIRED:** "time"
+
+**VERIFY:**
+
+COMPILE:
+
+```go
+$ go build ./internal/config/
+EXPECT: exit 0
+```
+
+CONTENT_CHECKS:
+
+```go
+$ grep -c "ShardSize.*int" internal/config/network_profile.go
+EXPECT: 1
+
+$ grep -c "time.Duration" internal/config/network_profile.go
+EXPECT: >= 14 (count Duration fields)
+
+$ grep -c "ADR-" internal/config/network_profile.go
+EXPECT: >= 10 (ADR citations in comments)
+```
+
+NEGATIVE_CHECKS:
+
+```go
+$ grep -n "internal/" internal/config/network_profile.go \
+&& echo "FAIL: import of internal package" || echo "PASS"
+
+$ grep -n "erasure.ShardSize" internal/config/network_profile.go \
+&& echo "FAIL: forward reference to M3" || echo "PASS"
+
+$ grep -n "262144" internal/config/network_profile.go \
+&& echo "FAIL: ShardSize literal in struct (belongs in profiles.go)" || echo "PASS"
+```
+
+VET:
+
+```go
+$ go vet ./internal/config/
+EXPECT: exit 0; zero output
+```
+
+---
 
 #### Session 1.1.2 — Define `ProductionProfile` and `DemoProfile`
 
-**Task:** Create `internal/config/profiles.go` with `var ProductionProfile` and
-`var DemoProfile` populated with every value from MVP §5.2. Use Go struct literal
-syntax with all fields explicitly set (no omitted fields — MVP §6.3 requirement OR-03:
-Go compiler enforces completeness). Both literals must be on the same file so a diff
-immediately shows any field present in one but not the other.
+**TASK:** Define `ProductionProfile` and `DemoProfile` in `internal/config/profiles.go.`
 
-Verify: `go build` succeeds. Both structs compile without zero-value defaults silently
-filling any field.
+**FILE:** `internal/config/profiles.go`
+
+Both vars use struct literal syntax with ALL fields explicitly named.
+Go compiler enforces that no field is omitted (OR-03, MVP §6.3).
+Values taken exactly from MVP §5.2.
+
+```go
+var ProductionProfile = NetworkProfile{
+  Mode:         "prod",
+  DataShards:   16, ParityShards: 40, TotalShards: 56,
+  ShardSize:    262144, LazyRepairR0: 8,
+  MinActiveProviders: 56, MinDistinctASNs: 5, MinMetroRegions: 3,
+  MinRelayNodes: 3, MinCooledAccounts: 56,
+  ASNCapFraction: 0.20,
+  HeartbeatInterval:    4 * time.Hour,
+  HeartbeatJitter:      5 * time.Minute,
+  PollingInterval:      24 * time.Hour,
+  DHTRepublishInterval: 12 * time.Hour,
+  DHTExpiryDuration:    24 * time.Hour,
+  DepartureThreshold:   72 * time.Hour,
+  PromisedDowntimeMaximum: 72 * time.Hour,
+  AuditPeriodDuration: 30 * 24 * time.Hour,
+  EscrowHoldWindow:    30 * 24 * time.Hour,
+  VettingHoldWindow:   60 * 24 * time.Hour,
+  PendingReceiptGCAge: 48 * time.Hour,
+  RepairPromotionTimeout: 6 * time.Hour,
+  ScoreWindowShort:  24 * time.Hour,
+  ScoreWindowMedium: 7 * 24 * time.Hour,
+  ScoreWindowLong:   30 * 24 * time.Hour,
+  DualWindowDrop:    0.20,
+  VettingMinPasses:   80,
+  VettingMinDuration: 120 * 24 * time.Hour,
+  VettingCapFraction: 0.10,
+  Argon2Time: 3, Argon2Memory: 65536, Argon2Threads: 4,
+  RequireSecretsManager: true, RequireQuorum: true,
+  PaymentMode:           "razorpay_live",
+  SkipMnemonicConfirm:   false,
+  RazorpayCoolingPeriod: 24 * time.Hour,
+  ReleaseComputationInterval: 0,  // 0 = calendar-driven; correct for prod
+  GCRetryBackoff: []time.Duration{5*time.Minute, 15*time.Minute, 60*time.Minute},
+}
+
+var DemoProfile = NetworkProfile{
+  Mode:         "demo",
+  DataShards:   3, ParityShards: 2, TotalShards: 5,
+  ShardSize:    262144, LazyRepairR0: 1,  // ShardSize IDENTICAL to prod
+  MinActiveProviders: 5, MinDistinctASNs: 5, MinMetroRegions: 1,
+  MinRelayNodes: 0, MinCooledAccounts: 5,
+  ASNCapFraction: 0.20,
+  HeartbeatInterval:    30 * time.Second,
+  HeartbeatJitter:      5 * time.Second,
+  PollingInterval:      2 * time.Minute,
+  DHTRepublishInterval: 2 * time.Minute,
+  DHTExpiryDuration:    4 * time.Minute,
+  DepartureThreshold:   10 * time.Minute,
+  PromisedDowntimeMaximum: 10 * time.Minute,
+  AuditPeriodDuration: 2 * time.Minute,
+  EscrowHoldWindow:    1 * time.Minute,
+  VettingHoldWindow:   2 * time.Minute,
+  PendingReceiptGCAge: 5 * time.Minute,
+  RepairPromotionTimeout: 3 * time.Minute,
+  ScoreWindowShort:  2 * time.Minute,
+  ScoreWindowMedium: 6 * time.Minute,
+  ScoreWindowLong:   20 * time.Minute,
+  DualWindowDrop:    0.20,
+  VettingMinPasses:   5,
+  VettingMinDuration: 5 * time.Minute,
+  VettingCapFraction: 0.10,
+  Argon2Time: 1, Argon2Memory: 4096, Argon2Threads: 1,
+  RequireSecretsManager: false, RequireQuorum: false,
+  PaymentMode:           "mock",
+  SkipMnemonicConfirm:   true,
+  RazorpayCoolingPeriod: 0,
+  ReleaseComputationInterval: 2 * time.Minute,
+  GCRetryBackoff: []time.Duration{10*time.Second, 30*time.Second, 2*time.Minute},
+}
+```
+
+**VERIFY:**
+
+COMPILE:
+
+```go
+$ go build ./internal/config/
+EXPECT: exit 0
+```
+
+CONTENT_CHECKS:
+
+```go
+$ grep -c "ShardSize.*262144" internal/config/profiles.go
+EXPECT: 2 (one in ProductionProfile, one in DemoProfile)
+
+$ grep -c "DataShards.*16" internal/config/profiles.go
+EXPECT: 1 (ProductionProfile)
+
+$ grep -c "DataShards.*3" internal/config/profiles.go
+EXPECT: 1 (DemoProfile)
+
+$ grep -c "PaymentMode.*razorpay_live" internal/config/profiles.go
+EXPECT: 1
+
+$ grep -c "PaymentMode.*mock" internal/config/profiles.go
+EXPECT: 1
+```
+
+FIELD_COMPLETENESS (all fields must be named in both literals):
+
+```go
+$ go build -v ./internal/config/ 2>&1 | grep "too few" \
+&& echo "FAIL: struct literal incomplete" || echo "PASS"
+```
 
 ---
 
@@ -368,6 +1077,27 @@ filling any field.
 
 This test must be in CI check 14 and must block merges on failure (MVP §8.4).
 
+**VERIFY:**
+
+TEST_RUN:
+
+```go
+$ go test -v -run TestProfileShardSizeIsConstant ./internal/config/
+EXPECT: exit 0; output contains "--- PASS: TestProfileShardSizeIsConstant"
+```
+
+CONTENT_CHECKS:
+
+```go
+$ grep -c "262144" internal/config/profiles_test.go
+EXPECT: >= 2 (both assertions)
+
+$ grep -c "TODO.*erasure.ShardSize.*M3" internal/config/profiles_test.go
+EXPECT: 1
+```
+
+---
+
 #### Session 1.2.2 — `TestProfileBothFullySpecified`
 
 **Task:** Implement `TestProfileBothFullySpecified` (CI check 15 in MVP §8.4). Use
@@ -377,6 +1107,27 @@ non-zero (except fields where zero is explicitly the correct production value, e
 explicit allowlist in the test with a comment explaining why zero is correct per
 MVP §5.2).
 
+**VERIFY:**
+
+TEST_RUN:
+
+```go
+$ go test -v -run TestProfileBothFullySpecified ./internal/config/
+EXPECT: exit 0; output contains "--- PASS: TestProfileBothFullySpecified"
+```
+
+CONTENT_CHECKS:
+
+```go
+$ grep -c "reflect" internal/config/profiles_test.go
+EXPECT: >= 1 (reflection for field completeness check)
+
+$ grep -c "zero.*correct\|correct.*zero" internal/config/profiles_test.go
+EXPECT: >= 1 (allowlist comment for zero-value fields)
+```
+
+---
+
 #### Session 1.2.3 — `TestDemoDiffersFromProduction`
 
 **Task:** Assert that demo and production profiles differ on every field listed in
@@ -384,6 +1135,28 @@ MVP §3.2 through §3.5 (erasure params, time windows, crypto params). Assert th
 identical on: `ShardSize`, `ASNCapFraction`, `VettingCapFraction`, `DualWindowDrop`
 (per MVP §5.1 comments that these are "never mode-variable"). This test documents the
 exact boundary between what changes and what stays the same.
+
+**VERIFY:**
+
+TEST_RUN:
+
+```go
+$ go test -v -run TestDemoDiffersFromProduction ./internal/config/
+EXPECT: exit 0; output contains "--- PASS: TestDemoDiffersFromProduction"
+```
+
+CONTENT_CHECKS:
+
+```go
+$ grep -c "DualWindowDrop" internal/config/profiles_test.go
+EXPECT: >= 1
+
+$ grep -c "ASNCapFraction" internal/config/profiles_test.go
+EXPECT: >= 1
+
+$ grep -c "VettingCapFraction" internal/config/profiles_test.go
+EXPECT: >= 1
+```
 
 ---
 
@@ -394,35 +1167,194 @@ exact boundary between what changes and what stays the same.
 
 #### Session 1.3.1 — Implement `selectProfile()`
 
-**Task:** Create `internal/config/select.go` implementing the `SelectProfile()` function
-(exported for use by both `cmd/microservice` and `cmd/provider`) matching the logic in
-MVP §5.3. The function must:
-1. Read `VYOMANAUT_MODE` from environment
-2. Allow `--mode` CLI flag override (accept the flag value as a parameter so `cmd/`
-   wiring passes it in)
-3. Log the startup banner format exactly as shown in MVP §2.1
-4. Return `DemoProfile` for `"demo"`, `ProductionProfile` for `"prod"` or `""`
-5. Log a WARNING when mode is absent (defaults to prod)
-6. Call `os.Exit(1)` with a fatal log for any unknown value
+**TASK:** Implement `config.SelectProfile()` in `internal/config/select.go.`
+
+**FILE:** internal/config/select.go
+
+**EXPORTED FUNCTION SIGNATURE:**
+  `func SelectProfile(modeFlag string) NetworkProfile`
+
+**LOGIC (exact, no interpretation):**
+
+```go
+  1. If modeFlag == "" { modeFlag = os.Getenv("VYOMANAUT_MODE") }
+  2. switch modeFlag:
+     case "demo":
+       log.Printf("[STARTUP] Vyomanaut — mode=DEMO — do not use for real data")
+       return DemoProfile
+     case "prod":
+       log.Printf("[STARTUP] Vyomanaut — mode=PRODUCTION")
+       return ProductionProfile
+     case "":
+       log.Printf("[STARTUP] WARNING: VYOMANAUT_MODE not set; defaulting to prod")
+       return ProductionProfile
+     default:
+       log.Fatalf("[STARTUP] FATAL: unknown VYOMANAUT_MODE=%q; must be 'demo' or 'prod'",
+         modeFlag)
+       return ProductionProfile  // unreachable; satisfies compiler
+```
+
+**IMPORTS REQUIRED:** "log", "os"
+
+**CALLERS (not implemented here; documented for wiring in M12/M13)**:
+
+```go
+  cmd/microservice/main.go: profile := config.SelectProfile(*modeFlag)
+  cmd/provider/main.go:     profile := config.SelectProfile(*modeFlag)
+  where *modeFlag is parsed from --mode CLI flag via flag.String("mode","","")
+```
+
+**VERIFY:**
+
+COMPILE:
+
+```go
+$ go build ./internal/config/
+EXPECT: exit 0
+```
+
+CONTENT_CHECKS:
+
+```go
+$ grep -c "func SelectProfile" internal/config/select.go
+EXPECT: 1
+
+$ grep -c "modeFlag string" internal/config/select.go
+EXPECT: 1
+
+$ grep -c "VYOMANAUT_MODE" internal/config/select.go
+EXPECT: 1
+```
+
+BEHAVIOURAL_TESTS:
+
+```go
+$ go test -v -run TestSelectProfile ./internal/config/
+
+(requires a test that calls SelectProfile with each of:
+"demo", "prod", "" — and verifies correct profile returned)
+
+EXPECT: exit 0; output contains "--- PASS: TestSelectProfile"
+```
+
+NEGATIVE_CHECKS:
+
+```go
+$ grep -n "mode == " internal/config/select.go \
+&& echo "WARN: mode string comparison in business logic" || echo "PASS"
+```
+
+---
 
 #### Session 1.3.2 — Implement startup guard rails
 
-**Task:** Create `internal/config/guards.go` implementing `ValidateStartupGuards(profile
-NetworkProfile)`. This function must implement the two mandatory guard rails from MVP §2.3:
-1. If `profile.Mode == "prod"` AND `os.Getenv("VYOMANAUT_CLUSTER_MASTER_SEED") != ""`
-   → return error with code `PROD_MODE_ENV_SECRET` (IC §3.3 error code table)
-2. If `profile.Mode == "demo"` AND `profile.PaymentMode == "razorpay_live"`
-   → return error with code `DEMO_MODE_REAL_PAYMENT` (IC §3.3 error code table)
+**TASK:** Implement startup guard rails in ``internal/config/guards.go.`
 
-These correspond to the `500` error codes in IC §3.3. The function returns a typed error
-so callers can distinguish which guard fired. Both `cmd/microservice` and `cmd/provider`
-must call this at startup before any other initialisation.
+**FILE:** internal/config/guards.go
+
+**TYPE DEFINITION:**
+
+```go
+  // StartupError carries the IC §3.3 error code for fatal startup conditions.
+  type StartupError struct {
+    Code    string  // matches IC §3.3 error_code values
+    Message string
+  }
+  func (e *StartupError) Error() string { return e.Code + ": " + e.Message }
+```
+
+**EXPORTED FUNCTION SIGNATURE:**
+  `func ValidateStartupGuards(profile NetworkProfile) error`
+
+**LOGIC:**
+
+```go
+  1. if profile.Mode == "prod" &&
+       os.Getenv("VYOMANAUT_CLUSTER_MASTER_SEED") != "" {
+       return &StartupError{
+         Code:    "PROD_MODE_ENV_SECRET",
+         Message: "VYOMANAUT_CLUSTER_MASTER_SEED must not be set in production; use secrets manager",
+       }
+     }
+  2. if profile.Mode == "demo" && profile.PaymentMode == "razorpay_live" {
+       return &StartupError{
+         Code:    "DEMO_MODE_REAL_PAYMENT",
+         Message: "live Razorpay endpoint must not be used in demo mode",
+       }
+     }
+  3. return nil
+```
+
+**CALLER PATTERN (for cmd/ wiring in M12/M13):**
+
+```go
+  if err := config.ValidateStartupGuards(profile); err != nil {
+    log.Fatalf("[STARTUP] FATAL guard rail: %v", err)
+  }
+```
+
+**IMPORTS REQUIRED:** "os"
+
+**VERIFY:**
+
+COMPILE:
+
+```go
+$ go build ./internal/config/
+EXPECT: exit 0
+```
+
+CONTENT_CHECKS:
+
+```go
+$ grep -c "StartupError" internal/config/guards.go
+EXPECT: >= 2 (type definition + at least one return)
+
+$ grep -c "PROD_MODE_ENV_SECRET" internal/config/guards.go
+EXPECT: 1
+
+$ grep -c "DEMO_MODE_REAL_PAYMENT" internal/config/guards.go
+EXPECT: 1
+```
+
+UNIT_TESTS:
+
+```go
+$ go test -v -run TestGuardRails ./internal/config/
+
+EXPECT: exit 0; output contains 4 PASS lines:
+
+"prod+seed_present → error PROD_MODE_ENV_SECRET"
+"prod+seed_absent → nil"
+"demo+live_payment → error DEMO_MODE_REAL_PAYMENT"
+"demo+mock_payment → nil"
+```
+
+---
 
 #### Session 1.3.3 — Guard rail tests
 
 **Task:** Test all guard rail combinations: prod + seed env present (must error),
 prod + seed env absent (must pass), demo + razorpay_live (must error), demo + mock (must
 pass). Use `t.Setenv` for environment isolation.
+
+**VERIFY:**
+
+TEST_RUN:
+
+```go
+$ go test -v -run TestGuardRails ./internal/config/
+EXPECT: exit 0; all subtests PASS
+```
+
+ENVIRONMENT_ISOLATION:
+
+```go
+Verify t.Setenv is used (not os.Setenv) so tests are isolated:
+
+$ grep -c "t.Setenv" internal/config/guards_test.go
+EXPECT: >= 2
+```
 
 ---
 
@@ -445,17 +1377,87 @@ by the package invariant in IC §5.1)
 
 #### Session 2.1.1 — Implement `DetectAESNI()`
 
-**Task:** Create `internal/crypto/aesni.go` (build tag `//go:build amd64`) implementing
-`DetectAESNI() bool` via CPUID instruction per IC §5.1. Create
-`internal/crypto/aesni_other.go` (build tag `//go:build !amd64`) returning `false`.
-The function is called once at startup and stored; it must never be called again at
-runtime (IC §5.1 post-condition: "Never re-checked at runtime"). Store the result in a
-package-level `var aesNIAvailable = DetectAESNI()` (`var aesNIAvailable` is explicitly scoped as a test helper only) that callers use — but this variable
-must not be exported (callers pass the result as a parameter per IC §5.1).
+**TASK:** Implement `DetectAESNI()` in `internal/crypto/.`
 
-Verify: Compiles on amd64 and arm64. On amd64 with AES-NI hardware, returns true.
+**FILE:** `internal/crypto/aesni.go`
+**BUILD TAG:** `//go:build amd64`
 
-**Note:**  `DetectAESNI()` is called once in `cmd/provider/main.go` at daemon startup, stored in a local variable there, and passed down as a parameter to every `AONTEncodeSegment` and `AONTDecodePackage` call
+**CONTENT:**
+
+```go
+  package crypto
+
+  // DetectAESNI reports whether the CPU supports AES-NI instructions.
+  // Called exactly once at daemon startup (cmd/provider/main.go); result
+  // stored in a local variable and passed as a parameter to all
+  // AONTEncodeSegment and AONTDecodePackage calls.
+  // Never re-checked at runtime (IC §5.1).
+  func DetectAESNI() bool {
+    // Use golang.org/x/sys/cpu for portable CPUID access.
+    return cpu.X86.HasAES
+  }
+```
+
+**IMPORT REQUIRED:** "golang.org/x/sys/cpu"
+
+**FILE:** `internal/crypto/aesni_other.go`
+**BUILD TAG:** `//go:build !amd64`
+
+**CONTENT:**
+
+```go
+  package crypto
+
+  // DetectAESNI always returns false on non-amd64 platforms.
+  func DetectAESNI() bool { return false }
+```
+
+**NOTE:** No package-level `var aesNIAvailable`. The result is stored by the caller
+(`cmd/provider/main.go`) and passed as a parameter. IC §5.1 specifies the function
+is "called once at startup and stored" — that storage belongs to the caller, not
+to this package.
+
+**VERIFY:**
+
+COMPILE:
+
+```go
+$ GOARCH=amd64 go build ./internal/crypto/
+
+$ GOARCH=arm64 go build ./internal/crypto/
+
+EXPECT: both exit 0
+```
+
+CONTENT_CHECKS:
+
+```go
+$ grep -c "//go:build amd64" internal/crypto/aesni.go
+EXPECT: 1
+
+$ grep -c "//go:build !amd64" internal/crypto/aesni_other.go
+EXPECT: 1
+```
+
+NEGATIVE_CHECKS:
+
+```go
+$ grep -n "aesNIAvailable" internal/crypto/aesni.go \
+&& echo "FAIL: package-level var must not exist" || echo "PASS"
+
+$ grep -rn "aesNIAvailable" internal/crypto/ \
+&& echo "FAIL: package-level var must not exist" || echo "PASS"
+```
+
+FUNCTION_EXISTS:
+
+```go
+$ grep -c "^func DetectAESNI" internal/crypto/aesni.go
+EXPECT: 1
+
+$ grep -c "^func DetectAESNI" internal/crypto/aesni_other.go
+EXPECT: 1
+```
 
 ---
 
@@ -479,11 +1481,7 @@ All pre-conditions from IC §5.1 must be enforced: `len(masterSecret) == 32`,
 `len(ownerID) == 16`, `len(fileID) == 16` — panic in debug build (`//go:build debug`),
 return sentinel error in release build. All functions are pure (no side effects).
 
-**Critical:** `DeriveKeystoreEncKey` is named `DeriveKeystoreEncKey` here but IC §3.2
-refers to it as `DeriveDKSKeystoreEncKey()` in the heartbeat section. Resolve: the
-canonical name per IC §5.1 exported interface is `DeriveKeystoreEncKey`. The IC §3.2
-reference contains an inconsistency — use `DeriveKeystoreEncKey` and add a code comment
-noting the discrepancy for a future PR to fix IC §3.2.
+---
 
 #### Session 2.2.2 — HKDF known-answer tests
 
@@ -492,6 +1490,55 @@ fixed inputs (not from a live run — compute expected output offline using the 
 RFC 5869 test vector approach). Add a round-trip test: `DeriveFileKey(ms, o, f) ==
 DeriveFileKey(ms, o, f)` (determinism). Add a non-collision test: two different fileIDs
 produce different keys.
+
+> Combined verifications for 2.2.1 & 2.2.2
+
+**VERIFY:**
+
+COMPILE:
+
+```go
+$ go build ./internal/crypto/
+EXPECT: exit 0
+```
+
+FUNCTION_SIGNATURES:
+
+```go
+$ grep -c "^func DeriveFileKey" internal/crypto/hkdf.go
+
+$ grep -c "^func DerivePointerEncKey" internal/crypto/hkdf.go
+
+$ grep -c "^func DeriveKeystoreEncKey" internal/crypto/hkdf.go
+
+$ grep -c "^func DeriveDHTOwnerKey" internal/crypto/hkdf.go
+
+$ grep -c "^func DeriveDHTKey" internal/crypto/hkdf.go
+
+EXPECT: 1 for each
+```
+
+NEGATIVE_CHECKS:
+
+```go
+$ grep -n "DeriveDKSKeystoreEncKey\|DeriveKSKeystoreEncKey" \
+internal/crypto/hkdf.go \
+&& echo "FAIL: wrong function name" || echo "PASS"
+```
+
+UNIT_TESTS:
+
+```go
+$ go test -v -run TestHKDF ./internal/crypto/
+
+EXPECT: exit 0; tests include:
+
+TestHKDFDeterminism (same inputs → same output)
+
+TestHKDFNonCollision (different fileIDs → different keys)
+
+TestHKDFKnownAnswer (fixed-input known-output vectors)
+```
 
 ---
 
@@ -515,6 +1562,8 @@ IC §5.1 says "no errors returned; pre-condition violations panic").
 Add the mandatory caller-responsibility comment from IC §5.1: callers must pass
 `profile.Argon2Time`, `profile.Argon2Memory`, `profile.Argon2Threads` — never hardcode.
 
+---
+
 #### Session 2.3.2 — `DeriveMasterSecret` performance test
 
 **Task:** Add a test `TestArgon2idProduction` that runs with production parameters
@@ -524,12 +1573,51 @@ hardware). Add `TestArgon2idDemo` that runs with demo parameters (t=1, m=4096, p
 and asserts completion time < 200ms. These tests must be tagged `//go:build !short`
 so they are skipped in fast CI runs.
 
+> Combined verifications for 2.3.1 & 2.3.2
+
+**VERIFY:**
+
+COMPILE:
+
+```go
+$ go build ./internal/crypto/
+EXPECT: exit 0
+```
+
+FUNCTION_SIGNATURE:
+
+```go
+$ grep -c "func DeriveMasterSecret(passphrase, ownerID \[\]byte, argon2Time uint32,
+argon2Memory uint32, argon2Threads uint8)" \
+internal/crypto/argon2.go
+
+EXPECT: 1
+```
+
+NEGATIVE_CHECKS:
+
+```go
+$ grep -n "argon2Time.*3\|argon2Memory.*65536\|argon2Threads.*4" \
+internal/crypto/argon2.go \
+&& echo "FAIL: hardcoded Argon2 parameters" || echo "PASS"
+```
+
+PERFORMANCE_TESTS (tagged, run separately):
+
+```go
+$ go test -v -tags="" -run TestArgon2idProduction ./internal/crypto/
+EXPECT: exit 0; output shows timing >= 100ms
+
+$ go test -v -run TestArgon2idDemo ./internal/crypto/
+EXPECT: exit 0; output shows timing < 200ms
+```
+
 ---
 
 ### Phase 2.4 — AONT Cipher
 
 **Reference:** IC §5.1 (`AONTEncodeSegment`, `AONTDecodePackage`), IC §11 (forbidden:
-convergent encryption, K reuse), MVP §8.2 (`aont_canary.go`)
+convergent encryption, K reuse), MVP §8.2 (`aont_canary.go`), ARCH §10 Stage 1 or AES-CTR counter convention
 
 #### Session 2.4.1 — Implement the AONT canary constant
 
@@ -540,20 +1628,56 @@ This must be a `var`, not a `const`, because Go does not allow array constants �
 must never be reassigned. Add a `// canary must never be changed — it is an on-disk format commitment` comment. The canary is the second-to-last 16-byte word of every AONT
 package (IC §5.1 post-condition for `AONTEncodeSegment`).
 
+---
+
 #### Session 2.4.2 — Implement `AONTEncodeSegment()`
 
-**Task:** Create `internal/crypto/aont.go`. Implement `AONTEncodeSegment(segment []byte,
-aesNIAvailable bool) ([]byte, error)` per IC §5.1:
-- Generate fresh random K via `crypto/rand` (never reuse — IC §11 forbidden: K reuse)
-- Select cipher: ChaCha20-256 if `aesNIAvailable == false`, AES-256-CTR if true (IC §5.1,
-  ADR-019, ADR-022)
-- Produce AONT package: `(s+1)` 16-byte words where `s = len(segment)/16`
-- Embed canary as second-to-last word
-- Last word = `K XOR SHA-256(all preceding codewords)` (IC §5.1 post-condition)
-- K must not be returned — it is embedded and inaccessible without all words
+**TASK:** Implement `AONTEncodeSegment()` in `internal/crypto/aont.go.`
 
-Pre-conditions: `len(segment)` must be a multiple of 16; caller is responsible for
-padding to 4 MB minimum before calling.
+**FILE:** `internal/crypto/aont.go`
+
+**FUNCTION SIGNATURE (from IC §5.1):**
+  `func AONTEncodeSegment(segment []byte, aesNIAvailable bool) ([]byte, error)`
+
+**PRECONDITIONS (enforce with panic in debug builds, sentinel error in release):**
+
+  1. `len(segment) > 0`
+  2. `len(segment) % 16 == 0`
+  3. Caller has padded segment to minimum `4 MB` before calling
+
+**ALGORITHM (from architecture.md §10 Stage 1):**
+
+```go
+  1. K = make([]byte, 32); io.ReadFull(rand.Reader, K) — fresh per call (IC §11)
+  2. numWords = len(segment) / 16
+  3. output = make([]byte, (numWords+2)*16)  // +1 canary, +1 key-block
+  4. Cipher selection:
+     if aesNIAvailable {
+       // AES-256-CTR path; counter starts at i+1 per architecture.md §10 Stage 1
+       for i := 0; i < numWords; i++ {
+         block_i = AES256ECB(K, uint128(i+1))
+         copy(output[i*16:], xor16(segment[i*16:], block_i))
+       }
+     } else {
+       // ChaCha20-256 path
+       stream = chacha20.NewUnauthenticatedCipher(K, nonce_zero_12bytes)
+       stream.XORKeyStream(output[:numWords*16], segment)
+     }
+  5. copy(output[numWords*16:], aontCanary[:])   // second-to-last word
+  6. h = sha256.Sum256(output[:numWords*16])      // hash of ciphertext words only
+  7. output[(numWords+1)*16 : (numWords+2)*16] = xor32(K, h[:])  // key-block
+
+  Return output, nil
+```
+
+**HELPER:** `xor16(a, b []byte) [16]byte — XOR two 16-byte slices`
+**HELPER:** `xor32(a, b []byte) [32]byte — XOR two 32-byte slices (for K ⊕ h)`
+
+**IMPORTS REQUIRED:**
+  "crypto/rand", "crypto/sha256", "crypto/aes",
+  "golang.org/x/crypto/chacha20"
+
+---
 
 #### Session 2.4.3 — Implement `AONTDecodePackage()`
 
@@ -566,6 +1690,8 @@ error)` in `internal/crypto/aont.go`. Must:
    post-condition: "caller MUST NOT return any plaintext to the data owner. Zero the
    buffer before returning.")
 
+---
+
 #### Session 2.4.4 — AONT tests
 
 **Task:** Add `internal/crypto/aont_test.go`:
@@ -577,28 +1703,173 @@ error)` in `internal/crypto/aont.go`. Must:
   `ErrCanaryMismatch` (different cipher = different output; test documents this is not
   cross-compatible and is expected to fail)
 
+> Combined verifications for 2.4.1 to 2.4.4
+
+**VERIFY:**
+
+COMPILE:
+
+```go
+$ go build ./internal/crypto/
+EXPECT: exit 0
+```
+
+CANARY:
+
+```go
+$ grep -c "aontCanary" internal/crypto/aont_canary.go
+EXPECT: >= 1
+
+$ grep -c "var aontCanary = \[16\]byte" internal/crypto/aont_canary.go
+EXPECT: 1
+
+$ grep -n "const aontCanary" internal/crypto/aont_canary.go \
+&& echo "FAIL: must be var not const" || echo "PASS"
+```
+
+FUNCTION_SIGNATURES:
+
+```go
+$ grep -c "^func AONTEncodeSegment" internal/crypto/aont.go
+EXPECT: 1
+
+$ grep -c "^func AONTDecodePackage" internal/crypto/aont.go
+EXPECT: 1
+```
+
+UNIT_TESTS:
+
+```go
+$ go test -v -run TestAONT ./internal/crypto/
+
+EXPECT: exit 0; tests include:
+
+TestAONTRoundTrip (encode→decode returns original)
+
+TestAONTKeyFreshness (two encodes of same input differ)
+
+TestAONTCorruptionDetection (bit flip → ErrCanaryMismatch)
+
+TestAONTCrossCipherIncompatible (AES encode + ChaCha decode → ErrCanaryMismatch)
+```
+
+SENTINEL_ERRORS:
+
+```go
+$ grep -c "ErrCanaryMismatch" internal/crypto/errors.go
+EXPECT: 1
+```
+
+NEGATIVE_CHECKS (K must not be returned):
+
+```go
+$ grep -n "return K\b" internal/crypto/aont.go \
+&& echo "FAIL: K must not be returned" || echo "PASS"
+```
+
 ---
 
 ### Phase 2.5 — Pointer File AEAD
 
 **Reference:** IC §5.1 (`EncryptPointerFile`, `DecryptPointerFile`, `ErrTagMismatch`),
-IC §11 (constant-time tag comparison: NFR-019)
+IC §11 (constant-time tag comparison: NFR-019), REQ §5.4 NFR-019
 
 #### Session 2.5.1 — Implement pointer file AEAD
 
-**Task:** Create `internal/crypto/chacha20poly1305.go`. Implement `EncryptPointerFile`
-and `DecryptPointerFile` using `golang.org/x/crypto/chacha20poly1305` (AEAD_CHACHA20_POLY1305,
-RFC 8439 per IC §5.1). 
+**TASK:** Implement `EncryptPointerFile` and `DecryptPointerFile`.
 
-**Critical for `DecryptPointerFile`:** The Poly1305 tag must be verified with
-`crypto/subtle.ConstantTimeCompare` before any plaintext is returned (IC §5.1
-post-condition, NFR-019). If tag verification fails, return `ErrTagMismatch` with
-nil plaintext. The caller must not use any returned bytes on `ErrTagMismatch` (IC §5.1).
+**FILE:** `internal/crypto/chacha20poly1305.go`
 
-AAD pre-condition: `len(aad) > 0`; the AAD must include `ownerID || fileID ||
-schemaVersion` — this is the caller's responsibility (documented in IC §5.1 pre-condition).
+**FUNCTION SIGNATURES (exact, from IC §5.1):**
+  `func EncryptPointerFile(key [32]byte, nonce [12]byte, aad, plaintext []byte) ([]byte, error)`
+  `func DecryptPointerFile(key [32]byte, nonce [12]byte, aad, ciphertext []byte) ([]byte, error)`
 
-Define `ErrTagMismatch` in `internal/crypto/errors.go`.
+**PRECONDITIONS for EncryptPointerFile:**
+
+  - `len(aad) > 0`  (panic in debug; aad must include `ownerID||fileID||schemaVersion`)
+
+**PRECONDITIONS for DecryptPointerFile:**
+
+  - `len(ciphertext) >= 16`  (must include `Poly1305` tag)
+
+**DecryptPointerFile CRITICAL PATH (NFR-019, requirements.md §5.4):**
+
+  1. Construct AEAD cipher: aead, `err = chacha20poly1305.New(key[:])`
+  2. Call `aead.Open()` — this uses `crypto/subtle.ConstantTimeCompare` internally
+     via the `chacha20poly1305` stdlib implementation
+  3. If `Open()` returns error: return nil, `ErrTagMismatch`
+     IMPORTANT: return nil plaintext, never partial plaintext on error
+  4. On success: return decrypted plaintext, nil
+
+**FILE:** `internal/crypto/errors.go`
+**CONTENT (sentinel errors for this package):**
+
+```go
+  package crypto
+
+  import "errors"
+
+  var (
+    ErrTagMismatch    = errors.New("crypto: Poly1305 tag verification failed")
+    ErrCanaryMismatch = errors.New("crypto: AONT canary word mismatch after decode")
+    ErrInvalidMnemonic = errors.New("crypto: invalid BIP-39 mnemonic")
+  )
+```
+
+**IMPORTS REQUIRED:** "golang.org/x/crypto/chacha20poly1305"
+
+**VERIFY:**
+
+COMPILE:
+
+```go
+$ go build ./internal/crypto/
+EXPECT: exit 0
+```
+
+FUNCTION_SIGNATURES:
+
+```go
+$ grep -c "^func EncryptPointerFile" internal/crypto/chacha20poly1305.go
+EXPECT: 1
+
+$ grep -c "^func DecryptPointerFile" internal/crypto/chacha20poly1305.go
+EXPECT: 1
+```
+
+CONSTANT_TIME_TAG:
+
+```go
+$ grep -c "subtle\|ConstantTime" internal/crypto/chacha20poly1305.go
+EXPECT: >= 1
+
+Note: golang.org/x/crypto/chacha20poly1305 uses subtle internally.
+
+If wrapping manually, verify explicit subtle.ConstantTimeCompare call.
+```
+
+SENTINEL_ERRORS:
+
+```go
+$ grep -c "ErrTagMismatch" internal/crypto/errors.go
+EXPECT: 1
+```
+
+UNIT_TESTS:
+
+```go
+$ go test -v -run TestPointerFileAEAD ./internal/crypto/
+
+EXPECT: exit 0; tests include:
+
+TestPointerFileRoundTrip (encrypt→decrypt returns plaintext)
+
+TestPointerFileTagMismatch (tampered ciphertext → ErrTagMismatch)
+
+TestPointerFileNilOnTagMismatch (ErrTagMismatch returns nil plaintext)
+
+TestPointerFileNonceUniqueness (different nonces → different ciphertexts)
+```
 
 ---
 
@@ -614,7 +1885,9 @@ MVP §8.2 (`bip39.go`), IC §11 (forbidden: BIP-39 mnemonic words for real accou
 `internal/crypto/wordlist_en.txt`. This is the only permitted wordlist (IC §5.1).
 Vyomanaut never uses passphrases on top of the mnemonic — the mnemonic IS the master
 secret directly, not a BIP-39 seed input (IC §5.1 comment). Add a test that the
-wordlist contains exactly 2048 words.
+wordlist contains exactly 2048 words. (BIP-39 English wordlist from `https://github.com/trezor/python-mnemonic/blob/master/src/mnemonic/wordlist/english.txt`)
+
+---
 
 #### Session 2.6.2 — Implement `MasterSecretToMnemonic()`
 
@@ -623,6 +1896,8 @@ checksum, per BIP-39 §Generating the mnemonic. The round-trip property
 `MnemonicToMasterSecret(MasterSecretToMnemonic(ms)) == ms` must hold (IC §5.1
 post-condition).
 
+---
+
 #### Session 2.6.3 — Implement `MnemonicToMasterSecret()`
 
 **Task:** Implement the recovery path per IC §5.1. On invalid mnemonic (wrong word
@@ -630,11 +1905,15 @@ count, unknown word, checksum failure), return `ErrInvalidMnemonic` without reve
 which word failed (IC §5.1: "Do not expose which word failed — timing oracle"). All
 validation branches must take equal time (use constant-time word lookup).
 
+---
+
 #### Session 2.6.4 — Implement `SelectConfirmationWords()`
 
 **Task:** Implement per IC §5.1. Return two distinct random indices (0–23) drawn via
 `crypto/rand`. The function may be called even in demo mode where `SkipMnemonicConfirm
 == true` — the caller simply does not block on the result (IC §5.1 note).
+
+---
 
 #### Session 2.6.5 — BIP-39 round-trip and error tests
 
@@ -642,6 +1921,60 @@ validation branches must take equal time (use constant-time word lookup).
 entropy — not from real accounts per IC §11). Test `ErrInvalidMnemonic` on: wrong count,
 unknown word, bad checksum. Test that `SelectConfirmationWords` never returns two equal
 indices across 1000 calls.
+
+> Combined verification from 2.6.1 to 2.6.5
+
+**VERIFY:**
+
+FILES_EXIST:
+
+```go
+$ test -f internal/crypto/wordlist_en.txt && echo PASS || echo FAIL
+```
+
+WORDLIST_COUNT:
+
+```go
+$ wc -l < internal/crypto/wordlist_en.txt
+EXPECT: 2048
+```
+
+FUNCTION_SIGNATURES:
+
+```go
+$ grep -c "^func MasterSecretToMnemonic" internal/crypto/bip39.go
+
+$ grep -c "^func MnemonicToMasterSecret" internal/crypto/bip39.go
+
+$ grep -c "^func SelectConfirmationWords" internal/crypto/bip39.go
+
+EXPECT: 1 for each
+```
+
+UNIT_TESTS:
+
+```go
+$ go test -v -run TestBIP39 ./internal/crypto/
+
+EXPECT: exit 0; tests include:
+
+TestBIP39RoundTrip (mnemonic→secret→mnemonic identity)
+
+TestBIP39InvalidWordCount (23 words → ErrInvalidMnemonic)
+
+TestBIP39UnknownWord (gibberish word → ErrInvalidMnemonic)
+
+TestBIP39BadChecksum (valid words, wrong checksum → ErrInvalidMnemonic)
+
+TestSelectConfirmationWordsUnique (never returns equal indices in 1000 calls)
+```
+
+SENTINEL_ERRORS:
+
+```go
+$ grep -c "ErrInvalidMnemonic" internal/crypto/errors.go
+EXPECT: 1
+```
 
 ---
 
@@ -666,6 +1999,60 @@ and as a `// SIGNING_INPUT_RULE: use fixed-layout byte sequence, never JSON` com
 both functions.
 
 Verify: The functions are pure and goroutine-safe (IC §5.1 package invariant).
+
+**VERIFY:**
+
+COMPILE:
+
+```go
+$ go build ./internal/crypto/
+EXPECT: exit 0
+```
+
+FUNCTION_SIGNATURES:
+
+```go
+$ grep -c "^func SignBytes" internal/crypto/ed25519.go
+EXPECT: 1
+
+$ grep -c "^func VerifyBytes" internal/crypto/ed25519.go
+EXPECT: 1
+```
+
+SIGNING_RULE_COMMENT:
+
+```go
+$ grep -c "SIGNING_INPUT_RULE" internal/crypto/ed25519.go
+EXPECT: >= 2 (on both functions)
+```
+
+NEGATIVE_CHECKS (no JSON in signing path):
+
+```go
+$ grep -n "json.Marshal\|encoding/json" internal/crypto/ed25519.go \
+&& echo "FAIL: JSON in signing path" || echo "PASS"
+```
+
+COMPILE_TIME_ASSERTION:
+
+```go
+$ grep -c "ed25519.PublicKeySize == 32" internal/crypto/ed25519.go
+EXPECT: 1
+```
+
+UNIT_TESTS:
+
+```go
+$ go test -v -run TestEd25519 ./internal/crypto/
+
+EXPECT: exit 0; tests include:
+
+TestSignBytesRoundTrip (sign→verify succeeds)
+
+TestSignBytesWrongKey (verify with wrong key returns false)
+
+TestSignBytesNotJSON (signing input is fixed-layout, not JSON)
+```
 
 ---
 
