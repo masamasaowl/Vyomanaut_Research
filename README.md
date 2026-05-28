@@ -2,6 +2,17 @@
 
 Decentralised cold-storage network for India. Data owners pay to store encrypted files; home desktop operators earn money by holding shards and passing daily cryptographic storage proofs.
 
+The Version 1 of the project is archived at [masamasaowl/Vyomanaut](https://github.com/masamasaowl/Vyomanaut).
+V1 failed due to:
+
+1. Lack of research in architecture
+2. Structural compromises made during build
+3. Inefficient transfer speed, storage, and peer discovery
+
+The version 2 is a research-first rebuild. This repository contains the system design and the full research log behind it.
+
+It can be found at: [masamasaowl/Vyomanaut_V2](https://github.com/masamasaowl/Vyomanaut_V2)
+
 **Three core properties:**
 
 - **Zero-knowledge** — encryption happens entirely on the data owner's device. The network never sees plaintext. The microservice stores only AEAD ciphertext it cannot decrypt.
