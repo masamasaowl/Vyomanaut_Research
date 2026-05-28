@@ -184,7 +184,7 @@ IC §10 (naming conventions), IC §11 (forbidden code patterns — linter rules 
 
 ```go
   cd <repo_root>
-  go mod init github.com/masamasaowl/vyomanaut
+  go mod init github.com/masamasaowl/Vyomanaut_V2
   go mod tidy
 ```
 
