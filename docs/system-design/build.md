@@ -354,44 +354,49 @@ Verify: `go build ./internal/...` succeeds. `go vet ./internal/...` produces zer
 
 **TASK:** Create .golangci.yml with the linters from MVP §8.4.
 
-**FILE:** `.golangci.yml`
+**FILE:** `.golangci.yml` (v2.12.2)
 **CONTENT:**
 
-```go
+```yml
 
-  run:
-    timeout: 5m
+version: "2"
 
-  linters:
-    enable:
-      - gofmt
-      - govet
-      - errcheck
-      - exhaustive
-      - godot
-      - gomnd
+run:
+  timeout: 5m
 
-  linters-settings:
-    exhaustive:
-      # Types added here as they are defined in subsequent milestones.
-      # Format: <package_import_path>.<TypeName>
-      # M7: internal/audit.AuditResult
-      # M9: internal/repair.Priority, internal/repair.TriggerType
-      # M10: internal/payment.EscrowEventType
-      # Update this list when each type is defined.
-      default-signifies-exhaustive: false
-    errcheck:
-      check-type-assertions: true
-    gomnd:
-      ignored-functions:
-        # Argon2id parameters must come from NetworkProfile, not literals.
-        # gomnd will flag any integer literal in argon2.New() calls.
-        - "argon2.IDKey"
+linters:
+  enable:
+    - govet
+    - errcheck
+    - exhaustive
+    - godot
+    - mnd
 
-  issues:
-    exclude-rules:
-      - path: "_test.go"
-        linters: [gomnd]
+formatters:
+  enable:
+    - gofmt
+
+linters-settings:
+  exhaustive:
+    # Types added here as they are defined in subsequent milestones.
+    # Format: <package_import_path>.<TypeName>
+    # M7: internal/audit.AuditResult
+    # M9: internal/repair.Priority, internal/repair.TriggerType
+    # M10: internal/payment.EscrowEventType
+    default-signifies-exhaustive: false
+
+  errcheck:
+    check-type-assertions: true
+
+  mnd:
+    ignored-functions:
+      - "argon2.IDKey"
+
+issues:
+  exclude-rules:
+    - path: "_test\\.go"
+      linters:
+        - mnd
 ```
 
 **NOTE:** The exhaustive linter section is intentionally sparse at M0. It is updated incrementally as each type is defined (sessions 7.1.1, 9.1.1, 10.2.1). The comment block above is the authoritative tracking list.
@@ -415,6 +420,8 @@ EXPECT: >= 2
 ```
 
 LINT_CHECK:
+
+// Note: golangci-lint has been updated to v2.12.2
 
 ```go
 $ golangci-lint run ./...
@@ -532,10 +539,11 @@ options: `--health-cmd pg_isready`
 
   check-02: go vet ./...
     run: go vet ./...
-
+  
+  // Note golangci-lint version has been updated from v1.57.0 -> v2.12.2. Please build accordingly
   check-03: golangci-lint
     uses: golangci/golangci-lint-action@v4
-    with: {version: v1.57.0, args: --timeout=5m}
+    with: {version: v2.12.2, args: --timeout=5m}
 
   check-04: go test with race detector
     run: go test -race -count=1 ./...
