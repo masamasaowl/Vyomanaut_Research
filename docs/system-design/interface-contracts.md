@@ -10,6 +10,7 @@ Where this document conflicts with an ADR, the ADR wins. Where it conflicts with
 **Repository:** https://github.com/masamasaowl/Vyomanaut_Research
 **Supersedes:** —
 **Companion documents:**
+
 - [`openapi.yaml`](./openapi.yaml) — authoritative REST/HTTP surface
 - [`data-model.md`](./data-model.md) — canonical database schema and invariants
 - [`architecture.md`](./architecture.md) — system overview and component descriptions

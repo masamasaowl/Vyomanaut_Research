@@ -6,6 +6,7 @@
 **Repository:** https://github.com/masamasaowl/Vyomanaut_Research  
 **Supersedes:** —  
 **Companion documents:**
+
 - [`docs/system-design/architecture.md`](./architecture.md) — system overview
 - [`docs/system-design/requirements.md`](./requirements.md) — functional and non-functional requirements
 - [`docs/system-design/data-model.md`](./data-model.md) — canonical database schema
@@ -237,6 +238,8 @@ format, the idempotency key requirement, integer paise enforcement, and all libp
 wire formats.
 
 ---
+
+# mvp.md
 
 ## 5. How to Toggle Each Feature
 

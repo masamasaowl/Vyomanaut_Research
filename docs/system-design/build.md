@@ -486,7 +486,7 @@ EXPECT: exit 0; zero findings on stub-only repository
 
 FILES_EXIST:
 
-```go
+```zsh
 $ test -f scripts/ci/grep_checks.sh && echo PASS || echo FAIL
 
 $ test -x scripts/ci/grep_checks.sh && echo PASS || echo FAIL
@@ -494,14 +494,14 @@ $ test -x scripts/ci/grep_checks.sh && echo PASS || echo FAIL
 
 SCRIPT_RUNS:
 
-```go
+```zsh
 $ bash scripts/ci/grep_checks.sh
 EXPECT: exit 0; all four lines print "PASS [...]"
 ```
 
 SELF_TEST (inject a violation and confirm detection):
 
-```go
+```zsh
 $ echo "challenge_nonce BYTEA(32)" > /tmp/test_violation.go
 
 $ bash scripts/ci/grep_checks.sh /tmp/test_violation.go 2>/dev/null \
@@ -533,14 +533,14 @@ options: `--health-cmd pg_isready`
 
 **Steps (in order, each with id matching check number):**
 
-```go
+```yml
   check-01: go build ./...
     run: go build ./...
 
   check-02: go vet ./...
     run: go vet ./...
   
-  // Note golangci-lint version has been updated from v1.57.0 -> v2.12.2. Please build accordingly
+  # Note golangci-lint version has been updated from v1.57.0 -> v2.12.2. Please build accordingly
   check-03: golangci-lint
     uses: golangci/golangci-lint-action@v4
     with: {version: v2.12.2, args: --timeout=5m}
@@ -625,27 +625,27 @@ check. That check then becomes a hard gate.
 
 FILES_EXIST:
 
-```go
+```bash
 $ test -f .github/workflows/ci.yml && echo PASS || echo FAIL
 ```
 
 CONTENT_CHECKS:
 
-```go
+```bash
 $ grep -c "^ check-" .github/workflows/ci.yml
 EXPECT: 16 (checks 01 through 16)
 ```
 
 YAML_VALID:
 
-```go
+```bash
 $ python3 -c "import yaml; yaml.safe_load(open('.github/workflows/ci.yml'))" \
 && echo PASS || echo FAIL
 ```
 
 STEP_COUNT:
 
-```go
+```bash
 $ grep -c "name: check-" .github/workflows/ci.yml
 EXPECT: 16
 ```
@@ -668,7 +668,7 @@ lists at least three owner handles (can be duplicates at this stage).
 
 **Reference:** MVP §8.5 (dev docker-compose requirements)
 
-#### Session 0.4.1 — Create `deployments/dev/docker-compose.yml`
+#### Session 0.4.1 — `Create deployments/dev/docker-compose.yml`
 
 **TASK:** Create deployments/dev/docker-compose.yml for local development.
 
@@ -747,7 +747,7 @@ lists at least three owner handles (can be duplicates at this stage).
 
 FILES_EXIST:
 
-```go
+```bash
 $ test -f deployments/dev/docker-compose.yml && echo PASS || echo FAIL
 
 $ test -f deployments/dev/init-db.sql && echo PASS || echo FAIL
@@ -755,14 +755,14 @@ $ test -f deployments/dev/init-db.sql && echo PASS || echo FAIL
 
 YAML_VALID:
 
-```go
+```bash
 $ docker-compose -f deployments/dev/docker-compose.yml config > /dev/null \
 && echo PASS || echo FAIL
 ```
 
 CONTENT_CHECKS:
 
-```go
+```bash
 $ grep -c "btree_gist" deployments/dev/init-db.sql
 EXPECT: 1
 
@@ -775,7 +775,7 @@ EXPECT: >= 1 (provider placeholder comment)
 
 POSTGRES_STARTS:
 
-```go
+```bash
 $ docker-compose -f deployments/dev/docker-compose.yml up -d postgres
 
 $ sleep 5
@@ -787,13 +787,13 @@ psql -U vyomanaut_app -d vyomanaut_dev -c "\dx" | grep btree_gist \
 
 CLEANUP:
 
-```go
+```bash
 $ docker-compose -f deployments/dev/docker-compose.yml down -v
 ```
 
 NEGATIVE_CHECKS:
 
-```go
+```bash
 $ grep "relay-mode" deployments/dev/docker-compose.yml \
 && echo "FAIL: unspecified flag present" || echo "PASS"
 ```
@@ -837,7 +837,7 @@ Each field must have a comment citing its governing ADR.
 
 **FIELD GROUPS AND TYPES (exact — no additions, no omissions):**
 
-```sql
+```go
   // Erasure coding (ADR-003)
   DataShards   int
   ParityShards int
