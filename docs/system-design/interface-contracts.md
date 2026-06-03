@@ -12,7 +12,7 @@ Where this document conflicts with an ADR, the ADR wins. Where it conflicts with
 **Companion documents:**
 
 - [`openapi.yaml`](./openapi.yaml) — authoritative REST/HTTP surface
-- [`data-model.md`](./data-model.md) — canonical database schema and invariants
+- [`data-model.md`](./data-model.md) — x
 - [`architecture.md`](./architecture.md) — system overview and component descriptions
 - [`requirements.md`](./requirements.md) — functional and non-functional requirements
 - [`ADR-001`](../decisions/ADR-001-coordination-architecture.md) through [`ADR-029`](../decisions/ADR-029-bootstrap-minimum-viable-network.md) — all architectural decisions
@@ -751,7 +751,7 @@ always bugs in the caller, not in the callee.
 
 ---
 
-### 5.1 `internal/crypto`
+### IC 5.1 `internal/crypto`
 
 Provides all key derivation and cipher primitives. All functions are **pure** (no shared
 mutable state) and **goroutine-safe** by design — they take all inputs as arguments and
@@ -2271,7 +2271,7 @@ The `dht_key` must be persisted locally by the daemon (e.g., in RocksDB alongsid
 
 ---
 
-## Stale Address Fallback Path
+### 12.3 Stale Address Fallback Path
 
 The DHT is the FALLBACK path, not the primary path. The normal retrieval sequence is:
 

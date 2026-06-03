@@ -524,7 +524,7 @@ CLEANUP: rm /tmp/test_violation.go
 **FILE:** ``.github/workflows/ci.yml`
 
 The workflow triggers on: [push, pull_request]
-Uses: `ubuntu-latest`, `go: '1.22'`
+Uses: `ubuntu-latest`, `go: '1.26'`
 
 **Services block:** postgres:16 with `POSTGRES_DB=vyomanaut_test`,
 `POSTGRES_USER=vyomanaut_app`,
@@ -1256,7 +1256,7 @@ $ grep -n "mode == " internal/config/select.go \
 
 #### Session 1.3.2 — Implement startup guard rails
 
-**TASK:** Implement startup guard rails in ``internal/config/guards.go.`
+**TASK:** Implement startup guard rails in `internal/config/guards.go.`
 
 **FILE:** internal/config/guards.go
 
