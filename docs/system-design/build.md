@@ -2703,22 +2703,138 @@ MVP §5.5 (schema parameterisation), MVP §6.4 (migration requirements)
 
 #### Session 4.1.1 — Implement `migrations/generator.go`
 
-**Task:** Create `migrations/generator.go` implementing `GenerateInitialSchema(profile
-config.NetworkProfile) string` per MVP §5.5. The function produces two profile-dependent
-CHECK constraints:
+**TASK:** Create the migration generator command and README.
 
-1. `chunk_assignments.shard_index`: `BETWEEN 0 AND {profile.TotalShards-1} OR shard_index IS NULL`
-2. `repair_jobs.available_shard_count`: `BETWEEN {profile.DataShards} AND {profile.TotalShards}`
+**PRECONDITIONS:**
 
-The generator is invoked as: `go run migrations/generator.go --profile=prod` or `--profile=demo`.
-It outputs the full migration SQL to stdout. The output is redirected to
-`migrations/001_initial_schema.sql` (production) or `migrations/001_initial_schema_demo.sql`
-(demo).
+- `internal/config` package is complete (M1 done)
+- `migrations/README.md` created (see doc.go Propagation above)
 
-**Warning from DM §9:** "Never apply a demo schema to a production database or vice versa."
-The generator must embed the profile name as a comment header in the output SQL:
-`-- Generated for profile: {prod|demo}` so a human reviewer can verify the schema
-before applying.
+**STEP 1 — Create migrations/generator.go:**
+
+  **FILE:** `migrations/generator.go`
+
+  **PACKAGE:** package main
+
+  **PACKAGE DOC COMMENT:**
+
+```go
+    // Command generator produces the initial PostgreSQL schema for Vyomanaut V2.
+    // It is parameterised by the active NetworkProfile so that demo and production
+    // schemas differ only in the CHECK constraint bounds for shard_index and
+    // available_shard_count (DM §9 Profile rule, MVP §5.5, DM §3 Invariant 7).
+    //
+    // Usage:
+    //   go run migrations/generator.go --profile=prod
+    //   go run migrations/generator.go --profile=demo
+    //
+    // Output is the full migration SQL to stdout. Redirect to file:
+    //   go run migrations/generator.go --profile=prod > migrations/001_initial_schema.sql
+```
+
+  **CLI FLAGS:**
+    `--profile` string   "prod" or "demo" (required; no default; fatal if absent or invalid)
+
+  **MAIN LOGIC:**
+
+  ```go
+    1. Parse --profile flag via flag.String("profile", "", "prod or demo")
+    2. flag.Parse()
+    3. if *profileFlag == "" { log.Fatal("--profile is required") }
+    4. profile := selectProfile(*profileFlag)  // returns config.DemoProfile or config.ProductionProfile
+    5. sql := generateSchema(profile)
+    6. fmt.Print(sql)
+  ```
+
+  **FUNCTION:** `generateSchema(profile config.NetworkProfile) string`
+
+  ```go
+    Returns the complete migration SQL as a string.
+    The output begins with:
+      -- Generated for profile: {profile.Mode}
+      -- Generated at: {time.Now().UTC().Format(time.RFC3339)}
+      -- ShardSize: 262144 (compile-time constant; NOT profile-variable)
+      -- DataShards: {profile.DataShards}
+      -- TotalShards: {profile.TotalShards}
+
+    Two profile-variable CHECK constraints use fmt.Sprintf:
+      1. chunk_assignments.shard_index:
+         fmt.Sprintf("CHECK (shard_index BETWEEN 0 AND %d OR shard_index IS NULL)",
+             profile.TotalShards-1)
+
+      2. repair_jobs.available_shard_count:
+         fmt.Sprintf("CHECK (available_shard_count BETWEEN %d AND %d)",
+             profile.DataShards, profile.TotalShards)
+
+    The complete SQL body (schema for all tables, ENUMs, indexes, RSPs, views) is
+    assembled by concatenating the sections defined in Sessions 4.2.1 through 4.7.5.
+    Each section is a Go string constant or fmt.Sprintf result stored in a named var.
+  ```
+
+**STEP 2 — Run the generator to create the production schema file:**
+
+  ```bash
+    go run migrations/generator.go --profile=prod > migrations/001_initial_schema.sql
+    go run migrations/generator.go --profile=demo > migrations/001_initial_schema_demo.sql
+  ```
+
+**VERIFY:**
+
+  **COMPILE:**
+
+  ```bash
+      $ go build ./migrations/
+      EXPECT: exit 0
+  ```
+
+  **FILES_EXIST:**
+
+  ```bash
+      test -f migrations/generator.go && echo PASS || echo FAIL
+      test -f migrations/README.md && echo PASS || echo FAIL
+  ```
+
+  **GENERATOR_RUNS:**
+
+  ```bash
+      $ go run migrations/generator.go --profile=prod | head -5
+      EXPECT: first line is "-- Generated for profile: prod"
+
+      $ go run migrations/generator.go --profile=demo | head -5
+      EXPECT: first line is "-- Generated for profile: demo"
+
+      $ go run migrations/generator.go 2>&1 | grep "required"
+      EXPECT: contains "--profile is required"
+  ```
+
+  **PROFILE_VARIABLE_CONSTRAINTS:**
+
+  ```bash
+      $ go run migrations/generator.go --profile=prod | \
+          grep "shard_index BETWEEN 0 AND 55"
+      EXPECT: found
+
+      $ go run migrations/generator.go --profile=demo | \
+          grep "shard_index BETWEEN 0 AND 4"
+      EXPECT: found
+
+      $ go run migrations/generator.go --profile=prod | \
+          grep "available_shard_count BETWEEN 16 AND 56"
+      EXPECT: found
+
+      $ go run migrations/generator.go --profile=demo | \
+          grep "available_shard_count BETWEEN 3 AND 5"
+      EXPECT: found
+  ```
+
+  **SEPARATION_CHECK (demo schema must NOT be applied to prod — structural check):**
+
+  ```bash
+      $ go run migrations/generator.go --profile=prod | \
+          grep "shard_index BETWEEN 0 AND 4" && echo "FAIL: demo bounds in prod" || echo "PASS"
+      $ go run migrations/generator.go --profile=demo | \
+          grep "shard_index BETWEEN 0 AND 55" && echo "FAIL: prod bounds in demo" || echo "PASS"
+  ```
 
 ---
 
@@ -2728,25 +2844,97 @@ before applying.
 
 #### Session 4.2.1 — Define all PostgreSQL ENUMs
 
-**Task:** Add to the migration SQL in order (DM §9: all `CREATE TYPE` statements before
-`CREATE TABLE`):
+**TASK:** Define all PostgreSQL ENUM types in the migration SQL.
 
-- `provider_status` ENUM: `PENDING_ONBOARDING`, `VETTING`, `ACTIVE`, `DEPARTED` (DM §4.2)
-- `file_status` ENUM: `ACTIVE`, `DELETION_PENDING`, `DELETED` (DM §4.3, DM §9 checklist)
-- `assignment_status` ENUM: `ACTIVE`, `REPAIRING`, `PENDING_DELETION`, `DELETED` (DM §4.5)
-- `audit_result_type` ENUM: `PASS`, `FAIL`, `TIMEOUT` (DM §4.7)
-- `escrow_event_type` ENUM: `DEPOSIT`, `RELEASE`, `SEIZURE`, `REVERSAL` (DM §4.8 and DM §9
-  checklist item "Add REVERSAL to escrow_event_type ENUM")
-- `owner_escrow_event_type` ENUM: `DEPOSIT`, `CHARGE`, `WITHDRAWAL`, `REFUND` (DM §4.9)
-- `repair_trigger_type` ENUM: `SILENT_DEPARTURE`, `ANNOUNCED_DEPARTURE`,
-  `THRESHOLD_WARNING`, `EMERGENCY_FLOOR` (DM §4.10)
-- `repair_priority` ENUM: `EMERGENCY`, `PERMANENT_DEPARTURE`, `PRE_WARNING`
-  (DM §4.10, DM §9 checklist item "repair_priority ENUM has three values")
-- `repair_job_status` ENUM: `QUEUED`, `IN_PROGRESS`, `COMPLETED`, `FAILED` (DM §4.10)
+**OUTPUT FILE:** `migrations/001_initial_schema.sql` (section: ENUM definitions)
 
-**Verify:** DM §9 checklist items for ENUMs are all checked. The `repair_priority` ENUM
-ordering matters for `ORDER BY priority ASC` — document that EMERGENCY sorts first
-alphabetically (E < P < P) in the migration comment.
+These statements must appear BEFORE all CREATE TABLE statements (DM §9 migration ordering).
+
+**ENUMS TO CREATE (exact values, in this order):**
+
+```sql
+  1. provider_status    — 'PENDING_ONBOARDING', 'VETTING', 'ACTIVE', 'DEPARTED'
+                          (DM §4.2)
+
+  2. file_status        — 'ACTIVE', 'DELETION_PENDING', 'DELETED'
+                          (DM §4.3, DM §9 checklist: "file_status ENUM has three values")
+
+  3. assignment_status  — 'ACTIVE', 'REPAIRING', 'PENDING_DELETION', 'DELETED'
+                          (DM §4.5)
+
+  4. audit_result_type  — 'PASS', 'FAIL', 'TIMEOUT'
+                          (DM §4.7; note: nullable column uses this ENUM, not TEXT)
+
+  5. escrow_event_type  — 'DEPOSIT', 'RELEASE', 'SEIZURE', 'REVERSAL'
+                          (DM §4.8; REVERSAL required per DM §9 checklist)
+
+  6. owner_escrow_event_type — 'DEPOSIT', 'CHARGE', 'WITHDRAWAL', 'REFUND'
+                               (DM §4.9)
+
+  7. repair_trigger_type — 'SILENT_DEPARTURE', 'ANNOUNCED_DEPARTURE',
+                           'THRESHOLD_WARNING', 'EMERGENCY_FLOOR'
+                           (DM §4.10)
+
+  8. repair_priority    — 'EMERGENCY', 'PERMANENT_DEPARTURE', 'PRE_WARNING'
+                          (DM §4.10, DM §9: "repair_priority ENUM has three values")
+                          ORDERING NOTE: PostgreSQL ENUM values sort by definition order,
+                          not alphabetically. ORDER BY priority ASC on this ENUM produces:
+                            1st: EMERGENCY
+                            2nd: PERMANENT_DEPARTURE
+                            3rd: PRE_WARNING
+                          This matches the intended drain order (DM §4.10, ADR-004).
+                          Add SQL comment: "-- ENUM order = priority order for ORDER BY ASC"
+
+  9. repair_job_status  — 'QUEUED', 'IN_PROGRESS', 'COMPLETED', 'FAILED'
+                          (DM §4.10)
+```
+
+**VERIFY:**
+
+  **ENUM_IN_SQL:**
+
+  ```bash
+      $ grep -c "CREATE TYPE.*AS ENUM" migrations/001_initial_schema.sql
+      EXPECT: 9
+  ```
+
+  **REVERSAL_PRESENT:**
+
+  ```bash
+      $ grep -c "'REVERSAL'" migrations/001_initial_schema.sql
+      EXPECT: >= 1  (in escrow_event_type)
+  ```
+
+  **REPAIR_PRIORITY_VALUES:**
+
+  ```bash
+      $ grep -A4 "repair_priority" migrations/001_initial_schema.sql | \
+          grep -c "EMERGENCY\|PERMANENT_DEPARTURE\|PRE_WARNING"
+      EXPECT: 3
+  ```
+
+  **FILE_STATUS_THREE_VALUES:**
+
+  ```bash
+      $ grep -A4 "file_status" migrations/001_initial_schema.sql | \
+          grep -c "ACTIVE\|DELETION_PENDING\|DELETED"
+      EXPECT: 3
+  ```
+
+  **ORDERING_COMMENT:**
+
+  ```bash
+      $ grep -c "ENUM order = priority order" migrations/001_initial_schema.sql
+      EXPECT: 1
+  ```
+
+  **TYPES_BEFORE_TABLES:**
+
+  ```bash
+      $ awk '/CREATE TYPE/{type=NR} /CREATE TABLE/{table=NR; if(type>table) exit 1}' \
+          migrations/001_initial_schema.sql && echo "PASS" || echo "FAIL: type after table"
+      EXPECT: PASS
+  ```
 
 ---
 
@@ -2756,55 +2944,347 @@ alphabetically (E < P < P) in the migration comment.
 
 #### Session 4.3.1 — `owners` table
 
-**Task:** Implement the `owners` DDL from DM §4.1 exactly. Columns: `owner_id` (UUID PK),
-`phone_number` (VARCHAR(15) NOT NULL UNIQUE), `ed25519_public_key` (BYTEA with
-`octet_length = 32` CHECK), `smart_collect_vpa` (VARCHAR(255) nullable — justified in
-DM §8.1), `created_at` (TIMESTAMPTZ NOT NULL DEFAULT NOW()). Add table and column
-COMMENTs from DM §4.1.
+**TASK:** Add CREATE TABLE owners to `migrations/001_initial_schema.sql`.
+
+**SOURCE:**** DM §4.1 (exact DDL), DM §8.1 (`smart_collect_vpa` nullable justification)
+
+  ```sql
+  COLUMNS (exact — no additions, no omissions):
+    owner_id            UUID            PRIMARY KEY DEFAULT gen_random_uuid()
+    phone_number        VARCHAR(15)     NOT NULL UNIQUE
+    ed25519_public_key  BYTEA           NOT NULL CHECK (octet_length(ed25519_public_key) = 32)
+    smart_collect_vpa   VARCHAR(255)    NULL
+                        -- NULL until Razorpay webhook provisions the VPA (DM §8.1)
+    created_at          TIMESTAMPTZ     NOT NULL DEFAULT NOW()
+  ```
+
+**TABLE COMMENT (mandatory per DM §4.1):**
+
+  ```sql
+    COMMENT ON TABLE owners IS 'Registered data owners. One row per verified phone number.';
+    COMMENT ON COLUMN owners.smart_collect_vpa IS 'Razorpay UPI VPA for escrow deposits. NULL until provisioned by Razorpay webhook.';
+  ```
+
+**VERIFY:**
+
+  **TABLE_IN_SQL:**
+
+  ```bash
+      $ grep -c "CREATE TABLE owners" migrations/001_initial_schema.sql
+      EXPECT: 1
+  ```
+
+  **COLUMNS_PRESENT:**
+
+  ```bash
+      $ grep -c "smart_collect_vpa.*VARCHAR(255)" migrations/001_initial_schema.sql
+      EXPECT: 1
+
+      $ grep -c "octet_length(ed25519_public_key) = 32" migrations/001_initial_schema.sql
+      EXPECT: 1
+  ```
+
+  **NULLABLE_COLUMN:**
+
+  ```bash
+      $ grep -c "smart_collect_vpa.*NOT NULL" migrations/001_initial_schema.sql
+      EXPECT: 0  (must be nullable)
+  ```
+
+  **COMMENT_PRESENT:**
+
+  ```bash
+      $ grep -c "COMMENT ON TABLE owners" migrations/001_initial_schema.sql
+      EXPECT: 1
+  ```
+
+---
 
 #### Session 4.3.2 — `providers` table
 
-**Task:** Implement the `providers` DDL from DM §4.2 with all columns and constraints.
-Pay particular attention to:
-- `p95_throughput_kbps FLOAT NULL` (DM §4.2 comment: default must be NULL not 0;
-  DM §9 checklist: "p95_throughput_kbps and avg_rtt_ms default to NULL, not 0/2000")
-- `avg_rtt_ms FLOAT NULL` (same reason)
-- `var_rtt_ms FLOAT NOT NULL DEFAULT 0` (DM §4.2: zero variance is safe initial assumption)
-- `first_chunk_assignment_at TIMESTAMPTZ` nullable (DM §8.6)
-- The `providers_departed_status` CHECK: `departed_at IS NULL OR status = 'DEPARTED'`
-- `providers_throughput_nonneg`, `providers_avg_rtt_nonneg`, `providers_var_rtt_nonneg`,
-  `providers_passes_nonneg` CHECK constraints
-- Physical DELETE is prohibited — the RSP in Phase 4.7 enforces this at the DB layer;
-  the DDL comment must state: "No DELETE ever — see RSP (DM §6, IC §6, Invariant 3)"
+**TASK:** Add CREATE TABLE providers to `migrations/001_initial_schema.sql`.
+
+**SOURCE:** DM §4.2 (exact DDL), DM §8.2–§8.6 (nullable justifications)
+
+**CRITICAL COLUMNS — these are the most error-prone:**
+
+  ```sql
+    p95_throughput_kbps  FLOAT    NULL
+    -- NULL until vetting audits accumulate samples. DEFAULT 0 is WRONG (DM §9 checklist).
+    -- Division by zero if code uses this without NULL check. See DM §4.2.
+
+    avg_rtt_ms           FLOAT    NULL
+    -- NULL until first sample. DEFAULT 2000 is WRONG (DM §9 checklist).
+    -- Application substitutes pool median when NULL (IC §4.2 RTO formula).
+
+    var_rtt_ms           FLOAT    NOT NULL DEFAULT 0
+    -- Zero variance IS the correct initial assumption (DM §4.2 comment).
+
+    first_chunk_assignment_at  TIMESTAMPTZ  NULL
+    -- NULL until assignment service assigns first chunk (DM §8.6).
+    -- Used for 120-day vetting duration check: first_chunk_assignment_at + profile.VettingMinDuration
+  ```
+
+**MANDATORY CONSTRAINTS:**
+
+  ```sql
+    providers_departed_status:   CHECK (departed_at IS NULL OR status = 'DEPARTED')
+    providers_throughput_nonneg: CHECK (p95_throughput_kbps >= 0)
+    providers_avg_rtt_nonneg:    CHECK (avg_rtt_ms >= 0)
+    providers_var_rtt_nonneg:    CHECK (var_rtt_ms >= 0)
+    providers_passes_nonneg:     CHECK (consecutive_audit_passes >= 0)
+  ```
+
+**MANDATORY COMMENT (no physical deletion):**
+
+  ```sql
+    COMMENT ON TABLE providers IS
+        'Storage providers. One row per verified daemon. Never physically deleted (DM §3 Invariant 3).';
+  ```
+
+**VERIFY:**
+
+  **TABLE_IN_SQL:**
+
+  ```bash
+      $ grep -c "CREATE TABLE providers" migrations/001_initial_schema.sql
+      EXPECT: 1
+  ```
+
+  **NULL_DEFAULTS_CORRECT:**
+
+  ```bash
+      $ grep -c "p95_throughput_kbps.*NULL" migrations/001_initial_schema.sql
+      EXPECT: >= 1  (column definition includes NULL)
+
+      $ grep -c "p95_throughput_kbps.*DEFAULT.*0\b" migrations/001_initial_schema.sql
+      EXPECT: 0  (DEFAULT 0 is WRONG — must be NULL)
+
+      $ grep -c "avg_rtt_ms.*DEFAULT.*2000" migrations/001_initial_schema.sql
+      EXPECT: 0  (DEFAULT 2000 is WRONG — must be NULL)
+  ```
+
+  **VAR_RTT_CORRECT:**
+
+  ```bash
+      $ grep -c "var_rtt_ms.*NOT NULL.*DEFAULT 0\|var_rtt_ms.*DEFAULT 0.*NOT NULL" \
+          migrations/001_initial_schema.sql
+      EXPECT: 1
+  ```
+
+  **CONSTRAINTS_PRESENT:**
+
+  ```bash
+      $ grep -c "providers_departed_status" migrations/001_initial_schema.sql
+      EXPECT: 1
+
+      $ grep -c "providers_throughput_nonneg\|providers_avg_rtt_nonneg\|providers_var_rtt_nonneg\|providers_passes_nonneg" \
+          migrations/001_initial_schema.sql
+      EXPECT: 4
+  ```
+
+  **NO_DELETE_COMMENT:**
+
+  ```bash
+      $ grep -c "Never physically deleted\|Invariant 3" migrations/001_initial_schema.sql
+      EXPECT: >= 1
+  ```
+
+---
 
 #### Session 4.3.3 — `files` table
 
-**Task:** Implement the `files` DDL from DM §4.3. Include the `display_name_*` columns
-(DM §9 checklist: "files.display_name_ciphertext/nonce/tag columns present for FR-019").
-The `display_name_nonce` and `display_name_tag` CHECKs must allow NULL (DM §4.3).
+**TASK:** Add CREATE TABLE files to `migrations/001_initial_schema.sql`.
 
-**⚠️ AWAITING:** `FR-019` is referenced here but `requirements.md` is not in context.
-The column is included per DM §4.3 DDL as written. When `requirements.md` is shared,
-verify FR-019 scope matches the column design.
+**SOURCE:** DM §4.3, REQ §4.4 FR-019 (display_name_* columns for file list view)
+
+**MANDATORY COLUMNS:**
+
+```sql
+  file_id              UUID            PRIMARY KEY DEFAULT gen_random_uuid()
+  owner_id             UUID            NOT NULL REFERENCES owners(owner_id)
+  pointer_ciphertext   BYTEA           NOT NULL
+  pointer_nonce        BYTEA           NOT NULL CHECK (octet_length(pointer_nonce) = 12)
+  pointer_tag          BYTEA           NOT NULL CHECK (octet_length(pointer_tag) = 16)
+  original_size_bytes  BIGINT          NOT NULL CHECK (original_size_bytes > 0)
+  status               file_status     NOT NULL DEFAULT 'ACTIVE'
+  schema_version       SMALLINT        NOT NULL DEFAULT 1
+  uploaded_at          TIMESTAMPTZ     NOT NULL DEFAULT NOW()
+
+OPTIONAL DISPLAY NAME COLUMNS (REQ §4.4 FR-019 — file list view):
+  display_name_ciphertext  BYTEA    NULL
+  display_name_nonce       BYTEA    NULL CHECK (octet_length(display_name_nonce) = 12 OR display_name_nonce IS NULL)
+  display_name_tag         BYTEA    NULL CHECK (octet_length(display_name_tag) = 16 OR display_name_tag IS NULL)
+  -- All three are NULL when the owner uploads without a label (CLI path).
+  -- The microservice stores these blindly and cannot decrypt the filename (DM §4.3).
+```
+
+**VERIFY:**
+
+```bash
+  TABLE_IN_SQL:
+    $ grep -c "CREATE TABLE files" migrations/001_initial_schema.sql
+    EXPECT: 1
+
+  POINTER_NONCE_SIZE:
+    $ grep -c "octet_length(pointer_nonce) = 12" migrations/001_initial_schema.sql
+    EXPECT: 1
+
+  POINTER_TAG_SIZE:
+    $ grep -c "octet_length(pointer_tag) = 16" migrations/001_initial_schema.sql
+    EXPECT: 1
+
+  DISPLAY_NAME_COLUMNS:
+    $ grep -c "display_name_ciphertext\|display_name_nonce\|display_name_tag" \
+        migrations/001_initial_schema.sql
+    EXPECT: 3
+
+  DISPLAY_NAME_NULLABLE:
+    $ grep -c "display_name_ciphertext.*NOT NULL" migrations/001_initial_schema.sql
+    EXPECT: 0  (must be nullable)
+
+  AWAITING_NOTE_REMOVED:
+    $ grep -c "AWAITING\|requirements.md is not in context" migrations/001_initial_schema.sql
+    EXPECT: 0
+```
+
+---
 
 #### Session 4.3.4 — `segments` table
 
-**Task:** Implement the `segments` DDL from DM §4.4. The `segments_unique_index` UNIQUE
-constraint on `(file_id, segment_index)` prevents two segments at the same position in
-a file.
+**TASK:** Add CREATE TABLE segments to `migrations/001_initial_schema.sql`.
+
+**SOURCE:** DM §4.4
+
+**COLUMNS:**
+
+```sql
+  segment_id      UUID    PRIMARY KEY DEFAULT gen_random_uuid()
+  file_id         UUID    NOT NULL REFERENCES files(file_id)
+  segment_index   INT     NOT NULL CHECK (segment_index >= 0)
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+```
+
+CONSTRAINT:
+
+```sql
+  CONSTRAINT segments_unique_index UNIQUE (file_id, segment_index)
+```
+
+**VERIFY:**
+
+```bash
+  TABLE_IN_SQL:
+    $ grep -c "CREATE TABLE segments" migrations/001_initial_schema.sql
+    EXPECT: 1
+
+  UNIQUE_CONSTRAINT:
+    $ grep -c "segments_unique_index" migrations/001_initial_schema.sql
+    EXPECT: 1
+
+  NON_NEGATIVE_INDEX:
+    $ grep -c "segment_index >= 0" migrations/001_initial_schema.sql
+    EXPECT: 1
+```
+
+---
 
 #### Session 4.3.5 — `chunk_assignments` table
 
-**Task:** Implement the `chunk_assignments` DDL from DM §4.5. Critical items:
-- `is_vetting_chunk BOOLEAN NOT NULL DEFAULT FALSE` (DM §9 checklist)
-- `segment_id` changed to nullable (DM §9 checklist, DM §8.21)
-- `shard_index` changed to nullable (DM §9 checklist, DM §8.22)
-- `chunk_assignments_segment_and_shard_null_iff_vetting` CHECK constraint (DM §4.5,
-  DM §9 checklist) — this is the DB-layer enforcement of Invariant 6
-- `chunk_assignments_one_per_provider_per_chunk` UNIQUE on `(chunk_id, provider_id)`
-- The partial unique index `idx_chunk_assignments_one_active_per_shard` must be
-  a standalone `CREATE UNIQUE INDEX` statement, NOT an inline constraint
-  (DM §9: "inline WHERE on UNIQUE is invalid syntax")
+**TASK:** Add CREATE TABLE chunk_assignments to `migrations/001_initial_schema.sql`.
+
+**SOURCE:** DM §4.5, DM §3 Invariant 6, DM §8.21 (`segment_id nullable`), DM §8.22 (`shard_index nullable`)
+
+**CRITICAL COLUMNS:**
+
+```sql
+  assignment_id    UUID               PRIMARY KEY DEFAULT gen_random_uuid()
+  chunk_id         BYTEA              NOT NULL CHECK (octet_length(chunk_id) = 32)
+  is_vetting_chunk BOOLEAN            NOT NULL DEFAULT FALSE   -- DM §9 checklist
+  segment_id       UUID               REFERENCES segments(segment_id)
+                   -- NULL when is_vetting_chunk = TRUE (DM §8.21)
+  shard_index      SMALLINT           -- NULL when is_vetting_chunk = TRUE (DM §8.22)
+  provider_id      UUID               NOT NULL REFERENCES providers(provider_id)
+  status           assignment_status  NOT NULL DEFAULT 'ACTIVE'
+  created_at       TIMESTAMPTZ        NOT NULL DEFAULT NOW()
+  deleted_at       TIMESTAMPTZ        NULL  -- set when status = 'DELETED'
+```
+
+**CONSTRAINTS (all mandatory):**
+
+```sql
+  1. chunk_assignments_segment_and_shard_null_iff_vetting (DM §4.5 Invariant 6):
+     CHECK (
+         (is_vetting_chunk = FALSE AND segment_id IS NOT NULL AND shard_index IS NOT NULL)
+         OR
+         (is_vetting_chunk = TRUE  AND segment_id IS NULL    AND shard_index IS NULL)
+     )
+
+  2. chunk_assignments_one_per_provider_per_chunk:
+     UNIQUE (chunk_id, provider_id)
+
+  3. shard_index CHECK — PROFILE-VARIABLE (from generator):
+     fmt.Sprintf("CHECK (shard_index BETWEEN 0 AND %d OR shard_index IS NULL)",
+         profile.TotalShards-1)
+```
+
+**PARTIAL UNIQUE INDEX (MUST be standalone CREATE UNIQUE INDEX, NOT inline):**
+
+```sql
+  CREATE UNIQUE INDEX idx_chunk_assignments_one_active_per_shard
+      ON chunk_assignments (segment_id, shard_index)
+      WHERE is_vetting_chunk = FALSE
+        AND status IN ('ACTIVE', 'REPAIRING');
+
+  NOTE: Inline WHERE clause on UNIQUE is invalid PostgreSQL syntax (DM §9).
+  The index MUST be a separate statement after CREATE TABLE.
+```
+
+**VIEW (created after the table):**
+
+```sql
+  CREATE VIEW active_chunk_assignments AS
+  SELECT * FROM chunk_assignments WHERE status = 'ACTIVE';
+```
+
+**VERIFY:**
+
+```bash
+
+  TABLE_IN_SQL:
+    $ grep -c "CREATE TABLE chunk_assignments" migrations/001_initial_schema.sql
+    EXPECT: 1
+
+  IS_VETTING_CHUNK_COLUMN:
+    $ grep -c "is_vetting_chunk.*BOOLEAN.*NOT NULL.*DEFAULT FALSE" \
+        migrations/001_initial_schema.sql
+    EXPECT: 1
+
+  INVARIANT_6_CHECK:
+    $ grep -c "chunk_assignments_segment_and_shard_null_iff_vetting" \
+        migrations/001_initial_schema.sql
+    EXPECT: 1
+
+  PARTIAL_INDEX_STANDALONE:
+    $ grep -c "CREATE UNIQUE INDEX idx_chunk_assignments_one_active_per_shard" \
+        migrations/001_initial_schema.sql
+    EXPECT: 1
+
+    # Must NOT be an inline UNIQUE constraint
+    $ grep -B5 "idx_chunk_assignments_one_active_per_shard" migrations/001_initial_schema.sql | \
+        grep "CONSTRAINT" && echo "FAIL: must be standalone index" || echo "PASS"
+
+  PARTIAL_INDEX_VETTING_FILTER:
+    $ grep -A3 "idx_chunk_assignments_one_active_per_shard" migrations/001_initial_schema.sql | \
+        grep "is_vetting_chunk = FALSE"
+    EXPECT: found  (DM §9 checklist requirement)
+
+  SEGMENT_ID_NULLABLE:
+    $ grep -A1 "segment_id" migrations/001_initial_schema.sql | \
+        grep "NOT NULL" | head -1
+    EXPECT: empty  (segment_id must be nullable)
+
+```
 
 ---
 
@@ -2819,29 +3299,169 @@ This requires `btree_gist` (DM §9 first checklist item). Add the prerequisite c
 `-- PREREQUISITE: CREATE EXTENSION IF NOT EXISTS btree_gist;`
 The `period_start < period_end` CHECK must be present.
 
+Refer: DM §9 (btree_gist prerequisite — first checklist item)
+
 #### Session 4.4.2 — `audit_receipts` table
 
-**Task:** Implement DM §4.7. Critical items enforcing Invariant 1 (append-only audit log):
-- `challenge_nonce BYTEA NOT NULL CHECK (octet_length(challenge_nonce) = 33)` —
-  must be 33, never 32 (DM §3 Invariant 5, DM §9 checklist, IC §11 forbidden pattern)
-- `audit_result audit_result_type` — nullable, no DEFAULT (DM §9 checklist: "no DEFAULT
-  on audit_result — NULL is the intended initial PENDING state")
-- `file_id UUID REFERENCES files(file_id)` — nullable (DM §9 checklist, DM §8.20)
-- `address_was_stale BOOLEAN NOT NULL DEFAULT FALSE` (DM §4.7)
-- The `audit_receipts_response_consistency` CHECK (DM §4.7)
-- The `audit_receipts_service_sig_consistency` CHECK (DM §4.7)
-- The `audit_receipts_nonce_unique` UNIQUE constraint (prevents replay attacks)
-- Add the nightly data integrity monitoring query as a SQL comment (DM §4.7 note,
-  DM §9 checklist): the query must return 0
+**TASK:** Add CREATE TABLE audit_receipts to `migrations/001_initial_schema.sql`.
+
+**SOURCE:** DM §4.7, DM §3 Invariants 1 and 5, DM §8.9–§8.15, DM §8.20 (`file_id nullable`)
+        IC §11 (`challenge_nonce` must be BYTEA(33) never BYTEA(32))
+
+**CRITICAL COLUMNS:**
+
+```sql
+  receipt_id             UUID                 PRIMARY KEY DEFAULT gen_random_uuid()
+  schema_version         SMALLINT             NOT NULL DEFAULT 1
+  chunk_id               BYTEA                NOT NULL CHECK (octet_length(chunk_id) = 32)
+  file_id                UUID                 REFERENCES files(file_id)
+                         -- NULL for synthetic vetting chunk audits (DM §8.20)
+  provider_id            UUID                 NOT NULL REFERENCES providers(provider_id)
+  challenge_nonce        BYTEA                NOT NULL CHECK (octet_length(challenge_nonce) = 33)
+                         -- MUST BE 33, NEVER 32 (DM §3 Invariant 5, IC §11, CI grep check 8)
+  server_challenge_ts    TIMESTAMPTZ          NOT NULL
+  response_hash          BYTEA                CHECK (octet_length(response_hash) = 32
+                                                  OR response_hash IS NULL)
+  response_latency_ms    INT                  CHECK (response_latency_ms >= 0
+                                                  OR response_latency_ms IS NULL)
+  audit_result           audit_result_type    -- NO DEFAULT; NULL = PENDING state (DM §9)
+  address_was_stale      BOOLEAN              NOT NULL DEFAULT FALSE
+  provider_sig           BYTEA                CHECK (octet_length(provider_sig) = 64
+                                                  OR provider_sig IS NULL)
+  service_sig            BYTEA                CHECK (octet_length(service_sig) = 64
+                                                  OR service_sig IS NULL)
+  service_countersign_ts TIMESTAMPTZ
+  jit_flag               BOOLEAN              NOT NULL DEFAULT FALSE
+  abandoned_at           TIMESTAMPTZ
+
+MANDATORY CONSTRAINTS:
+  audit_receipts_nonce_unique: UNIQUE (challenge_nonce)
+  audit_receipts_response_consistency: CHECK (
+      (audit_result IN ('PASS', 'FAIL') AND response_hash IS NOT NULL AND provider_sig IS NOT NULL)
+      OR (audit_result = 'TIMEOUT' AND response_hash IS NULL AND provider_sig IS NULL)
+      OR (audit_result IS NULL)
+  )
+  audit_receipts_service_sig_consistency: CHECK (
+      (service_sig IS NULL) = (service_countersign_ts IS NULL)
+  )
+```
+
+**NIGHTLY INTEGRITY QUERY (add as SQL comment, DM §4.7):**
+
+```sql
+  -- Nightly data integrity check — must return 0:
+  -- SELECT COUNT(*) FROM audit_receipts ar
+  --   JOIN chunk_assignments ca ON ca.chunk_id = ar.chunk_id
+  --     AND ca.provider_id = ar.provider_id
+  --   WHERE ar.file_id IS NULL AND ca.is_vetting_chunk = FALSE;
+```
+
+**VERIFY:**
+
+```bash
+
+  TABLE_IN_SQL:
+    $ grep -c "CREATE TABLE audit_receipts" migrations/001_initial_schema.sql
+    EXPECT: 1
+
+  NONCE_IS_33_BYTES:
+    $ grep -c "octet_length(challenge_nonce) = 33" migrations/001_initial_schema.sql
+    EXPECT: 1
+
+    $ grep -c "octet_length(challenge_nonce) = 32" migrations/001_initial_schema.sql
+    EXPECT: 0  (CI grep check 8 also catches this)
+
+  NO_DEFAULT_ON_AUDIT_RESULT:
+    $ grep -B1 "audit_result_type" migrations/001_initial_schema.sql | grep "DEFAULT"
+    EXPECT: empty  (no DEFAULT on audit_result)
+
+  FILE_ID_NULLABLE:
+    $ grep -A2 "file_id.*UUID" migrations/001_initial_schema.sql | \
+        grep "audit_receipts" -A3 | grep "NOT NULL"
+    EXPECT: empty  (file_id in audit_receipts is nullable)
+
+  ADDRESS_WAS_STALE_PRESENT:
+    $ grep -c "address_was_stale.*BOOLEAN.*NOT NULL.*DEFAULT FALSE" \
+        migrations/001_initial_schema.sql
+    EXPECT: 1
+
+  NONCE_UNIQUE_CONSTRAINT:
+    $ grep -c "audit_receipts_nonce_unique" migrations/001_initial_schema.sql
+    EXPECT: 1
+
+  INTEGRITY_QUERY_COMMENT:
+    $ grep -c "Nightly data integrity check" migrations/001_initial_schema.sql
+    EXPECT: 1
+
+```
+
+---
 
 #### Session 4.4.3 — `escrow_events` table
 
-**Task:** Implement DM §4.8. Invariant 2 enforcement:
-- `amount_paise BIGINT NOT NULL CHECK (amount_paise > 0)` — never FLOAT, NUMERIC, DECIMAL
-  (DM §3 Invariant 4)
-- `idempotency_key VARCHAR(64) NOT NULL UNIQUE`
-- `escrow_event_type` must include `REVERSAL` (DM §9 checklist item)
-- The RSP in Phase 4.7 adds the INSERT-only policy at the DB layer
+**TASK:** Add CREATE TABLE escrow_events to `migrations/001_initial_schema.sql`.
+
+**SOURCE:** DM §4.8, DM §3 Invariants 2 and 4, DM §8.16 (``audit_period_id` nullable)
+
+**CRITICAL COLUMNS:**
+
+  ```sql
+    event_id         UUID               PRIMARY KEY DEFAULT gen_random_uuid()
+    provider_id      UUID               NOT NULL REFERENCES providers(provider_id)
+    event_type       escrow_event_type  NOT NULL  -- includes REVERSAL (DM §9 checklist)
+    amount_paise     BIGINT             NOT NULL CHECK (amount_paise > 0)
+                    -- BIGINT ONLY. No FLOAT, NUMERIC, DECIMAL (DM §3 Invariant 4)
+    audit_period_id  UUID               REFERENCES audit_periods(id)
+                    -- NULL for DEPOSIT and SEIZURE events (DM §8.16)
+    idempotency_key  VARCHAR(64)        NOT NULL UNIQUE
+    created_at       TIMESTAMPTZ        NOT NULL DEFAULT NOW()
+  ```
+
+**MANDATORY COMMENT:**
+
+  ```sql
+    COMMENT ON TABLE escrow_events IS
+        'Append-only escrow ledger. Balance = SUM(DEPOSIT) - SUM(RELEASE + SEIZURE + REVERSAL) '
+        'per provider_id. No UPDATE. No DELETE. All amounts in integer paise (ADR-016, Invariant 2).';
+
+    COMMENT ON COLUMN escrow_events.amount_paise IS
+        'Integer paise ONLY. BIGINT. No FLOAT. ₹1 = 100 paise (NFR-046).';
+  ```
+
+**VERIFY:**
+
+  **AMOUNT_PAISE_IS_BIGINT:**
+
+  ```bash
+    $ grep -A2 "amount_paise" migrations/001_initial_schema.sql | \
+        grep "escrow_events" -A5 | grep "BIGINT"
+    EXPECT: found
+
+    $ grep "amount_paise.*FLOAT\|amount_paise.*NUMERIC\|amount_paise.*DECIMAL" \
+        migrations/001_initial_schema.sql
+    EXPECT: empty  (Invariant 4)
+
+  ```
+
+  **REVERSAL_IN_ESCROW_EVENT_TYPE:**
+
+  ```bash
+    $ grep -A10 "CREATE TYPE escrow_event_type" migrations/001_initial_schema.sql | \
+        grep "REVERSAL"
+    EXPECT: found  (DM §9 checklist)
+
+  ```
+
+  **IDEMPOTENCY_UNIQUE:**
+
+  ```bash
+    $ grep -c "idempotency_key.*VARCHAR(64).*NOT NULL.*UNIQUE\|idempotency_key.*UNIQUE" \
+        migrations/001_initial_schema.sql
+    EXPECT: >= 1
+
+  ```
+
+---
 
 #### Session 4.4.4 — `owner_escrow_events` table
 
@@ -2851,16 +3471,115 @@ Add the balance query as a SQL comment: `SUM(DEPOSIT) - SUM(CHARGE + WITHDRAWAL)
 
 #### Session 4.4.5 — `repair_jobs` table
 
-**Task:** Implement DM §4.10. Critical items:
-- `repair_jobs_priority_matches_trigger` CHECK — priority derived from trigger_type
-  (IC §5.7 pre-condition also enforces this)
-- `repair_jobs_completed_after_started` CHECK
-- The `available_shard_count` CHECK bounds come from the generator (Phase 4.1)
-- `provider_id` is nullable — justified in DM §8.17
-- The `repair_jobs_no_duplicate_departure` constraint note (DM §4.10): the UNIQUE has
-  been removed; deduplication is at the application layer
-- The `idx_repair_jobs_threshold_no_dup` partial unique index handles threshold-triggered
-  deduplication (DM §5)
+**TASK:** Add CREATE TABLE repair_jobs to `migrations/001_initial_schema.sql`.
+
+**SOURCE:** DM §4.10, DM §8.17 (`provider_id` nullable), DM §8.18 (`started_at` nullable),
+        DM §8.19 (`completed_at` nullable), IC §5.7 (priority ordering)
+
+**CRITICAL COLUMNS:**
+
+  ```sql
+    job_id                UUID                PRIMARY KEY DEFAULT gen_random_uuid()
+    chunk_id              BYTEA               NOT NULL CHECK (octet_length(chunk_id) = 32)
+    segment_id            UUID                NOT NULL REFERENCES segments(segment_id)
+    provider_id           UUID                REFERENCES providers(provider_id)
+                          -- NULL for THRESHOLD_WARNING / EMERGENCY_FLOOR triggers (DM §8.17)
+    trigger_type          repair_trigger_type NOT NULL
+    priority              repair_priority     NOT NULL
+    status                repair_job_status   NOT NULL DEFAULT 'QUEUED'
+    available_shard_count SMALLINT            NOT NULL
+                          -- CHECK bounds are PROFILE-VARIABLE (from generator):
+                          -- prod: CHECK (available_shard_count BETWEEN 16 AND 56)
+                          -- demo: CHECK (available_shard_count BETWEEN 3 AND 5)
+    created_at            TIMESTAMPTZ         NOT NULL DEFAULT NOW()
+    started_at            TIMESTAMPTZ         NULL   -- DM §8.18
+    completed_at          TIMESTAMPTZ         NULL   -- DM §8.19
+  ```
+
+**MANDATORY CONSTRAINTS:**
+
+  ```sql
+    repair_jobs_priority_matches_trigger: CHECK (
+        (trigger_type = 'EMERGENCY_FLOOR' AND priority = 'EMERGENCY')
+        OR (trigger_type IN ('SILENT_DEPARTURE', 'ANNOUNCED_DEPARTURE')
+                AND priority = 'PERMANENT_DEPARTURE')
+        OR (trigger_type = 'THRESHOLD_WARNING' AND priority = 'PRE_WARNING')
+    )
+    repair_jobs_completed_after_started: CHECK (
+        completed_at IS NULL OR started_at IS NOT NULL
+    )
+  ```
+
+**PARTIAL UNIQUE INDEX for threshold deduplication (DM §5):**
+
+  ```sql
+    CREATE UNIQUE INDEX idx_repair_jobs_threshold_no_dup
+        ON repair_jobs (chunk_id, trigger_type)
+        WHERE provider_id IS NULL AND status IN ('QUEUED', 'IN_PROGRESS');
+  ```
+
+**NOTE ON REMOVED CONSTRAINT (DM §4.10):**
+
+  ```sql
+    The UNIQUE (chunk_id, provider_id, trigger_type) constraint was removed.
+    Application-layer deduplication in `internal/repair.EnqueueJob` handles this.
+    Add comment: "-- Departure-trigger deduplication is at application layer (IC §5.7)"
+  ```
+
+**VERIFY:**
+
+  **TABLE_IN_SQL:**
+
+  ```bash
+    $ grep -c "CREATE TABLE repair_jobs" migrations/001_initial_schema.sql
+    EXPECT: 1
+
+  ```
+
+  **PRIORITY_TRIGGER_CONSTRAINT:**
+
+  ```bash
+    $ grep -c "repair_jobs_priority_matches_trigger" migrations/001_initial_schema.sql
+    EXPECT: 1
+
+  ```
+
+  **COMPLETED_AFTER_STARTED:**
+
+  ```bash
+    $ grep -c "repair_jobs_completed_after_started" migrations/001_initial_schema.sql
+    EXPECT: 1
+
+  ```
+
+  **THRESHOLD_INDEX:**
+
+  ```bash
+    $ grep -c "idx_repair_jobs_threshold_no_dup" migrations/001_initial_schema.sql
+    EXPECT: 1
+
+  ```
+
+  **PROVIDER_ID_NULLABLE:**
+
+  ```bash
+    $ grep -B1 -A5 "CREATE TABLE repair_jobs" migrations/001_initial_schema.sql | \
+        grep "provider_id.*NOT NULL"
+    EXPECT: empty  (provider_id is nullable)
+
+  ```
+
+  **PROFILE_VARIABLE_SHARD_COUNT:**
+
+  ```bash
+    # Production schema:
+    $ grep "available_shard_count BETWEEN 16 AND 56" migrations/001_initial_schema.sql
+    EXPECT: found (in production schema file)
+    # Demo schema:
+    $ grep "available_shard_count BETWEEN 3 AND 5" migrations/001_initial_schema_demo.sql
+    EXPECT: found
+
+  ```
 
 ---
 
@@ -2870,19 +3589,162 @@ Add the balance query as a SQL comment: `SUM(DEPOSIT) - SUM(CHARGE + WITHDRAWAL)
 
 #### Session 4.5.1 — Create all indexes
 
-**Task:** Create every index listed in DM §5 as a standalone `CREATE INDEX` or
-`CREATE UNIQUE INDEX` statement, in the order they appear in DM §5. Each must be
-accompanied by its named query pattern comment from DM §5 (e.g., "Query: departure
-detector — find providers with last_heartbeat_ts > 72h ago").
+**TASK:** Add all indexes from DM §5 to `migrations/001_initial_schema.sql`.
 
-Special attention to vetting-related indexes (DM §5):
-- `idx_chunk_assignments_vetting_provider_active` — for ACTIVE transition GC
-- `idx_chunk_assignments_vetting_provider` — for departure handler bulk delete
-  These are new indexes added with ADR-030 (DM §9 checklist).
+**SOURCE:** DM §5 (complete catalogue with named query patterns)
+**RULE: Every index must appear as a standalone CREATE INDEX statement AFTER all CREATE TABLE**
+      statements (DM §9 migration ordering). Each must include its named query pattern
+      from DM §5 as a SQL comment on the preceding line.
 
-The `idx_chunk_assignments_one_active_per_shard` partial unique index must include
-`WHERE is_vetting_chunk = FALSE` (DM §9 checklist: "old inline constraint without
-this filter must be dropped").
+**INDEX LIST (complete — add in order matching DM §5, each with comment):**
+
+```sql
+-- Query: lookup by phone at login / OTP verification
+CREATE UNIQUE INDEX idx_owners_phone ON owners (phone_number);
+
+-- Query: departure detector — find providers with last_heartbeat_ts > 72h ago
+CREATE INDEX idx_providers_heartbeat_active ON providers (last_heartbeat_ts)
+    WHERE status = 'ACTIVE';
+
+-- Query: assignment service — select ACTIVE providers for ASN cap check
+CREATE INDEX idx_providers_asn_active ON providers (asn) WHERE status = 'ACTIVE';
+
+-- Query: readiness gate — count providers by status AND region
+CREATE INDEX idx_providers_status_region ON providers (status, region);
+
+-- Query: lookup by phone at registration / OTP re-verification
+CREATE UNIQUE INDEX idx_providers_phone ON providers (phone_number);
+
+-- Query: file list for a data owner dashboard
+CREATE INDEX idx_files_owner ON files (owner_id, uploaded_at DESC)
+    WHERE status = 'ACTIVE';
+
+-- Query: find files awaiting deletion confirmation for the GC retry loop (FR-020)
+CREATE INDEX idx_files_pending_deletion ON files (owner_id, uploaded_at)
+    WHERE status = 'DELETION_PENDING';
+
+-- Query: fetch all segments for a file in order (upload orchestrator, retrieval)
+CREATE INDEX idx_segments_file ON segments (file_id, segment_index);
+
+-- Query: challenge scheduler — find all active chunks for a provider
+CREATE INDEX idx_chunk_assignments_provider_active ON chunk_assignments (provider_id)
+    WHERE status = 'ACTIVE';
+
+-- Query: repair scheduler — find surviving shard holders for a segment
+CREATE INDEX idx_chunk_assignments_segment_active ON chunk_assignments (segment_id)
+    WHERE status IN ('ACTIVE', 'REPAIRING');
+
+-- Query: deletion workflow — find pending deletions per provider for GC
+CREATE INDEX idx_chunk_assignments_provider_pending_deletion
+    ON chunk_assignments (provider_id) WHERE status = 'PENDING_DELETION';
+
+-- Query: ASN cap check at assignment time
+CREATE INDEX idx_chunk_assignments_segment_provider
+    ON chunk_assignments (segment_id, provider_id) WHERE status = 'ACTIVE';
+
+-- (Partial unique index already created in Session 4.3.5)
+-- idx_chunk_assignments_one_active_per_shard — created with CREATE TABLE chunk_assignments
+
+-- Query: ACTIVE transition GC — fetch synthetic chunk IDs to send to daemon
+CREATE INDEX idx_chunk_assignments_vetting_provider_active
+    ON chunk_assignments (provider_id)
+    WHERE is_vetting_chunk = TRUE AND status = 'ACTIVE';
+
+-- Query: departure handler — bulk soft-delete synthetic chunks on vetting departure
+CREATE INDEX idx_chunk_assignments_vetting_provider
+    ON chunk_assignments (provider_id) WHERE is_vetting_chunk = TRUE;
+
+-- Query: monthly release computation — get current period per provider
+CREATE INDEX idx_audit_periods_provider_recent
+    ON audit_periods (provider_id, period_start DESC);
+
+-- Query: scoring queries (three-window score)
+CREATE INDEX idx_audit_periods_provider_range
+    ON audit_periods (provider_id, period_start, period_end);
+
+-- Query: three-window scoring — sum PASS/FAIL/TIMEOUT for a provider
+CREATE INDEX idx_audit_receipts_provider_ts
+    ON audit_receipts (provider_id, server_challenge_ts DESC)
+    WHERE abandoned_at IS NULL AND audit_result IS NOT NULL;
+
+-- NOTE: UNIQUE on challenge_nonce already created as table constraint; no extra index needed.
+
+-- Query: GC process — find PENDING rows older than 48h for abandonment
+CREATE INDEX idx_audit_receipts_pending_stale
+    ON audit_receipts (server_challenge_ts)
+    WHERE audit_result IS NULL AND abandoned_at IS NULL;
+
+-- Query: JIT analysis — count jit_flags per provider in a rolling 7-day window
+CREATE INDEX idx_audit_receipts_jit_provider
+    ON audit_receipts (provider_id, server_challenge_ts DESC) WHERE jit_flag = TRUE;
+
+-- Query: provider retrieves their own receipts for dispute resolution (FR-058)
+CREATE INDEX idx_audit_receipts_provider_file
+    ON audit_receipts (provider_id, file_id, server_challenge_ts DESC);
+
+-- Query: FR-058 provider dispute evidence — filter by chunk_id
+CREATE INDEX idx_audit_receipts_provider_chunk
+    ON audit_receipts (provider_id, chunk_id, server_challenge_ts DESC);
+
+-- Query: balance computation
+CREATE INDEX idx_escrow_events_provider ON escrow_events (provider_id, event_type);
+
+-- Query: monthly release job
+CREATE INDEX idx_escrow_events_period ON escrow_events (audit_period_id)
+    WHERE audit_period_id IS NOT NULL;
+
+-- Query: repair scheduler dequeue
+CREATE INDEX idx_repair_jobs_queue ON repair_jobs (priority, created_at ASC)
+    WHERE status = 'QUEUED';
+
+-- Query: repair dashboard
+CREATE INDEX idx_repair_jobs_status_priority ON repair_jobs (status, priority);
+
+-- Query: link repair jobs to departing provider
+CREATE INDEX idx_repair_jobs_provider ON repair_jobs (provider_id)
+    WHERE provider_id IS NOT NULL;
+
+-- (idx_repair_jobs_threshold_no_dup already created in Session 4.4.5)
+```
+
+**VERIFY:**
+
+  **INDEX_COUNT:**
+
+  ```bash
+    $ grep -c "^CREATE.*INDEX idx_" migrations/001_initial_schema.sql
+    EXPECT: >= 20  (not counting the 2 created inline in earlier sessions)
+
+  ```
+
+  **VETTING_INDEXES:**
+
+  ```bash
+    $ grep -c "idx_chunk_assignments_vetting" migrations/001_initial_schema.sql
+    EXPECT: 2  (vetting_provider_active and vetting_provider)
+
+  ```
+
+  **INDEXES_AFTER_TABLES:**
+
+  ```bash
+    $ awk '/^CREATE TABLE/{t=NR} /^CREATE.*INDEX/{i=NR; if(i<t) exit 1}' \
+        migrations/001_initial_schema.sql && echo "PASS" || echo "FAIL: index before table"
+
+  ```
+
+  **QUERY_COMMENTS:**
+
+  ```bash
+    $ grep -c "^-- Query:" migrations/001_initial_schema.sql
+    EXPECT: >= 20  (each index has a named query pattern comment)
+
+  NAMED_INDEXES_COMPLETE (spot check critical ones):
+    $ grep -c "idx_providers_heartbeat_active\|idx_audit_receipts_pending_stale\|idx_repair_jobs_queue" \
+        migrations/001_initial_schema.sql
+    EXPECT: 3
+
+  ```
 
 ---
 
@@ -2892,21 +3754,141 @@ this filter must be dropped").
 
 #### Session 4.6.1 — `audit_receipts` RSP (Invariant 1)
 
-**Task:** Implement per DM §6:
-- `ALTER TABLE audit_receipts ENABLE ROW LEVEL SECURITY`
-- `audit_receipts_insert_only` policy for `vyomanaut_app` — INSERT only
-- `audit_receipts_phase2_update` policy for `vyomanaut_app` — UPDATE only where
-  `audit_result IS NULL AND abandoned_at IS NULL`, and only to set
-  `audit_result IN ('PASS','FAIL','TIMEOUT')` with non-null `service_sig` and
-  `service_countersign_ts`
-- `audit_receipts_gc_abandon` policy for `vyomanaut_gc` — UPDATE only for stale
-  PENDING rows older than 48h (in production; the profile's `PendingReceiptGCAge`
-  governs the actual query, but the RSP uses the production interval for safety)
-- No DELETE policy created — any DELETE returns permission denied
+**TASK:** Add Row Security Policies for audit_receipts to `migrations/001_initial_schema.sql`.
+
+**SOURCE:** DM §6 (Invariant 1 enforcement), ADR-015 (two-phase write intent)
+
+**PREREQUISITES: PostgreSQL roles vyomanaut_app and vyomanaut_gc must exist.**
+
+  ```sql
+  Add role creation to the migration preamble:
+    DO $$ BEGIN
+      IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'vyomanaut_app') THEN
+        CREATE ROLE vyomanaut_app;
+      END IF;
+      IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'vyomanaut_gc') THEN
+        CREATE ROLE vyomanaut_gc;
+      END IF;
+    END $$;
+  ```
+
+**ENABLE RLS:**
+
+  ```sql
+    ALTER TABLE audit_receipts ENABLE ROW LEVEL SECURITY;
+  ```
+
+**POLICY 1 — INSERT only (Phase 1 of two-phase write):**
+  
+  ```sql
+    CREATE POLICY audit_receipts_insert_only
+        ON audit_receipts FOR INSERT TO vyomanaut_app WITH CHECK (TRUE);
+  ```
+
+**POLICY 2 — Phase 2 UPDATE (PENDING → terminal state):**
+
+  ```sql
+    CREATE POLICY audit_receipts_phase2_update
+        ON audit_receipts FOR UPDATE TO vyomanaut_app
+        USING (audit_result IS NULL AND abandoned_at IS NULL)
+        WITH CHECK (
+            audit_result IN ('PASS', 'FAIL', 'TIMEOUT')
+            AND service_sig IS NOT NULL
+            AND service_countersign_ts IS NOT NULL
+        );
+    -- This is the ONLY permitted UPDATE on audit_receipts.
+    -- Any other UPDATE returns permission denied.
+    -- The underlying query must be: WHERE receipt_id = $1 AND audit_result IS NULL AND abandoned_at IS NULL
+  ```
+
+**POLICY 3 — GC abandon (background process sets abandoned_at):**
+
+  ```sql
+    CREATE POLICY audit_receipts_gc_abandon
+        ON audit_receipts FOR UPDATE TO vyomanaut_gc
+        USING (
+            audit_result IS NULL
+            AND abandoned_at IS NULL
+            AND server_challenge_ts < NOW() - INTERVAL '48 hours'
+            -- NOTE: This RSP hardcodes 48 hours at the DB layer.
+            -- The application-layer GC query uses `profile.PendingReceiptGCAge` (demo=5min, prod=48h).
+            -- These are SEPARATE mechanisms:
+            --   RSP: enforces the maximum DB-level update window (always 48h)
+            --   App query: fires early in demo mode using `profile.PendingReceiptGCAge`
+            -- The RSP is a safety backstop; the app fires first in demo.
+        )
+        WITH CHECK (
+            abandoned_at IS NOT NULL
+            AND audit_result IS NULL  -- GC never sets audit_result; only abandoned_at
+        );
+  ```
+
+**NO DELETE POLICY (any DELETE attempt returns permission denied):**
+
+  ```sql
+    -- Intentionally absent: no DELETE policy means all DELETEs are denied.
+  ```
+
+**VERIFY:**
+
+  **RLS_ENABLED:**
+
+  ```bash
+    (After migration is applied to test DB)
+    $ psql -U vyomanaut_app -d vyomanaut_test -c "\d audit_receipts" | grep "row security"
+    EXPECT: "Row Security: enabled"
+
+  ```
+
+  **POLICIES_PRESENT:**
+
+  ```bash
+    $ psql -U vyomanaut_app -d vyomanaut_test -c \
+        "SELECT policyname FROM pg_policies WHERE tablename = 'audit_receipts'"
+    EXPECT: output contains all three policy names:
+      audit_receipts_insert_only
+      audit_receipts_phase2_update
+      audit_receipts_gc_abandon
+
+  ```
+
+  **NO_DELETE_BLOCKED:**
+
+  ```bash
+    $ psql -U vyomanaut_app -d vyomanaut_test -c \
+        "DELETE FROM audit_receipts WHERE receipt_id = gen_random_uuid()" 2>&1
+    EXPECT: contains "ERROR" or "permission denied"
+
+  ```
+
+  **INSERT_ALLOWED:**
+
+  ```bash
+    $ psql -U vyomanaut_app -d vyomanaut_test -c \
+        "INSERT INTO audit_receipts (chunk_id, provider_id, challenge_nonce, server_challenge_ts)
+         VALUES (repeat('\x00', 32)::bytea,
+                 (SELECT provider_id FROM providers LIMIT 1),
+                 repeat('\x00', 33)::bytea,
+                 NOW())" 2>&1
+    EXPECT: INSERT 0 1  (success, assuming FK constraints are satisfied)
+
+  ```
+
+  **GC_COMMENT_IN_SQL:**
+
+  ```bash
+    $ grep -c "separate mechanisms\|safety backstop\|profile.PendingReceiptGCAge" \
+        migrations/001_initial_schema.sql
+    EXPECT: >= 1
+
+  ```
+
+---
 
 #### Session 4.6.2 — `escrow_events` RSP (Invariant 2)
 
 **Task:** Implement per DM §6:
+
 - `ALTER TABLE escrow_events ENABLE ROW LEVEL SECURITY`
 - `escrow_events_insert_only` policy for `vyomanaut_app` — INSERT only
 - No UPDATE or DELETE policy
@@ -2931,18 +3913,204 @@ implemented." This RSP exists specifically to prevent recurrence.
 
 #### Session 4.7.1 — `mv_provider_scores`
 
-**Task:** Implement per DM §7. Critical items:
-- The `NOW() AS scores_as_of` column (DM §9 checklist, DM §7: "consumers must check age")
-- The view uses a subquery (DM §9 checklist: "column aliases not referenced in same SELECT level")
-- The interval literals are PLACEHOLDERS in the migration — this view is dropped and
-  recreated at microservice startup from `NetworkProfile.ScoreWindow{Short,Medium,Long}`
-  (DM §7 note, MVP §5.5). Add a SQL comment: `-- DROP AND RECREATE at startup from NetworkProfile`
+**TASK:** Add mv_provider_scores materialised view to migrations/001_initial_schema.sql.
+
+**SOURCE:** DM §7, MVP §5.5 (view is dropped and recreated at startup), IC §6 (scoring consumer)
+
+**CRITICAL DESIGN NOTE:**
+  The interval literals in this view are PLACEHOLDERS. The view is dropped and recreated
+  at microservice startup from NetworkProfile.ScoreWindow{Short,Medium,Long}.
+  The migration file contains a PLACEHOLDER view with production intervals clearly marked.
+  In VYOMANAUT_MODE=demo, the startup sequence drops this view and recreates it with
+  2min/6min/20min intervals. (DM §7, MVP §5.5)
+  
+**PLACEHOLDER SQL (exactly this format — startup code pattern-matches the comment):**
+
+  ```sql
+    -- mv_provider_scores: DROPPED AND RECREATED AT STARTUP from NetworkProfile.ScoreWindow*
+    -- Production intervals: 24h / 7d / 30d
+    -- Demo intervals: 2min / 6min / 20min  (set by microservice startup, not this migration)
+  
+    CREATE MATERIALIZED VIEW mv_provider_scores AS
+    SELECT
+        provider_id,
+        score_24h,
+        score_7d,
+        score_30d,
+        (
+            COALESCE(score_24h, 0)* 0.5 +
+            COALESCE(score_7d,  0) *0.3 +
+            COALESCE(score_30d, 0)* 0.2
+        ) AS score_composite,
+        NOW() AS scores_as_of  -- consumers must check age before using for payment decisions
+    FROM (
+        SELECT
+            provider_id,
+            -- SHORT WINDOW (placeholder: 24h production; overridden at startup)
+            SUM(CASE WHEN server_challenge_ts >= NOW() - INTERVAL '24 hours'
+                    AND audit_result = 'PASS' THEN 1 ELSE 0 END)::FLOAT
+            / NULLIF(SUM(CASE WHEN server_challenge_ts >= NOW() - INTERVAL '24 hours'
+                              AND audit_result IS NOT NULL THEN 1 ELSE 0 END), 0)
+            AS score_24h,
+            -- MEDIUM WINDOW (placeholder: 7 days production; overridden at startup)
+            SUM(CASE WHEN server_challenge_ts >= NOW() - INTERVAL '7 days'
+                    AND audit_result = 'PASS' THEN 1 ELSE 0 END)::FLOAT
+            / NULLIF(SUM(CASE WHEN server_challenge_ts >= NOW() - INTERVAL '7 days'
+                              AND audit_result IS NOT NULL THEN 1 ELSE 0 END), 0)
+            AS score_7d,
+            -- LONG WINDOW (placeholder: 30 days production; overridden at startup)
+            SUM(CASE WHEN server_challenge_ts >= NOW() - INTERVAL '30 days'
+                    AND audit_result = 'PASS' THEN 1 ELSE 0 END)::FLOAT
+            / NULLIF(SUM(CASE WHEN server_challenge_ts >= NOW() - INTERVAL '30 days'
+                              AND audit_result IS NOT NULL THEN 1 ELSE 0 END), 0)
+            AS score_30d
+        FROM audit_receipts
+        WHERE abandoned_at IS NULL
+        GROUP BY provider_id
+    ) sub;
+
+    CREATE UNIQUE INDEX ON mv_provider_scores (provider_id);
+    -- Required for REFRESH MATERIALIZED VIEW CONCURRENTLY (DM §9 checklist)
+  ```
+
+**VERIFY:**
+
+  **VIEW_IN_SQL:**
+
+  ```bash
+      $ grep -c "CREATE MATERIALIZED VIEW mv_provider_scores" \
+          `migrations/001_initial_schema.sql`
+      EXPECT: 1
+  ```
+
+  **SCORES_AS_OF_COLUMN:**
+
+  ```bash
+      $ grep -c "scores_as_of" migrations/001_initial_schema.sql
+      EXPECT: 1  (DM §9 checklist)
+  ```
+
+  **PLACEHOLDER_COMMENT:**
+
+  ```bash
+      $ grep -c "DROPPED AND RECREATED AT STARTUP" migrations/001_initial_schema.sql
+      EXPECT: 1
+  ```
+
+  **SUBQUERY_STRUCTURE (column aliases not referenced in same SELECT level):**
+
+  ```bash
+      $ grep -c "FROM (.*SELECT\|FROM.*sub" migrations/001_initial_schema.sql
+      EXPECT: >= 1  (DM §9: "column aliases not referenced in same SELECT level")
+  ```
+
+  **UNIQUE_INDEX_ON_VIEW:**
+
+  ```bash
+      $ grep -c "CREATE UNIQUE INDEX ON mv_provider_scores" migrations/001_initial_schema.sql
+      EXPECT: 1
+  ```
+
+---
 
 #### Session 4.7.2 — `mv_provider_escrow_balance`
 
-**Task:** Implement per DM §7 with the REVERSAL amendment (DM §7 comment: "WE MADE AN
-AMMEND ADDING REVERSAL"). Balance formula: `SUM(DEPOSIT + REVERSAL) - SUM(RELEASE + SEIZURE)`.
-DM §9 checklist: "mv_provider_escrow_balance includes REVERSAL in the DEPOSIT-side SUM".
+**TASK:** Add mv_provider_escrow_balance, mv_owner_escrow_balance, mv_segment_shard_counts
+      to `migrations/001_initial_schema.sql.`
+
+**SOURCE:** DM §7
+
+**`mv_provider_escrow_balance` (includes REVERSAL amendment, DM §9 checklist):**
+
+```sql
+  CREATE MATERIALIZED VIEW mv_provider_escrow_balance AS
+  SELECT
+      provider_id,
+      SUM(CASE WHEN event_type IN ('DEPOSIT', 'REVERSAL') THEN amount_paise ELSE 0 END)
+      -
+      SUM(CASE WHEN event_type IN ('RELEASE', 'SEIZURE') THEN amount_paise ELSE 0 END)
+      AS balance_paise
+  FROM escrow_events
+  GROUP BY provider_id;
+  -- REVERSAL increases balance (refund of reversed payout) — DM §7 amendment
+  -- idempotency_key for REVERSAL = SHA-256('reversal' || original_idempotency_key)
+  -- (enforced at application layer, not DB)
+
+  CREATE UNIQUE INDEX ON mv_provider_escrow_balance (provider_id);
+```
+
+**`mv_owner_escrow_balance` (with GREATEST guard, DM §7):**
+
+```sql
+  CREATE MATERIALIZED VIEW mv_owner_escrow_balance AS
+  SELECT
+      owner_id,
+      GREATEST(
+          SUM(CASE WHEN event_type IN ('DEPOSIT', 'REFUND') THEN amount_paise ELSE 0 END)
+          -
+          SUM(CASE WHEN event_type IN ('CHARGE', 'WITHDRAWAL') THEN amount_paise ELSE 0 END),
+          0  -- prevents negative balance (DM §7: "Add GREATEST(..., 0)")
+      ) AS balance_paise
+  FROM owner_escrow_events
+  GROUP BY owner_id;
+
+  CREATE UNIQUE INDEX ON mv_owner_escrow_balance (owner_id);
+```
+
+**`mv_segment_shard_counts`:**
+
+```sql
+  CREATE MATERIALIZED VIEW mv_segment_shard_counts AS
+  SELECT
+      segment_id,
+      COUNT(*) FILTER (WHERE status IN ('ACTIVE', 'REPAIRING')) AS available_shard_count,
+      COUNT(*) FILTER (WHERE status = 'ACTIVE') AS active_shard_count
+  FROM chunk_assignments
+  GROUP BY segment_id;
+
+  CREATE UNIQUE INDEX ON mv_segment_shard_counts (segment_id);
+```
+
+**VERIFY:**
+
+  **VIEWS_PRESENT:**
+
+  ```bash
+      $ grep -c "CREATE MATERIALIZED VIEW" migrations/001_initial_schema.sql
+      EXPECT: 4  (mv_provider_scores + 3 from this session)
+  ```
+
+  **REVERSAL_IN_ESCROW_BALANCE:**
+
+  ```bash
+      $ grep -A5 "mv_provider_escrow_balance" migrations/001_initial_schema.sql | \
+          grep "REVERSAL"
+      EXPECT: found  (DM §9 checklist)
+  ```
+
+  **GREATEST_IN_OWNER_BALANCE:**
+
+  ```bash
+      $ grep -A10 "mv_owner_escrow_balance" migrations/001_initial_schema.sql | \
+          grep "GREATEST"
+      EXPECT: found
+  ```
+
+  **UNIQUE_INDEXES_ON_ALL_VIEWS:**
+
+  ```bash
+      $ grep -c "CREATE UNIQUE INDEX ON mv_" migrations/001_initial_schema.sql
+      EXPECT: 4  (one per view)
+  ```
+
+  **BOTH_SHARD_COUNT_COLUMNS:**
+
+  ```bash
+      $ grep -c "available_shard_count\|active_shard_count" migrations/001_initial_schema.sql
+      EXPECT: 2
+  ```
+
+---
 
 #### Session 4.7.3 — `mv_owner_escrow_balance`
 
@@ -2969,22 +4137,293 @@ for all four materialised views. Required for `REFRESH MATERIALIZED VIEW CONCURR
 
 #### Session 4.8.1 — Run and document DM §9 checklist
 
-**Task:** Execute every item in the DM §9 migration checklist as a CI-runnable test
-suite in `scripts/ci/migration_check.sh`. Each check must be a `psql` query or `\d`
-inspection that passes or fails explicitly. Failing checks must print the exact DM §9
-checklist item text. The checks include:
-- `btree_gist` installed
-- `challenge_nonce` is BYTEA with `octet_length = 33` (not 32)
-- No FLOAT columns in escrow_events
-- `audit_result` has no DEFAULT
-- All ENUM values are present (including `REVERSAL`)
-- `is_vetting_chunk` column present on `chunk_assignments`
-- `file_id` on `audit_receipts` is nullable
-- Partial unique index includes `WHERE is_vetting_chunk = FALSE`
-- `scores_as_of` column present in `mv_provider_scores`
-- `REVERSAL` in `mv_provider_escrow_balance` balance formula
+**TASK:** Create `scripts/ci/migration_check.sh` implementing all DM §9 checklist items as CI-runnable psql queries. This is CI check 7 (MVP §8.4).
 
-The migration checklist script is CI check 7 (MVP §8.4).
+FILE: `scripts/ci/migration_check.sh`
+
+**STRUCTURE:**
+
+  ```bash
+    #!/usr/bin/env bash
+    set -euo pipefail
+    DB="${PGDATABASE:-vyomanaut_test}"
+    USER="${PGUSER:-vyomanaut_app}"
+    HOST="${PGHOST:-localhost}"
+    FAIL=0
+
+    psql_check() {
+      local name="$1"; local query="$2"; local expected="$3"
+      result=$(psql -h "$HOST" -U "$USER" -d "$DB" -t -c "$query" 2>&1 | tr -d '[:space:]')
+      if [ "$result" = "$expected" ]; then
+        echo "PASS [$name]"
+      else
+        echo "FAIL [$name]: got '$result', expected '$expected'"
+        FAIL=1
+      fi
+    }
+  ```
+
+**DM §9 checklist item 1:** `btree_gist` installed
+
+  ```sql
+    psql_check "btree_gist_installed" \
+
+      "SELECT COUNT(*) FROM pg_extension WHERE extname = 'btree_gist'" \
+      "1"
+  ```
+
+**DM §9:** `challenge_nonce` is BYTEA with `octet_length = 33` (not 32)
+
+  ```sql
+    psql_check "challenge_nonce_33_bytes" \
+
+      "SELECT COUNT(*) FROM information_schema.check_constraints
+      WHERE constraint_name LIKE '%challenge_nonce%'
+      AND check_clause LIKE '%33%'" \
+      "1"
+  ```
+
+**DM §9:** no FLOAT columns in `escrow_events`
+
+  ```sql
+    psql_check "no_float_in_escrow" \
+
+      "SELECT COUNT(*) FROM information_schema.columns
+      WHERE table_name = 'escrow_events'
+      AND data_type IN ('real', 'double precision')" \
+      "0"
+  ```
+
+**DM §9:** `audit_result` has no DEFAULT
+
+  ```sql
+    psql_check "audit_result_no_default" \
+
+      "SELECT COUNT(*) FROM information_schema.columns
+      WHERE table_name = 'audit_receipts'
+      AND column_name = 'audit_result'
+      AND column_default IS NOT NULL" \
+      "0"
+  ```
+
+**DM §9:** REVERSAL in `escrow_event_type` ENUM
+
+  ```sql
+    psql_check "reversal_in_enum" \
+
+      "SELECT COUNT(*) FROM pg_enum
+      WHERE enumtypid = 'escrow_event_type'::regtype
+      AND enumlabel = 'REVERSAL'" \
+      "1"
+  ```
+
+**DM §9:** `is_vetting_chunk` column present on `chunk_assignments`
+
+  psql_check "is_vetting_chunk_present" \
+
+```sql
+    "SELECT COUNT(*) FROM information_schema.columns
+     WHERE table_name = 'chunk_assignments'
+     AND column_name = 'is_vetting_chunk'" \
+    "1"
+```
+
+**DM §9:** `file_id` on `audit_receipts` is nullable
+
+  ```sql
+    psql_check "audit_receipts_file_id_nullable" \
+
+      "SELECT is_nullable FROM information_schema.columns
+      WHERE table_name = 'audit_receipts'
+      AND column_name = 'file_id'" \
+      "YES"
+  ```
+
+**DM §9:** partial unique index includes WHERE `is_vetting_chunk = FALSE`
+
+  ```sql
+    psql_check "vetting_filter_in_partial_index" \
+
+      "SELECT COUNT(*) FROM pg_indexes
+      WHERE indexname = 'idx_chunk_assignments_one_active_per_shard'
+      AND indexdef LIKE '%is_vetting_chunk%'" \
+      "1"
+  ```
+
+**DM §9:** `scores_as_of` column present in `mv_provider_scores`
+
+  ```sql
+    psql_check "scores_as_of_column" \
+
+      "SELECT COUNT(*) FROM information_schema.columns
+      WHERE table_name = 'mv_provider_scores'
+      AND column_name = 'scores_as_of'" \
+      "1"
+  ```
+
+**DM §9:** REVERSAL in `mv_provider_escrow_balance` formula (check view definition)
+
+  ```sql
+    psql_check "reversal_in_balance_view" \
+
+      "SELECT COUNT(*) FROM pg_views
+      WHERE viewname = 'mv_provider_escrow_balance'
+      AND definition LIKE '%REVERSAL%'" \
+      "1"
+  ```
+
+**DM §9:** `owner_escrow_events` table present
+
+  ```sql
+    psql_check "owner_escrow_events_exists" \
+
+      "SELECT COUNT(*) FROM information_schema.tables
+      WHERE table_name = 'owner_escrow_events'" \
+      "1"
+  ```
+
+**DM §9:** `providers.first_chunk_assignment_at` column present
+
+  ```sql
+    psql_check "first_chunk_assignment_at_exists" \
+
+      "SELECT COUNT(*) FROM information_schema.columns
+      WHERE table_name = 'providers'
+      AND column_name = 'first_chunk_assignment_at'" \
+      "1"
+  ```
+
+**DM §9:** files `display_name` columns present
+
+  ```sql
+    psql_check "display_name_columns" \
+
+      "SELECT COUNT(*) FROM information_schema.columns
+      WHERE table_name = 'files'
+      AND column_name IN ('display_name_ciphertext', 'display_name_nonce', 'display_name_tag')" \
+      "3"
+  ```
+
+**DM §9:** `p95_throughput_kbps` and `avg_rtt_ms` default to NULL (not 0/2000)
+
+  ```sql
+    psql_check "throughput_def`ault_null" \
+
+      "SELECT COUNT(*) FROM information_schema.columns
+      WHERE table_name = 'providers'
+      AND column_name IN ('p95_throughput_kbps', 'avg_rtt_ms')
+      AND column_default IS NOT NULL" \
+      "0"
+  ```
+
+**DM §9:** `repair_priority` ENUM has three values
+
+  ```sql
+    psql_check "repair_priority_three_values" \
+
+      "SELECT COUNT(*) FROM pg_enum
+      WHERE enumtypid = 'repair_priority'::regtype" \
+      "3"
+  ```
+
+**DM §9:** `file_status` ENUM has three values
+
+  ```sql
+    psql_check "file_status_three_values" \
+
+      "SELECT COUNT(*) FROM pg_enum
+      WHERE enumtypid = 'file_status'::regtype" \
+      "3"
+  ```
+
+**DM §9:** RSP on `audit_receipts` enabled
+
+  ```sql
+    psql_check "audit_receipts_rls_enabled" \ 
+
+      "SELECT COUNT(*) FROM pg_tables
+      WHERE tablename = 'audit_receipts' AND rowsecurity = true" \
+      "1"
+  ```
+
+**DM §9:** RSP on `escrow_events` enabled
+
+  ```sql
+    psql_check "escrow_events_rls_enabled" \
+
+      "SELECT COUNT(*) FROM pg_tables
+      WHERE tablename = 'escrow_events' AND rowsecurity = true" \
+      "1"
+  ```
+
+**DM §9:** `mv_provider_scores` unique index present (for CONCURRENTLY refresh)
+
+  ```sql
+    psql_check "mv_provider_scores_unique_idx" \
+
+        "SELECT COUNT(*) FROM pg_indexes
+        WHERE tablename = 'mv_provider_scores' AND indexdef LIKE '%UNIQUE%'" \
+        "1"
+  ```
+
+**MVP §6.4 MR-01/MR-02:** demo and prod schema have different `shard_index` bounds (This check runs only when both schema files exist)
+
+  ```bash
+    if [ -f `migrations/001_initial_schema.sql` ] && [ -f `migrations/001_initial_schema_demo.sql` ]; then
+      prod_bound=$(grep "shard_index BETWEEN" `migrations/001_initial_schema.sql` | grep -o "AND [0-9]*" | awk '{print $2}')
+      demo_bound=$(grep "shard_index BETWEEN" `migrations/001_initial_schema_demo.sql` | grep -o "AND [0-9]*" | awk '{print $2}')
+      if [ "$prod_bound" = "55" ] && [ "$demo_bound" = "4" ]; then
+        echo "PASS [profile_bound_separation]"
+      else
+        echo "FAIL [profile_bound_separation]: prod=$prod_bound (want 55) demo=$demo_bound (want 4)"
+        FAIL=1
+      fi
+    fi
+
+    exit $FAIL
+  ```
+
+**MAKE EXECUTABLE:** chmod +x `scripts/ci/migration_check.sh`
+
+**VERIFY:**
+
+  **FILES_EXIST:**
+
+  ```bash
+      test -f scripts/ci/migration_check.sh && echo PASS || echo FAIL
+      test -x scripts/ci/migration_check.sh && echo PASS || echo FAIL
+  ```
+
+  **SCRIPT_SYNTAX:**
+
+  ```bash
+      bash -n scripts/ci/migration_check.sh && echo "PASS: no syntax errors" || echo FAIL
+  ```
+
+  **CHECK_COUNT:**
+
+  ```bash
+      $ grep -c "psql_check " scripts/ci/migration_check.sh
+      EXPECT: >= 18
+  ```
+
+  **RUNS_AGAINST_TEST_DB (after migration applied):**
+
+  ```bash
+      $ bash scripts/ci/migration_check.sh
+      EXPECT: exit 0; all lines print "PASS [...]"
+  ```
+
+  **FAIL_DETECTION (inject a known violation):**
+
+  ```bash
+      $ psql -U vyomanaut_app -d vyomanaut_test \
+          -c "ALTER TABLE audit_receipts DISABLE ROW LEVEL SECURITY"
+      $ bash scripts/ci/migration_check.sh | grep "FAIL\|PASS" | grep "audit_receipts_rls"
+      EXPECT: "FAIL [audit_receipts_rls_enabled]"
+      $ psql -U vyomanaut_app -d vyomanaut_test \
+          -c "ALTER TABLE audit_receipts ENABLE ROW LEVEL SECURITY"
+  ```
 
 ---
 
