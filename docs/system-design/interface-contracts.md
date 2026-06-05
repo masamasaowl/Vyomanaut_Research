@@ -238,6 +238,8 @@ must prompt re-registration (full OTP flow) on its local status interface.
 
 **Refer:** ([`ADR-028`](../decisions/ADR-028-provider-heartbeat.md))
 
+---
+
 ### 3.2 Ed25519 Signing Conventions
 
 All Ed25519 operations in Vyomanaut use the same key material, format, and verification

@@ -2071,7 +2071,53 @@ TestSignBytesNotJSON (signing input is fixed-layout, not JSON)
 DataShards/TotalShards. Zero imports from other `internal/` packages (IC §9).
 
 **Reference:** IC §5.2 (full interface), MVP §3.2 (erasure params table),
-DM §3 Invariant 7 (ShardSize constant), IC §9 (import constraints)
+DM §3 Invariant 7 (ShardSize constant), IC §9 (import constraints), ARCH §10 Stage 2 (AONT → RS handoff)
+
+**Doc.go:**
+
+```go
+// Package erasure implements Reed-Solomon erasure coding parameterised by NetworkProfile.
+//
+// # Design Role (architecture.md §10 Stage 2)
+//
+// Receives an AONT package from internal/crypto.AONTEncodeSegment and produces
+// TotalShards independent fragments via Engine.EncodeSegment. On retrieval,
+// Engine.DecodeSegment reconstructs the AONT package, which is then passed to
+// internal/crypto.AONTDecodePackage. The two packages are always used in sequence;
+// neither is standalone (ADR-022).
+//
+// # Key Invariant (DM §3 Invariant 7, ADR-031)
+//
+// ShardSize = 262144 (256 KB) is a compile-time constant. It is identical in demo
+// and production modes. No profile field changes this value. Any code that receives
+// a shard of different size has a bug in the caller, not this package.
+//
+// # Profile Parameterisation
+//
+//   Production: DataShards=16, ParityShards=40, TotalShards=56  (RS(16,56))
+//   Demo:       DataShards=3,  ParityShards=2,  TotalShards=5   (RS(3,5))
+//
+// The active profile is injected at construction time via NewEngine(profile).
+// No package-level state exists; multiple Engine instances with different profiles
+// may coexist safely.
+//
+// # Import Constraint (IC §9)
+//
+// This package imports zero other internal/ packages. It receives config.NetworkProfile
+// by value at construction time only. The config package may NOT import erasure.
+//
+// # Goroutine Safety
+//
+// Engine is goroutine-safe after construction. EncodeSegment and DecodeSegment
+// are stateless over the Engine struct.
+//
+// # Files
+//
+//   params.go     — const ShardSize = 262144; Engine struct definition
+//   engine.go     — NewEngine, EncodeSegment, DecodeSegment, ErrTooFewShards, ErrShardSize
+//   engine_test.go — round-trip (prod+demo), any-k-shards (demo), ShardSize assertion
+package erasure
+```
 
 ---
 
@@ -2081,23 +2127,249 @@ DM §3 Invariant 7 (ShardSize constant), IC §9 (import constraints)
 
 #### Session 3.1.1 — Define `ShardSize` constant and `Engine` struct
 
-**Task:** Create `internal/erasure/params.go`. Define `const ShardSize = 262144`
-(IC §5.2 comment: "fixed in both modes; never profile-variable"). Define the `Engine`
-struct per IC §5.2: `DataShards`, `ParityShards`, `TotalShards` as `int` fields.
+**TASK:** Define ShardSize constant and Engine struct in `internal/erasure/params.go`; update the erasure cross-check in `profiles_test.go`.
 
-Now update M1 Session 1.2.1: add the cross-check import of `erasure.ShardSize` to
-`TestProfileShardSizeIsConstant`.
+**PRECONDITIONS**:
+
+- internal/erasure/doc.go exists (stub from Session 0.1.3)
+- internal/config/profiles_test.go exists (from Session 1.2.1)
+- Sessions 2.1.1 through 2.5.1 are complete
+
+**STEP 1** — Create internal/erasure/params.go:
+
+  **FILE:** internal/erasure/params.go
+  **CONTENT:**
+
+  ```go
+
+    package erasure
+
+    import "github.com/masamasaowl/vyomanaut/internal/config"
+
+    // ShardSize is the fixed size of every erasure-coded shard in bytes.
+    // This value is identical in demo and production modes (DM §3 Invariant 7, ADR-031).
+    // It must never appear in config.NetworkProfile as a variable field.
+    const ShardSize = 262144 // 256 KB
+
+    // Engine holds the erasure coding parameters derived from a NetworkProfile.
+    // Constructed once via NewEngine; all methods are goroutine-safe.
+    type Engine struct {
+        // DataShards is the reconstruction threshold (s). Production=16, Demo=3.
+        DataShards int // ADR-003
+        // ParityShards is the number of redundancy shards (r). Production=40, Demo=2.
+        ParityShards int // ADR-003
+        // TotalShards is DataShards + ParityShards (n). Production=56, Demo=5.
+        TotalShards int // ADR-003
+    }
+
+    // profileConsistencyCheck validates that the profile's erasure fields are
+    // internally consistent. Called by NewEngine before allocating the RS engine.
+    func profileConsistencyCheck(p config.NetworkProfile) error {
+        if p.DataShards < 1 {
+            return ErrDataShardsZero
+        }
+        if p.TotalShards != p.DataShards+p.ParityShards {
+            return ErrTotalShardsMismatch
+        }
+        if p.ShardSize != ShardSize {
+            // Runtime guard: profile.ShardSize must always equal the compile-time constant.
+            // Violation means either DemoProfile or ProductionProfile has a wrong value.
+            // Caught at startup; never silently ignored.
+            return ErrShardSizeMismatch
+        }
+        return nil
+    }
+  ```
+
+**STEP 2** — Update `internal/config/profiles_test.go`: `TestProfileShardSizeIsConstant`.
+  Read the existing file first, then modify the TODO comment and add the cross-check.
+
+  **FIND the line:**
+    // TODO: cross-check with erasure.ShardSize after M3
+  **REPLACE the TODO block with:**
+
+  ```go
+    import "github.com/masamasaowl/vyomanaut/internal/erasure"
+    // Cross-check: compile-time const must equal runtime profile field.
+    if config.ProductionProfile.ShardSize != erasure.ShardSize {
+        t.Errorf("ProductionProfile.ShardSize=%d != erasure.ShardSize=%d",
+            config.ProductionProfile.ShardSize, erasure.ShardSize)
+    }
+    if config.DemoProfile.ShardSize != erasure.ShardSize {
+        t.Errorf("DemoProfile.ShardSize=%d != erasure.ShardSize=%d",
+            config.DemoProfile.ShardSize, erasure.ShardSize)
+    }
+  ```
+
+**IMPORTS REQUIRED in params.go:**
+  "github.com/masamasaowl/vyomanaut/internal/config"
+
+**VERIFY:**
+
+  COMPILE:
+  
+  ```bash
+    $ go build ./internal/erasure/
+    EXPECT: exit 0
+  ```
+
+  CONTENT_CHECKS:
+
+  ```bash
+    $ grep -c "^const ShardSize = 262144" internal/erasure/params.go
+    EXPECT: 1
+
+    $ grep -c "^type Engine struct" internal/erasure/params.go
+    EXPECT: 1
+
+    $ grep -c "ShardSizeMismatch" internal/erasure/params.go
+    EXPECT: >= 1
+  ```
+
+  CROSS_CHECK_IN_TESTS:
+
+  ```bash
+    $ grep -c "erasure.ShardSize" internal/config/profiles_test.go
+    EXPECT: 2
+
+    $ go test -v -run TestProfileShardSizeIsConstant ./internal/config/
+    EXPECT: exit 0; output contains "--- PASS: TestProfileShardSizeIsConstant"
+  ```
+
+  NEGATIVE_CHECKS:
+
+  ```bash
+    $ grep -n "internal/" internal/erasure/params.go | grep -v "config"
+    EXPECT: empty (only config import is permitted, IC §9)
+
+    $ grep -n "ShardSize" internal/config/network_profile.go
+    EXPECT: 1 line only (the struct field declaration; no literal 262144)
+  ```
+
+---
 
 #### Session 3.1.2 — Implement `NewEngine()`
 
-**Task:** In `internal/erasure/engine.go`, implement `NewEngine(profile
-config.NetworkProfile) (*Engine, error)`. Pre-conditions per IC §5.2:
-- `profile.DataShards >= 1`
-- `profile.TotalShards == profile.DataShards + profile.ParityShards`
-- `profile.ShardSize == ShardSize` (compile-time constant cross-check)
+**TASK:** Implement `NewEngine()` in `internal/erasure/engine.go`.
 
-Use `github.com/klauspost/reedsolomon` as the underlying library. Return an error if the
-library constructor fails.
+**FILE:** `internal/erasure/engine.go`
+
+**PRECONDITIONS:**
+
+- `internal/erasure/params.go` exists (Session 3.1.1 complete)
+- go get `github.com/klauspost/reedsolomon` (add to go.mod)
+
+**SENTINEL ERRORS** — define in `errors.go` (new file in this session):
+
+  **FILE:** `internal/erasure/errors.go`
+  **CONTENT:**
+
+  ```go
+    package erasure
+
+    import "errors"
+
+    var (
+        // ErrDataShardsZero is returned when NetworkProfile.DataShards < 1.
+        ErrDataShardsZero = errors.New("erasure: DataShards must be >= 1")
+
+        // ErrTotalShardsMismatch is returned when TotalShards != DataShards + ParityShards.
+        ErrTotalShardsMismatch = errors.New("erasure: TotalShards must equal DataShards + ParityShards")
+
+        // ErrShardSizeMismatch is returned when NetworkProfile.ShardSize != ShardSize constant.
+        // This indicates a misconfigured profile, not a runtime data error.
+        ErrShardSizeMismatch = errors.New("erasure: profile ShardSize must equal compile-time ShardSize=262144")
+
+        // ErrTooFewShards is returned when fewer than DataShards non-nil shards are provided.
+        ErrTooFewShards = errors.New("erasure: fewer than DataShards non-nil shards provided")
+
+        // ErrShardSize is returned when a non-nil shard has length != ShardSize.
+        ErrShardSize = errors.New("erasure: shard has incorrect length; expected ShardSize bytes")
+    )
+  ```
+
+**FUNCTION:** `NewEngine(profile config.NetworkProfile) (*Engine, error)`
+
+  **LOGIC:**
+
+  ```go
+    1. Call profileConsistencyCheck(profile) — return error if non-nil
+    2. enc, err := reedsolomon.New(profile.DataShards, profile.ParityShards)
+       if err != nil { return nil, fmt.Errorf("erasure: reedsolomon.New failed: %w", err) }
+    3. Return &Engine{
+         DataShards:   profile.DataShards,
+         ParityShards: profile.ParityShards,
+         TotalShards:  profile.TotalShards,
+         enc:          enc,  // unexported field holding the reedsolomon.Encoder
+       }, nil
+  ```
+
+  NOTE: The `profile.ShardSize == ShardSize` check is a RUNTIME assertion in
+  `profileConsistencyCheck`, not a compile-time check. The compile-time guarantee
+  is provided by `TestProfileShardSizeIsConstant` in `internal/config/profiles_test.go`.
+  These two mechanisms together enforce DM §3 Invariant 7.
+
+**IMPORTS REQUIRED:**
+
+ ```go
+  "fmt"
+  "github.com/klauspost/reedsolomon"
+  "github.com/masamasaowl/vyomanaut/internal/config"
+ ```
+
+**VERIFY:**
+
+  COMPILE:
+
+  ```bash
+    $ go build ./internal/erasure/
+    EXPECT: exit 0
+  ```
+  
+  FUNCTION_EXISTS:
+
+  ```bash
+    $ grep -c "^func NewEngine" internal/erasure/engine.go
+    EXPECT: 1
+  ```
+  
+  SENTINEL_ERRORS:
+
+  ```bash
+    $ grep -c "ErrDataShardsZero\|ErrTotalShardsMismatch\|ErrShardSizeMismatch\|ErrTooFewShards\|ErrShardSize" \
+        internal/erasure/errors.go
+    EXPECT: 5
+  ```
+  
+  RUNTIME_CHECK_PRESENT:
+
+  ```bash
+    $ grep -c "ShardSize != ShardSize\|ErrShardSizeMismatch" internal/erasure/params.go
+    EXPECT: >= 1
+  ```
+  
+  NEGATIVE_CHECKS:
+
+  ```bash
+    $ grep -n "compile.time" internal/erasure/engine.go
+    EXPECT: empty (the compile-time assertion is in profiles_test.go, not here)
+
+    $ grep -n "profile.ShardSize == ShardSize" internal/erasure/engine.go \
+        && echo "WARN: == check is fine but verify it's in profileConsistencyCheck, not as a var" \
+        || echo "PASS"
+  ```
+
+  ERROR_CASES:
+
+  ```bash
+    $ go test -v -run TestNewEngineErrors ./internal/erasure/
+    EXPECT: exit 0; tests cover:
+      TestNewEngineRejectsBadDataShards     (DataShards=0 → ErrDataShardsZero)
+      TestNewEngineRejectsMismatchedTotal   (TotalShards != DataShards+ParityShards → ErrTotalShardsMismatch)
+      TestNewEngineRejectsBadShardSize      (ShardSize=1 → ErrShardSizeMismatch)
+      TestNewEngineAcceptsDemoProfile       (NewEngine(DemoProfile) → nil error)
+      TestNewEngineAcceptsProductionProfile (NewEngine(ProductionProfile) → nil error)
+  ```
 
 ---
 
@@ -2107,24 +2379,279 @@ library constructor fails.
 
 #### Session 3.2.1 — Implement `EncodeSegment()`
 
-**Task:** Per IC §5.2 pre-condition: `len(aontPackage) == e.DataShards * ShardSize`
-exactly. Returns exactly `e.TotalShards` byte slices each of length `ShardSize`.
+**TASK:** Implement `Engine.EncodeSegment()` in `internal/erasure/engine.go`.
+
+**PRECONDITION:**
+
+- `NewEngine()` is implemented and tested (Session 3.1.2 complete)
+- `internal/crypto.AONTEncodeSegment()` is implemented (Session 2.4.2 complete)  
+  The input to `EncodeSegment` is the output of `AONTEncodeSegment`:
+  a byte slice of length `DataShards × ShardSize` (`architecture.md` §10 Stage 2)
+
+**FUNCTION SIGNATURE (IC §5.2):**
+
+  ```go
+  func (e *Engine) EncodeSegment(aontPackage []byte) ([][]byte, error)
+  ```
+
+**PRE-CONDITION** (enforce as runtime error, not panic — this is an API boundary):
+
+  ```go
+  if len(aontPackage) != e.DataShards * ShardSize {
+      return nil, fmt.Errorf("erasure: EncodeSegment input length %d != DataShards*ShardSize=%d",
+          len(aontPackage), e.DataShards*ShardSize)
+  }
+  ```
+
+**ALGORITHM:**
+
+  ```go
+  1. Split aontPackage into e.DataShards shards of ShardSize bytes each:
+      shards := make([][]byte, e.TotalShards)
+      for i := 0; i < e.DataShards; i++ {
+          shards[i] = aontPackage[i*ShardSize : (i+1)*ShardSize]
+      }
+      for i := e.DataShards; i < e.TotalShards; i++ {
+          shards[i] = make([]byte, ShardSize)  // allocate parity shards
+      }
+  2. Call e.enc.Encode(shards)  — fills parity shards in-place
+  3. Return shards, nil
+  ```
+
+**POST-CONDITIONS** (IC §5.2):
+
+- Returns exactly `e.TotalShards` byte slices
+- Each slice is exactly `ShardSize` bytes
+- Any `e.DataShards` of the returned slices can reconstruct `aontPackage`
+
+**VERIFY:**
+
+  **COMPILE:**
+
+  ```bash
+  $ go build ./internal/erasure/
+  EXPECT: exit 0
+  ```
+
+  **FUNCTION_EXISTS:**
+
+  ```bash
+  $ grep -c "^func (e \*Engine) EncodeSegment" internal/erasure/engine.go
+  EXPECT: 1
+  ```
+
+  **UNIT_TESTS:**
+
+  ```bash
+  $ go test -v -run TestEncodeSegment ./internal/erasure/
+  EXPECT: exit 0; tests include:
+    TestEncodeSegmentOutputCount    (returns exactly TotalShards slices)
+    TestEncodeSegmentShardSize      (each shard is exactly ShardSize bytes)
+    TestEncodeSegmentRejectsWrongInput (wrong length → error, not panic)
+    TestEncodeSegmentDemoProfile    (RS(3,5): 768KB input → 5 shards of 256KB)
+    TestEncodeSegmentProdProfile    (RS(16,56): 4MB input → 56 shards of 256KB)
+  ```
+
+  **NEGATIVE_CHECKS:**
+
+  ```bash
+    grep -n "panic" internal/erasure/engine.go     && echo "WARN: no panics at API boundary — return error instead" || echo "PASS"
+  ```
+
+---
 
 #### Session 3.2.2 — Implement `DecodeSegment()`
 
-**Task:** Per IC §5.2. Accept `e.TotalShards` shards with at least `e.DataShards`
-non-nil. Fill nil entries in-place. Return `ErrTooFewShards` if fewer than DataShards
-non-nil. Return `ErrShardSize` if a non-nil shard has wrong length.
+**TASK:** Implement `Engine.DecodeSegment()` in `internal/erasure/engine.go`.
+
+**PRECONDITION:**
+
+- `EncodeSegment()` is implemented (Session 3.2.1 complete)
+
+**FUNCTION SIGNATURE (IC §5.2):**
+
+  ```go
+  func (e *Engine) DecodeSegment(shards [][]byte) ([]byte, error)
+  ```
+
+**PRE-CONDITIONS:**
+
+  ```go
+  if len(shards) != e.TotalShards {
+      return nil, fmt.Errorf("erasure: DecodeSegment expects %d shards, got %d",
+          e.TotalShards, len(shards))
+  }
+  // Count non-nil shards; return ErrTooFewShards if < DataShards
+  nonNil := 0
+  for _, s := range shards { if s != nil { nonNil++ } }
+  if nonNil < e.DataShards {
+      return nil, ErrTooFewShards
+  }
+  // Validate non-nil shard sizes
+  for i, s := range shards {
+      if s != nil && len(s) != ShardSize {
+          return nil, fmt.Errorf("%w: shard[%d] has length %d", ErrShardSize, i, len(s))
+      }
+  }
+  ```
+
+**ALGORITHM:**
+
+  ```go
+  1. Call e.enc.ReconstructData(shards)
+    This fills nil data shard entries in-place; parity shards may remain nil.
+  2. Reconstruct aontPackage by concatenating the first DataShards shards:
+      result := make([]byte, e.DataShards*ShardSize)
+      for i := 0; i < e.DataShards; i++ {
+          copy(result[i*ShardSize:], shards[i])
+      }
+  3. Return result, nil
+  ```
+
+**POST-CONDITIONS** (IC §5.2):
+
+- Returns `DataShards × ShardSize` bytes (the original AONT package)
+- All nil entries in `shards` are filled in-place (caller's slice is modified)
+- The result is passed to `internal/crypto.AONTDecodePackage` by the caller
+
+**VERIFY:**
+
+  **COMPILE:**
+
+  ```bash
+  $ go build ./internal/erasure/
+  EXPECT: exit 0
+  ```
+
+  **FUNCTION_EXISTS:**
+
+  ```bash
+  $ grep -c "^func (e \*Engine) DecodeSegment" internal/erasure/engine.go
+  EXPECT: 1
+  ```
+
+  **UNIT_TESTS:**
+
+  ```bash
+  $ go test -v -run TestDecodeSegment ./internal/erasure/
+  EXPECT: exit 0; tests include:
+    TestDecodeSegmentRoundTrip        (encode then decode returns original)
+    TestDecodeSegmentTooFewShards     (< DataShards non-nil → ErrTooFewShards)
+    TestDecodeSegmentBadShardSize     (wrong-length shard → ErrShardSize error)
+    TestDecodeSegmentFillsNilInPlace  (nil entries are populated in shards slice)
+    TestDecodeSegmentWrongCount       (len(shards) != TotalShards → error)
+  ```
+
+---
 
 #### Session 3.2.3 — Erasure coding tests
 
-**Task:** In `internal/erasure/engine_test.go`:
-- Round-trip test for both production (16,56) and demo (3,5) engines
-- "Any k shards" test: for every combination of DataShards from TotalShards shards,
-  reconstruction succeeds (for demo engine only — production would be 56-choose-16 combinations)
-- ShardSize constant test: assert `ShardSize == 262144` (belt-and-suspenders for DM Invariant 7)
-- Cross-engine test: data encoded with demo engine cannot be decoded by production engine
-  (documents the separation)
+**TASK:** Write comprehensive erasure coding tests in `internal/erasure/engine_test.go`.
+
+**FILE:** `internal/erasure/engine_test.go`
+
+**TEST INVENTORY** (all tests use subtests via `t.Run`):
+
+1. `TestNewEngineErrors` — Session 3.1.2 already covers this; consolidate here.
+
+2. `TestEncodeDecodeRoundTrip` (production and demo profiles):
+
+  ```go
+  for _, profile := range []config.NetworkProfile{config.ProductionProfile, config.DemoProfile} {
+      input := make([]byte, profile.DataShards * erasure.ShardSize)
+      // fill with recognisable pattern
+      for i := range input { input[i] = byte(i % 251) }
+      eng,_ := erasure.NewEngine(profile)
+      shards, _:= eng.EncodeSegment(input)
+      decoded,_ := eng.DecodeSegment(shards)
+      // assert decoded == input
+  }
+  ```
+
+1. `TestAnyKShardsReconstructsDemo` — test all C(5,3)=10 combinations for RS(3,5):
+   Enumerate every 3-element subset of {0,1,2,3,4}; set the other 2 to nil; assert decode succeeds.
+   DO NOT run this for production RS(16,56) — C(56,16) ≈ 1.7×10^11 combinations.
+   Add an explicit comment: "Production combination exhaustion is infeasible; covered by
+   the reedsolomon library's own test suite."
+
+2. `TestShardSizeConstant`:
+
+  ```go
+  if erasure.ShardSize != 262144 {
+      t.Errorf("ShardSize=%d, want 262144 (DM §3 Invariant 7)", erasure.ShardSize)
+  }
+  // Belt-and-suspenders: also checked at profile level in TestProfileShardSizeIsConstant
+  ```
+
+1. `TestCrossProfileIncompatibility` — documents that different profiles produce
+   incompatible shard counts (NOT cross-decoding, which is impossible):
+
+  ```go
+  demoEng, _:= erasure.NewEngine(config.DemoProfile)        // RS(3,5)
+  prodEng,_  := erasure.NewEngine(config.ProductionProfile)  // RS(16,56)
+
+  // Demo EncodeSegment produces 5 shards; feeding them to prod DecodeSegment
+  // must fail at the len(shards) != TotalShards pre-condition.
+  demoInput := make([]byte, config.DemoProfile.DataShards * erasure.ShardSize)
+  demoShards, _:= demoEng.EncodeSegment(demoInput)
+  _, err := prodEng.DecodeSegment(demoShards)
+  // err must be non-nil; assert specific error type/message about wrong shard count
+  if err == nil {
+      t.Fatal("cross-profile decode must fail but returned nil error")
+  }
+  // Document WHY: different TotalShards (5 vs 56), caught by len(shards) pre-condition
+  ```
+
+1. `TestDecodeSegmentErrTooFewShards` — provide only `DataShards-1` non-nil shards.
+
+**NOTES:**
+
+- All test files import only standard library + `internal/erasure` + `internal/config`
+- No `internal/crypto` import needed here (AONT is tested separately)
+- Tests tagged for race: no goroutine usage needed, so `-race` adds no value here,
+    but the package-wide CI check (`go test ./... -race`) covers this by default
+
+**VERIFY:**
+
+  **ALL_TESTS_PASS:**
+
+  ```bash
+  $ go test -v ./internal/erasure/
+  EXPECT: exit 0; all subtests PASS
+  ```
+
+  **TEST_NAMES_PRESENT:**
+
+  ```bash
+  $ grep -c "^func Test" internal/erasure/engine_test.go
+  EXPECT: >= 5
+  ```
+
+  **COMBINATION_COMMENT:**
+
+  ```bash
+  $ grep -c "infeasible\|1.7.*10\|C(56,16)" internal/erasure/engine_test.go
+  EXPECT: >= 1  (documents why prod exhaustion is omitted)
+  ```
+
+  **NEGATIVE_CHECKS:**
+
+  ```bash
+  grep -n "cross-decode\|cross.*decode\|decode.*cross" internal/erasure/engine_test.go     && echo "WARN: cross-decode is impossible by precondition; test must document this"     || echo "PASS"
+  ```
+
+  **IMPORT_CONSTRAINT:**
+
+  ```bash
+  grep -n "internal/crypto" internal/erasure/engine_test.go     && echo "FAIL: erasure test must not import crypto (IC §9)" || echo "PASS"
+  ```
+
+  **CI_CHECK_14_STILL_PASSES:**
+
+  ```bash
+  $ go test -v -run TestProfileShardSizeIsConstant ./internal/config/
+  EXPECT: exit 0  (now uses real erasure.ShardSize cross-check from Session 3.1.1)
+  ```
 
 ---
 
@@ -2138,6 +2665,35 @@ production-profile schema generators.
 **Reference:** DM §2 through §9 (complete schema), DM §3 (invariants — all 7 must be
 enforced), IC §6 (row-level DML contracts — these constrain the schema's RSP definitions),
 MVP §5.5 (schema parameterisation), MVP §6.4 (migration requirements)
+
+**README.md:**
+
+```md
+  FILE: migrations/README.md
+
+  # Vyomanaut V2 — Database Migrations
+
+  ## Migration Generator
+
+  The schema generator produces profile-specific SQL. Always specify --profile explicitly.
+
+    go run migrations/generator.go --profile=prod > migrations/001_initial_schema.sql
+    go run migrations/generator.go --profile=demo > migrations/001_initial_schema_demo.sql
+
+  ## Rules (DM §9, MVP §6.4)
+
+  - Never apply a demo-profile schema to a production database.
+  - The generator embeds `-- Generated for profile: {prod|demo}` as the first SQL comment.
+  - Two CHECK constraints are profile-variable (shard_index range, available_shard_count range).
+  - All other DDL (RSPs, ENUMs, indexes, triggers) is profile-invariant.
+  - migrations/ requires 3 reviewers per .github/CODEOWNERS.
+  - Migration files: NNN_description.sql (zero-padded 3 digits, sequential, no gaps).
+  - Never edit a committed migration; write a new one.
+
+  ## Checklist
+
+  Run scripts/ci/migration_check.sh after every migration apply to verify DM §9 invariants.
+```
 
 ---
 
@@ -2174,6 +2730,7 @@ before applying.
 
 **Task:** Add to the migration SQL in order (DM §9: all `CREATE TYPE` statements before
 `CREATE TABLE`):
+
 - `provider_status` ENUM: `PENDING_ONBOARDING`, `VETTING`, `ACTIVE`, `DEPARTED` (DM §4.2)
 - `file_status` ENUM: `ACTIVE`, `DELETION_PENDING`, `DELETED` (DM §4.3, DM §9 checklist)
 - `assignment_status` ENUM: `ACTIVE`, `REPAIRING`, `PENDING_DELETION`, `DELETED` (DM §4.5)
