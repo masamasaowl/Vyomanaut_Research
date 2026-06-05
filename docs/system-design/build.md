@@ -1810,6 +1810,7 @@ IC §11 (constant-time tag comparison: NFR-019), REQ §5.4 NFR-019
   4. On success: return decrypted plaintext, nil
 
 **FILE:** `internal/crypto/errors.go`
+(**Note:** this file has already been created as part of Phase 2.4)
 **CONTENT (sentinel errors for this package):**
 
 ```go

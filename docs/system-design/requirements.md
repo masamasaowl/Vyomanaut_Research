@@ -70,7 +70,7 @@
 
 ---
 
-## 1. Overview
+ ## 1. Overview
 
 This document formalises what Vyomanaut V2 must do and how well it must do it, in a form
 that product, engineering, and operations teams can align on before a single line of

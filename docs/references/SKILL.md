@@ -19,7 +19,7 @@ Expert Go engineer implementing Vyomanaut V2: a privacy-first, provider-compensa
 
 ## 1. How Prompts Arrive
 
-The user pastes the **exact session text from `build.md`** that needs to be executed, plus any governing reference sections, directly into the prompt. The 7 major reference docs are:
+The user pastes the **exact session text from `build.md`** that needs to be executed, plus any governing reference sections, directly into the prompt. That pasted content is the contract — treat it as primary. There is 1 build doc and 6 major reference docs:
 
 | Documents | Description | Location in research repository |
 | --- | --- | --- |
@@ -31,18 +31,20 @@ The user pastes the **exact session text from `build.md`** that needs to be exec
 | interface-contracts (IC) | Wire-format contracts, Go package interfaces, forbidden patterns (13 sections) | https://github.com/masamasaowl/Vyomanaut_Research/blob/main/docs/system-design/interface-contracts.md |
 | openapi (OAS) | Authoritative REST/HTTP surface; all endpoint schemas | https://github.com/masamasaowl/Vyomanaut_Research/blob/main/docs/api/openapi.yaml |
 
-That pasted content is the contract — treat it as primary. Proceed directly to implementation; no plan confirmation needed unless there is a genuine ambiguity in the session text itself.
-
-**Working repo** (`https://github.com/masamasaowl/Vyomanaut_V2`) is **always in context** — read and write code there directly.
+**Working repo** (`https://github.com/masamasaowl/Vyomanaut_V2`) is **always in context** — go through it to get an overview of the project's progress
 
 **Research repo** (`https://github.com/masamasaowl/Vyomanaut_Research`) is **never in context** — it is too large to attach. When a session references a section that was not pasted (an ADR, an architecture section, a requirements paragraph), **ask the user to paste it**. Only fall back to `web_fetch` of the raw GitHub URL if the user asks you to fetch it directly.
 
-**Module path — never get this wrong:**
-
-```
-github.com/masamasaowl/Vyomanaut_V2
-internal imports: github.com/masamasaowl/Vyomanaut_V2/internal/<package>
-```
+**Sample Prompt given by user**
+<!-- Text inside "" is the prompt -->
+"Complete Phase 2.3 comprising of Sessions 2.3.1 and 2.3.2." 
+"Return the file internal/crypto/argon2.go with the necessary tests"
+"In the previous phase, we built internal/config/profile_test.go and tested it" 
+"References you will need for this phase:" 
+"build.md 
+// A code block from build.md acting as your key instruction" 
+"MVP/IC/DM/ARCH/REQ/OAS X.Y
+// A code block from the 6 reference docs, here X.Y represent the governing section of the doc"
 
 ---
 
@@ -51,7 +53,8 @@ internal imports: github.com/masamasaowl/Vyomanaut_V2/internal/<package>
 1. Read the pasted session text — it contains tasks, file names, and the VERIFY block.
 2. Check the import constraints (§4) for the package being written.
 3. If a governing reference is missing, ask the user for it before writing code.
-4. Execute every VERIFY command. Fix failures before declaring the session done.
+4. The project uses Go 1.26. Claude is allowed to use Go 1.22 wherever necessary after ensuring no version conflicts arise.
+5. Execute every VERIFY command. Fix failures before declaring the session done. (The grep checks are not meant for comments)
 
 Invariants are enforced **silently in code** — no checklist narration each session. The critical ones are embedded in §3 and §4.
 
@@ -61,7 +64,6 @@ Invariants are enforced **silently in code** — no checklist narration each ses
 
 **Go style**
 
-- Every exported symbol has a godoc comment ending with a period (`godot` rule).
 - Sentinel errors in `errors.go` — never `errors.New` inline at a call site.
 - No magic numbers — named constants or `NetworkProfile` fields only.
 - Platform-specific files use `//go:build` tags exactly as the session specifies.
@@ -73,7 +75,7 @@ Invariants are enforced **silently in code** — no checklist narration each ses
 - `t.Setenv` for env isolation, never `os.Setenv` in tests.
 - `//go:build !short` for performance tests, `//go:build integration` for tests needing external services.
 
-**Key invariants to enforce in code (not announced, just done)**
+**Key invariants to enforce in code**
 
 - `internal/payment/`: all amounts are `int64` paise — zero float identifiers.
 - `ChallengeNonce` return type is `[33]byte`, never `[32]byte`.
