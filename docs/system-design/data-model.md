@@ -1770,19 +1770,10 @@ NOW() AS scores_as_of   -- consumers must check age before using for payment dec
 - [ ]  New indexes `idx_chunk_assignments_vetting_provider_active` and `idx_chunk_assignments_vetting_provider` created.
 - [ ]  Nightly data integrity query documented: `SELECT COUNT(*) FROM audit_receipts ar JOIN chunk_assignments ca ON ca.chunk_id = ar.chunk_id AND ca.provider_id = ar.provider_id WHERE ar.file_id IS NULL AND ca.is_vetting_chunk = FALSE` must return 0.
 - [ ]  Invariant 6 added to code review checklist and pre-deployment validation suite.
-- [ ] Schema generated against the correct NetworkProfile:
-      run `migrations/generator.go --profile=prod` for production databases,
-      `migrations/generator.go --profile=demo` for demo databases.
-      Never apply a demo schema (shard_index BETWEEN 0 AND 4) to a production database
-      or vice versa. (ADR-031)
-- [ ] mv_provider_scores view regenerated at first startup of the target environment —
-      it is dropped and recreated from NetworkProfile scoring window values, not applied
-      as a migration. Verify by checking `scores_as_of` after first startup.
-- [ ] Both databases (demo_db and prod_db) are completely separate instances with
-      separate connection strings. Demo data must never enter the production database.
-      (ADR-031)
-- [ ] TestProfileShardSizeIsConstant passes in CI, confirming DemoProfile.ShardSize
-      == ProductionProfile.ShardSize == 262144. (ADR-031)
+- [ ] Schema generated against the correct NetworkProfile: run `migrations/generator.go --profile=prod` for production databases `migrations/generator.go --profile=demo` for demo databases. Never apply a demo schema (shard_index BETWEEN 0 AND 4) to a production database or vice versa. (ADR-031)
+- [ ] mv_provider_scores view regenerated at first startup of the target environment — it is dropped and recreated from NetworkProfile scoring window values, not applied as a migration. Verify by checking `scores_as_of` after first startup.
+- [ ] Both databases (demo_db and prod_db) are completely separate instances with separate connection strings. Demo data must never enter the production database. (ADR-031)
+- [ ] TestProfileShardSizeIsConstant passes in CI, confirming DemoProfile.ShardSize == ProductionProfile.ShardSize == 262144. (ADR-031)
 
 **Migration file naming convention.** Files are named `NNN_short_description.sql` where NNN is zero-padded to three digits and sequential with no gaps. If migration 003 is abandoned, 004 is still named 004. The `short_description` uses underscores, lowercase, no special characters, and describes the change rather than the ticket number. A migration that only adds nullable columns or columns with defaults does not require a rollback file. A migration that changes a column type, removes a column, or alters a constraint requires a corresponding `NNN_short_description.down.sql`.
 

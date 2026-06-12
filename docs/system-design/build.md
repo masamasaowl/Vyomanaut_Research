@@ -2073,52 +2073,6 @@ DataShards/TotalShards. Zero imports from other `internal/` packages (IC §9).
 **Reference:** IC §5.2 (full interface), MVP §3.2 (erasure params table),
 DM §3 Invariant 7 (ShardSize constant), IC §9 (import constraints), ARCH §10 Stage 2 (AONT → RS handoff)
 
-**Doc.go:**
-
-```go
-// Package erasure implements Reed-Solomon erasure coding parameterised by NetworkProfile.
-//
-// # Design Role (architecture.md §10 Stage 2)
-//
-// Receives an AONT package from internal/crypto.AONTEncodeSegment and produces
-// TotalShards independent fragments via Engine.EncodeSegment. On retrieval,
-// Engine.DecodeSegment reconstructs the AONT package, which is then passed to
-// internal/crypto.AONTDecodePackage. The two packages are always used in sequence;
-// neither is standalone (ADR-022).
-//
-// # Key Invariant (DM §3 Invariant 7, ADR-031)
-//
-// ShardSize = 262144 (256 KB) is a compile-time constant. It is identical in demo
-// and production modes. No profile field changes this value. Any code that receives
-// a shard of different size has a bug in the caller, not this package.
-//
-// # Profile Parameterisation
-//
-//   Production: DataShards=16, ParityShards=40, TotalShards=56  (RS(16,56))
-//   Demo:       DataShards=3,  ParityShards=2,  TotalShards=5   (RS(3,5))
-//
-// The active profile is injected at construction time via NewEngine(profile).
-// No package-level state exists; multiple Engine instances with different profiles
-// may coexist safely.
-//
-// # Import Constraint (IC §9)
-//
-// This package imports zero other internal/ packages. It receives config.NetworkProfile
-// by value at construction time only. The config package may NOT import erasure.
-//
-// # Goroutine Safety
-//
-// Engine is goroutine-safe after construction. EncodeSegment and DecodeSegment
-// are stateless over the Engine struct.
-//
-// # Files
-//
-//   params.go     — const ShardSize = 262144; Engine struct definition
-//   engine.go     — NewEngine, EncodeSegment, DecodeSegment, ErrTooFewShards, ErrShardSize
-//   engine_test.go — round-trip (prod+demo), any-k-shards (demo), ShardSize assertion
-package erasure
-```
-
 ---
 
 ### Phase 3.1 — Engine Construction
@@ -2133,7 +2087,6 @@ package erasure
 
 - internal/erasure/doc.go exists (stub from Session 0.1.3)
 - internal/config/profiles_test.go exists (from Session 1.2.1)
-- Sessions 2.1.1 through 2.5.1 are complete
 
 **STEP 1** — Create internal/erasure/params.go:
 
@@ -2144,7 +2097,7 @@ package erasure
 
     package erasure
 
-    import "github.com/masamasaowl/vyomanaut/internal/config"
+    import "github.com/masamasaowl/Vyomanaut_V2/internal/config"
 
     // ShardSize is the fixed size of every erasure-coded shard in bytes.
     // This value is identical in demo and production modes (DM §3 Invariant 7, ADR-031).
@@ -2189,7 +2142,7 @@ package erasure
   **REPLACE the TODO block with:**
 
   ```go
-    import "github.com/masamasaowl/vyomanaut/internal/erasure"
+    import "github.com/masamasaowl/Vyomanaut_V2/internal/erasure"
     // Cross-check: compile-time const must equal runtime profile field.
     if config.ProductionProfile.ShardSize != erasure.ShardSize {
         t.Errorf("ProductionProfile.ShardSize=%d != erasure.ShardSize=%d",
@@ -2202,7 +2155,7 @@ package erasure
   ```
 
 **IMPORTS REQUIRED in params.go:**
-  "github.com/masamasaowl/vyomanaut/internal/config"
+  "github.com/masamasaowl/Vyomanaut_V2/internal/config"
 
 **VERIFY:**
 
@@ -2314,7 +2267,7 @@ package erasure
  ```go
   "fmt"
   "github.com/klauspost/reedsolomon"
-  "github.com/masamasaowl/vyomanaut/internal/config"
+  "github.com/masamasaowl/Vyomanaut_V2/internal/config"
  ```
 
 **VERIFY:**
@@ -2666,35 +2619,6 @@ production-profile schema generators.
 enforced), IC §6 (row-level DML contracts — these constrain the schema's RSP definitions),
 MVP §5.5 (schema parameterisation), MVP §6.4 (migration requirements)
 
-**README.md:**
-
-```md
-  FILE: migrations/README.md
-
-  # Vyomanaut V2 — Database Migrations
-
-  ## Migration Generator
-
-  The schema generator produces profile-specific SQL. Always specify --profile explicitly.
-
-    go run migrations/generator.go --profile=prod > migrations/001_initial_schema.sql
-    go run migrations/generator.go --profile=demo > migrations/001_initial_schema_demo.sql
-
-  ## Rules (DM §9, MVP §6.4)
-
-  - Never apply a demo-profile schema to a production database.
-  - The generator embeds `-- Generated for profile: {prod|demo}` as the first SQL comment.
-  - Two CHECK constraints are profile-variable (shard_index range, available_shard_count range).
-  - All other DDL (RSPs, ENUMs, indexes, triggers) is profile-invariant.
-  - migrations/ requires 3 reviewers per .github/CODEOWNERS.
-  - Migration files: NNN_description.sql (zero-padded 3 digits, sequential, no gaps).
-  - Never edit a committed migration; write a new one.
-
-  ## Checklist
-
-  Run scripts/ci/migration_check.sh after every migration apply to verify DM §9 invariants.
-```
-
 ---
 
 ### Phase 4.1 — Migration Generator
@@ -2707,8 +2631,8 @@ MVP §5.5 (schema parameterisation), MVP §6.4 (migration requirements)
 
 **PRECONDITIONS:**
 
-- `internal/config` package is complete (M1 done)
-- `migrations/README.md` created (see doc.go Propagation above)
+- `internal/config` package is complete
+- `migrations/README.md` created
 
 **STEP 1 — Create migrations/generator.go:**
 
