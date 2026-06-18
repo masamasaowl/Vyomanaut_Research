@@ -586,10 +586,10 @@ challenge streams without queuing delay.
   `response_hash`. If this check fails, respond with `status = 0x02`.
 
 **Post-conditions on `status = 0x00`:**
+
 - `response_hash` = `SHA-256(chunk_data || challenge_nonce)` — unforgeable without the chunk
 - `provider_sig` covers both the response and the server-set timestamp — prevents replay
-- The provider has NOT recorded the receipt in any local database — the microservice owns
-  the authoritative receipt record
+- The provider has NOT recorded the receipt in any local database — the microservice owns the authoritative receipt record
 
 >**NOTE:** The correctness of response_hash — that it was computed over the actual 256 KB chunk and not fabricated — is guaranteed by the computational hardness of SHA-256 preimage inversion, not by independent microservice verification. Please note the microservice never verifies the response_hash, it knows the chunk_id but not the 256 KB chunk data making the SHA-256(chunk_data || challenge_nonce) unverifiable. It only verifies the Ed25519 signature.
 
