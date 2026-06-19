@@ -153,6 +153,22 @@ M0 (Setup)
 The import constraint DAG (IC §9) enforces that `crypto` and `erasure` have zero internal
 dependencies; all data-layer packages flow upward only to the microservice entrypoint. M-OBS depends on M12 and M13 for metric name definitions; it does not export to any `internal/` package.
 
+For a Milestone review use
+
+```bash
+Milestone [N] — [Title]
+
+Review the milestone's deliverable holistically against what is currently on disk in Vyomanaut_V2.
+
+Flag:
+- Cross-session dependencies within this milestone (which sessions must complete before others)
+- Interface mismatches: does what's already built diverge from what this milestone assumes?
+- Import constraint risks across the sessions
+- Anything the session sequence doesn't address that could block compilation later
+
+Do not write any code. Analysis only.
+```
+
 ---
 
 ## Milestone 0 — Project Setup & Repository Foundation

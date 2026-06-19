@@ -4,103 +4,108 @@ description: >
   Expert build assistant for the Vyomanaut V2 distributed storage system. Use this skill
   whenever working on any implementation task for Vyomanaut V2: writing Go code, implementing
   milestones or sessions from build.md, wiring subsystems, writing tests, debugging errors,
-  reviewing generated code, or picking up where a previous build session left off.
-  Always trigger this skill when the user says "build session", "implement session", "next
-  session", "continue build", or references any Milestone (M0–M18, M-OBS) or Session number
-  (e.g. "Session 2.3.1") from the Vyomanaut build plan. Also trigger when any Vyomanaut
-  system design document is open and the user asks to write code.
+  or picking up where a previous build session left off. Trigger on "build session",
+  "implement session", "next session", "continue build", or any Milestone (M0–M18, M-OBS)
+  or Session number (e.g. "Session 2.3.1") from the Vyomanaut build plan.
 ---
 
 # Vyomanaut V2 — Build Skill
 
-Expert Go engineer implementing Vyomanaut V2: a privacy-first, provider-compensated Distributed cloud storage network for India powered by over a billion devices.
+Expert Go engineer implementing Vyomanaut V2: a privacy-first, provider-compensated distributed cloud storage network for India.
 
 ---
 
-## 1. How Prompts Arrive
+## 1. Context
 
-The user pastes the **exact session text from `build.md`** that needs to be executed, plus any governing reference sections, directly into the prompt. That pasted content is the contract — treat it as primary. There is 1 build doc and 6 major reference docs:
+**Working repo** (`Vyomanaut_V2`) is in project context — scan existing files before writing anything.
+**Research repo** (`Vyomanaut_Research`) is NOT in context — ask the user to paste needed sections; only `web_fetch` the raw GitHub URL if they explicitly ask.
 
-| Documents | Description | Location in research repository |
-| --- | --- | --- |
-| build.md | Contains the entire build procedure divided across Milestones, phases and sessions. It will mandatorily be present inside the prompt.(18 Milestones) | https://github.com/masamasaowl/Vyomanaut_Research/blob/main/docs/system-design/build.md |
-| mvp (MVP) | NetworkProfile, demo/prod mode, repository layout, CI pipeline (8 seections) | https://github.com/masamasaowl/Vyomanaut_Research/blob/main/docs/system-design/mvp.md |
-| architecture (ARCH) | system overview, component descriptions, deployment topology, relay infrastructure (28 sections) | https://github.com/masamasaowl/Vyomanaut_Research/blob/main/docs/system-design/architecture.md |
-| requirements (REQ) | functional and non-functional requirements, completeness gates, capacity calculations (11 sections) | https://github.com/masamasaowl/Vyomanaut_Research/blob/main/docs/system-design/requirements.md |
-| data-model (DM) | PostgreSQL schema, invariants, indexes, row security policies (9 sections) | https://github.com/masamasaowl/Vyomanaut_Research/blob/main/docs/system-design/data-model.md |
-| interface-contracts (IC) | Wire-format contracts, Go package interfaces, forbidden patterns (13 sections) | https://github.com/masamasaowl/Vyomanaut_Research/blob/main/docs/system-design/interface-contracts.md |
-| openapi (OAS) | Authoritative REST/HTTP surface; all endpoint schemas | https://github.com/masamasaowl/Vyomanaut_Research/blob/main/docs/api/openapi.yaml |
+The user pastes the **exact session text from `build.md`** plus any required reference sections. That pasted content is the contract. The six reference doc tags are:
 
-**Working repo** (`https://github.com/masamasaowl/Vyomanaut_V2`) is **always in context** — go through it to get an overview of the project's progress
+| Tag | Document |
+|---|---|
+| **IC** | Interface contracts — wire formats, Go interfaces, forbidden patterns |
+| **DM** | Data model — PostgreSQL schema, invariants, row security policies |
+| **ARCH** | Architecture — system design, component details, deployment topology |
+| **REQ** | Requirements — FRs, NFRs, completeness gates |
+| **MVP** | NetworkProfile, demo/prod mode, repo layout, CI pipeline |
+| **OAS** | REST/HTTP endpoint schemas (authoritative) |
 
-**Research repo** (`https://github.com/masamasaowl/Vyomanaut_Research`) is **never in context** — it is too large to attach. When a session references a section that was not pasted (an ADR, an architecture section, a requirements paragraph), **ask the user to paste it**. Only fall back to `web_fetch` of the raw GitHub URL if the user asks you to fetch it directly.
-
-**Sample Prompt given by user**
-<!-- Text inside "" is the prompt -->
-"Complete Phase 2.3 comprising of Sessions 2.3.1 and 2.3.2." 
-"Return the file internal/crypto/argon2.go with the necessary tests"
-"In the previous phase, we built internal/config/profile_test.go and tested it" 
-"References you will need for this phase:" 
-"build.md 
-// A code block from build.md acting as your key instruction" 
-"MVP/IC/DM/ARCH/REQ/OAS X.Y
-// A code block from the 6 reference docs, here X.Y represent the governing section of the doc"
+**Go version:** The project targets Go 1.26, but the build environment only has **Go 1.22**. Write strictly 1.22-compatible code. Never use post-1.22 language features or `//go:build go1.26` guards. All constructs in this project are 1.22-compatible.
 
 ---
 
-## 2. Execution
+## 2. Execution Protocol
 
-1. Read the pasted session text — it contains tasks, file names, and the VERIFY block.
-2. Check the import constraints (§4) for the package being written.
-3. If a governing reference is missing, ask the user for it before writing code.
-4. The project uses Go 1.26. Claude is allowed to use Go 1.22 wherever necessary after ensuring no version conflicts arise.
-5. Execute every VERIFY command. Fix failures before declaring the session done. (The grep checks are not meant for comments)
+**Step 1 — Scan existing files.**
+Read the `Vyomanaut_V2` project context to understand what is already on disk. Never reproduce a file that already exists. Pre-existing package files from prior sessions are correct and already compiled — trust them.
 
-Invariants are enforced **silently in code** — no checklist narration each session. The critical ones are embedded in §3 and §4.
+**Step 2 — Identify outputs.**
+The session's `FILE:` blocks define the complete list of files to create or modify. Nothing outside those blocks belongs in the output.
+
+**Step 3 — Engineering Review (one deliberate thinking step).**
+Before writing a single line of code, pause and evaluate:
+- Does the session's specified approach fit the existing packages on disk without friction or hidden conflicts?
+- Is the algorithm complete, or are there edge cases the session text didn't address (e.g. nil handling, concurrent access, partial failure)?
+- Is there a simpler or more idiomatic Go implementation that still satisfies every `FILE:` constraint and `VERIFY` requirement?
+
+If yes to any: note the improvement concisely in 1–2 sentences, then proceed with the better approach while remaining fully spec-compliant. If nothing needs changing, move on without narrating it.
+
+**Step 4 — Check imports.**
+Verify the session's target package against §4 before writing.
+
+**Step 5 — Write files.**
+Use `create_file` for net-new files. Use `str_replace` for targeted edits to existing files. Never `create_file` a path that already exists on disk.
+
+**Step 6 — Compile.**
+Run `go build` (on the path specified in the session). All prior-session dependencies are already on disk; only the current session's new files need to be written.
+
+**Step 7 — Run VERIFY.**
+Execute every shell command in the `VERIFY` block. Fix genuine failures. Declare done only when all checks pass.
+
+---
+
+### On grep counts
+
+`grep` counts every match including doc-comment lines. An exact `EXPECT: N` includes comment occurrences. **Never shorten, reword, or remove a doc comment solely to make a count match.**
 
 ---
 
 ## 3. Code Standards
 
-**Go style**
-
 - Sentinel errors in `errors.go` — never `errors.New` inline at a call site.
 - No magic numbers — named constants or `NetworkProfile` fields only.
-- Platform-specific files use `//go:build` tags exactly as the session specifies.
+- `//go:build` tags exactly as specified in the session. Always create the `_other.go` stub alongside any tagged file.
 - `fmt.Errorf("pkg: %w", err)` for wrapping; never return raw library errors.
+- Test function names must match the session text exactly. `t.Setenv` for env isolation, never `os.Setenv`.
+- `//go:build !short` for performance tests; `//go:build integration` for tests requiring external services.
 
-**Testing**
+**Silent invariants — enforced in code, never narrated per session:**
 
-- Test function names must match BUILD exactly (e.g. `TestProfileShardSizeIsConstant`).
-- `t.Setenv` for env isolation, never `os.Setenv` in tests.
-- `//go:build !short` for performance tests, `//go:build integration` for tests needing external services.
-
-**Key invariants to enforce in code**
-
-- `internal/payment/`: all amounts are `int64` paise — zero float identifiers.
+- `internal/payment/` — all monetary amounts are `int64` paise; zero float identifiers.
 - `ChallengeNonce` return type is `[33]byte`, never `[32]byte`.
-- `ShardSize = 262144` is a compile-time constant, identical in both profiles.
-- `AppendChunk` called only from the single writer goroutine.
-- `IsVettingChunk()` must be called before every `EnqueueJob` call.
-- Ed25519 signing inputs: fixed-layout bytes, never `json.Marshal`.
-- 0-RTT disabled on streams whose protocol ID ends in `audit`, `challenge`, or `gc`.
-- `payment.Penalise()` cannot be called from `internal/repair` — wire it in `cmd/microservice/main.go` (BUILD Session 12.1.1).
+- `ShardSize = 262144` — compile-time constant, identical in demo and prod profiles.
+- `AppendChunk` — single writer goroutine only; never called from concurrent goroutines directly.
+- `IsVettingChunk()` — must be called before every `EnqueueJob`.
+- Ed25519 signing inputs — fixed-layout byte sequences, never `json.Marshal`.
+- 0-RTT policy — explicit protocol deny-list (not suffix or pattern matching).
+- `payment.Penalise()` — wired in `cmd/microservice/main.go` (Session 12.1.1), never called from `internal/repair`.
 
 ---
 
 ## 4. Import Constraints (IC §9 — hard rules)
 
 ```
-internal/crypto        → no other internal/ imports
-internal/erasure       → no other internal/ imports
-internal/storage       → no internal/payment, scoring, or repair
+internal/crypto        → no other internal/
+internal/erasure       → no other internal/
+internal/storage       → NOT payment, scoring, repair
 internal/audit         → config, crypto, storage, p2p  — NOT scoring, repair, payment
 internal/scoring       → config, crypto, audit          — NOT repair, payment, p2p
 internal/repair        → config, crypto, erasure, scoring — NOT payment, p2p
 internal/payment       → config, crypto                 — NOT repair, p2p
 internal/vettingchunk  → config, crypto, storage, p2p
 internal/client/*      → config, crypto, erasure        — NOT cmd/
-cmd/*                  → any internal/* (wiring only, no business logic)
+cmd/*                  → any internal/* (wiring only; no business logic)
 ```
 
 ---
@@ -108,75 +113,81 @@ cmd/*                  → any internal/* (wiring only, no business logic)
 ## 5. Forbidden Patterns (IC §11)
 
 - `float64 / float32 / FLOAT / DECIMAL / NUMERIC` anywhere in `internal/payment/`
-- Hardcoded Argon2id params — always `profile.Argon2Time`, `profile.Argon2Memory`, `profile.Argon2Threads`
+- Hardcoded Argon2id params — always `profile.Argon2{Time,Memory,Threads}`
 - Hardcoded shard counts — always `profile.DataShards`, `profile.TotalShards`
-- `challenge_nonce BYTEA(32)` in SQL — must be 33 bytes
+- `challenge_nonce BYTEA(32)` in any SQL — must always be 33 bytes
 - `json.Marshal` in any Ed25519 signing input path
-- AONT key K reused across segments — fresh `crypto/rand` per encode
-- BIP-39 words from real accounts in test vectors — RFC test vectors only
+- AONT key K reused across segments — fresh `crypto/rand` per encode call
 - UPI Collect API strings (deprecated 28 Feb 2026)
-- Razorpay live keys (`rzp_live_*`) in source files
-- Business logic in `cmd/` packages
 - Runtime branching on the `Mode` string — use `NetworkProfile` fields
-- Module path `github.com/masamasaowl/vyomanaut` (lowercase)
-- `//nolint` without a comment citing the BUILD reference that permits it
+- Business logic in `cmd/` packages
+- `//nolint` without a comment citing the IC or BUILD reference that permits it
 
 ---
 
-## 6. Demo vs Prod Profile Quick Reference
+## 6. Demo vs Prod Quick Reference
 
 All values come from `NetworkProfile` — never hardcoded.
 
 | Parameter | Demo | Prod |
-| --- | --- | --- |
+|---|---|---|
 | `DataShards` / `TotalShards` | 3 / 5 | 16 / 56 |
 | `ShardSize` | **262144 (identical)** | **262144** |
+| `MinDistinctASNs` | **5 (not 2 — MVP §7.1)** | **5** |
 | `VettingMinPasses` | 5 | 80 |
 | `DepartureThreshold` | 10 min | 72 h |
 | `PollingInterval` | 2 min | 24 h |
 | `Argon2Time / Memory / Threads` | 1 / 4096 KiB / 1 | 3 / 65536 KiB / 4 |
 | `GCRetryBackoff` | 10s, 30s, 2m | 5m, 15m, 60m |
 | `ReleaseComputationInterval` | 2 min ticker | 0 (calendar, 23rd) |
-| `PaymentMode` | "mock" | "razorpay_live" |
-| `MinActiveProviders` | 5 | 56 |
-| `MinDistinctASNs` | **5 (not 2 — see MVP §7.1)** | **5** |
+| `PaymentMode` | `"mock"` | `"razorpay_live"` |
 
 ---
 
 ## 7. Session Output
 
-Concise closing summary at the end of every session:
-
 ```
 ✅ Session [ID] — [Title]
-Files created: [paths]
+Files created:  [paths]
 Files modified: [paths]
-Tests: [function names]
-VERIFY: [each check → PASS / output]
+Tests:          [function names]
+VERIFY:         [each check → PASS / actual output]
+Engineering:    [any judgment applied in Step 3, or "none"]
 TODOs deferred: [list with target session, or "none"]
-```
-
-**Context handoff** — produce only when the session is long, spans multiple files, or leaves open TODOs that affect the next session. Skip it for short single-file sessions. Format when needed:
-
-```
-🔁 HANDOFF — [Session ID]
-Files on disk: [path — status]
-Open TODOs: [Session X.Y.Z: description]
-Next: [Session ID] — [Title]
 ```
 
 ---
 
 ## 8. Build Blockers
 
-When a genuine contradiction between governing documents is found, stop and output:
+When a genuine contradiction between governing documents is found:
 
 ```
 🔴 BUILD BLOCKER — [Short Title]
-Conflict: [what document A says] vs [what document B says]
-Affected: [file or function]
+Conflict:  [doc A says X] vs [doc B says Y]
+Affected:  [file or function]
 Proposed resolution: [with reasoning]
 Action required: confirm / update doc / both
 ```
 
-Do not guess. Wait for confirmation before proceeding.
+Stop immediately. Do not guess or proceed until the user confirms.
+
+---
+
+## 9. Standard session prompt
+
+```
+/build
+Session [X.Y.Z] — [Title]
+
+Previous: Session [A.B.C] complete.
+Files on disk: [e.g. internal/config/network_profile.go, internal/config/profiles.go]
+VERIFY from previous: all PASS  (or the checks that failed and what the output was)
+
+[Exact session text from build.md verbatim]
+
+References:
+[IC §N.N — paste the section]
+[DM §N   — paste the section]
+```
+---
