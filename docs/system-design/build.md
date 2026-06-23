@@ -4378,7 +4378,7 @@ synthetic (vetting) or real; both use identical code paths (ADR-030, DM §3 Inva
 
 - **IC §5.3** — `ChunkStore` interface: all six methods, five sentinel errors, concurrency contract
 - **ARCH §16** — Provider Storage Engine: WiscKey design, vLog entry layout, audit lookup path, single-writer rule, crash recovery, GC
-- **DM §27.1** — Dimensions Table: `vLogEntrySize = 262,212 bytes`, RocksDB index entry `= 44 bytes`, Bloom filter 10 bits/key
+- **ARCH §27.1** — Dimensions Table: `vLogEntrySize = 262,212 bytes`, RocksDB index entry `= 44 bytes`, Bloom filter 10 bits/key
 - **MVP §8.2** — File inventory for `internal/storage`
 - **ARCH §4.1** — RocksDB CGo build note: `linxGnu/grocksdb`, pinned Docker image in CI
 - **IC §11** — Forbidden: breaking the single-writer invariant
@@ -4397,7 +4397,7 @@ go get github.com/linxGnu/grocksdb
 
 ### Phase 5.1 — ChunkStore Interface & vLog
 
-**Reference:** IC §5.3, ARCH §16 (vLog entry format, audit lookup path, single-writer rule), DM §27.1 (entry sizes)
+**Reference:** IC §5.3, ARCH §16 (vLog entry format, audit lookup path, single-writer rule), ARCH §27.1 (entry sizes)
 
 ---
 
@@ -4415,7 +4415,7 @@ go get github.com/linxGnu/grocksdb
 2. Create `internal/storage/errors.go` with the five sentinel errors from IC §5.3.
 3. Create `internal/storage/store.go` with:
    - `const vLogEntrySize = 262212` derived from ARCH §16: `chunk_id(32) + chunk_size(4) + chunk_data(262144) + content_hash(32)`. Every read and write uses this fixed size.
-   - `const indexValueSize = 12` — RocksDB value bytes: `vlog_offset(uint64=8) + chunk_size(uint32=4)`. The RocksDB key is the 32-byte `chunk_id`; total entry on disk ≈ 44 bytes (DM §27.1).
+   - `const indexValueSize = 12` — RocksDB value bytes: `vlog_offset(uint64=8) + chunk_size(uint32=4)`. The RocksDB key is the 32-byte `chunk_id`; total entry on disk ≈ 44 bytes (ARCH §27.1).
    - The `ChunkStore` interface with all six methods from IC §5.3 and the mandatory concurrency comment on `AppendChunk`.
 
 **FILE:** `internal/storage/errors.go`
@@ -4427,7 +4427,7 @@ import "errors"
 
 var (
     // ErrChunkNotFound is returned by LookupChunk when the chunk is absent from the index.
-    // The Bloom filter exits fast on this path — no vLog disk I/O occurs (ARCH §16, DM §27.1).
+    // The Bloom filter exits fast on this path — no vLog disk I/O occurs (ARCH §16, ARCH §27.1).
     ErrChunkNotFound = errors.New("storage: chunk not found")
 
     // ErrContentHashMismatch is returned by LookupChunk when SHA-256(chunk_data)
@@ -4456,19 +4456,19 @@ package storage
 
 import "context"
 
-// vLogEntrySize is the fixed byte size of every vLog entry (ARCH §16, DM §27.1).
+// vLogEntrySize is the fixed byte size of every vLog entry (ARCH §16, ARCH §27.1).
 // Layout: chunk_id(32) + chunk_size(4) + chunk_data(262144) + content_hash(32) = 262212.
 // Every read and write uses this exact size; no variable-length entries exist.
 const vLogEntrySize = 262212
 
-// indexValueSize is the byte size of the RocksDB value per chunk index entry (DM §27.1).
+// indexValueSize is the byte size of the RocksDB value per chunk index entry (ARCH §27.1).
 // Layout: vlog_offset(uint64=8) + chunk_size(uint32=4) = 12 bytes.
 // The RocksDB key is the 32-byte chunk_id; total on-disk entry ≈ 44 bytes.
 const indexValueSize = 12
 
 // ChunkStore is the WiscKey key-value separated chunk storage engine (ARCH §16, ADR-023).
 // RocksDB holds the small index; the append-only vLog holds all chunk data.
-// Write amplification ≈ 1.0 at 256 KB values (ARCH §4.1, DM §27.1).
+// Write amplification ≈ 1.0 at 256 KB values (ARCH §4.1, ARCH §27.1).
 //
 // IMPORT CONSTRAINT: This package must NOT import internal/payment, internal/scoring,
 // or internal/repair (IC §9).
@@ -4499,7 +4499,7 @@ type ChunkStore interface {
     // LookupChunk retrieves a chunk from the vLog by content address and verifies integrity.
     // Internally: Bloom filter → RocksDB index → vLog pread → SHA-256 verify (ARCH §16).
     // The RocksDB step typically hits the block cache — no disk I/O for the index.
-    // The vLog step is one random disk read: ~1 ms SSD, ~12-15 ms HDD (DM §27.1).
+    // The vLog step is one random disk read: ~1 ms SSD, ~12-15 ms HDD (ARCH §27.1).
     //
     // Goroutine-safe: yes (read-only via pread; concurrent with the writer goroutine).
     // Post-conditions (on nil error):
@@ -4665,7 +4665,7 @@ import (
     "os"
 )
 
-// vLog entry field byte offsets. Derived from vLogEntrySize = 262212 (ARCH §16, DM §27.1).
+// vLog entry field byte offsets. Derived from vLogEntrySize = 262212 (ARCH §16, ARCH §27.1).
 // Layout: [chunk_id:32][chunk_size:4][chunk_data:262144][content_hash:32]
 const (
     vlogOffChunkID      = 0
@@ -4826,9 +4826,9 @@ NEGATIVE_CHECKS:
 **TASK:**
 
 1. Create `internal/storage/index.go` defining the `rocksDBIndex` struct and all its operations.
-2. Configure the Bloom filter at **10 bits per key** (~1% false-positive rate) so that audit challenges for unassigned chunks exit via the filter with no disk I/O (ARCH §16, DM §27.1).
+2. Configure the Bloom filter at **10 bits per key** (~1% false-positive rate) so that audit challenges for unassigned chunks exit via the filter with no disk I/O (ARCH §16, ARCH §27.1).
 3. Configure a 64 MB LRU block cache so the index remains warm after start-up — audit challenge lookups then require no disk I/O for the index step (ARCH §16).
-4. Use **two column families** — `"default"` for the data index and `"dht-keys"` for cached DHT keys. The 44-byte DM §27.1 sizing refers to `"default"` CF entries only. The DHT key cache (IC §12.2, ARCH §13) is stored in `"dht-keys"` as `chunk_id(32) → dht_key(32)`.
+4. Use **two column families** — `"default"` for the data index and `"dht-keys"` for cached DHT keys. The 44-byte ARCH §27.1sizing refers to `"default"` CF entries only. The DHT key cache (IC §12.2, ARCH §13) is stored in `"dht-keys"` as `chunk_id(32) → dht_key(32)`.
 5. RocksDB key: `chunk_id` (32 bytes). RocksDB value (default CF): `vlog_offset(uint64 big-endian=8) + chunk_size(uint32 big-endian=4) = 12 bytes`.
 
 **FILE:** `internal/storage/index.go`
@@ -4843,13 +4843,13 @@ import (
     "github.com/linxGnu/grocksdb"
 )
 
-// rocksDBIndex wraps the RocksDB instance used as the WiscKey chunk index (ARCH §16, DM §27.1).
+// rocksDBIndex wraps the RocksDB instance used as the WiscKey chunk index (ARCH §16, ARCH §27.1).
 //
 // Column families:
 //   "default"  — chunk_id(32-byte key) → vlog_offset(uint64)+chunk_size(uint32) = 12-byte value
 //   "dht-keys" — chunk_id(32-byte key) → dht_key(32-byte value)
 //
-// The "default" CF entry total ≈ 44 bytes (DM §27.1: key=32, value=12).
+// The "default" CF entry total ≈ 44 bytes (ARCH §27.1: key=32, value=12).
 // The "dht-keys" CF stores pre-computed DHT keys for republication (IC §12.2, ARCH §13).
 type rocksDBIndex struct {
     db       *grocksdb.DB
@@ -4860,7 +4860,7 @@ type rocksDBIndex struct {
 }
 
 // openRocksDBIndex opens (or creates) the RocksDB index at dbPath.
-// Bloom filter: 10 bits per key, ~1% false-positive rate (ARCH §16, DM §27.1).
+// Bloom filter: 10 bits per key, ~1% false-positive rate (ARCH §16, ARCH §27.1).
 // Block cache: 64 MB LRU so the index stays warm — audit lookups require no disk I/O.
 func openRocksDBIndex(dbPath string) (*rocksDBIndex, error) {
     bbto := grocksdb.NewDefaultBlockBasedTableOptions()

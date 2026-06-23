@@ -219,23 +219,6 @@ application layer.
 
 ---
 
-#### RocksDB + custom vLog (WiscKey) — provider daemon
-
-| Rejected alternative | Reason |
-|---|---|
-| Standard RocksDB (values in LSM) | Write amplification 10–14× at 256 KB values (Paper 26); storing 50 GB would write 500–700 GB to disk, breaching NFR-011 |
-| Flat object store (one file per chunk) | No Bloom filter; audit TIMEOUT result for unassigned chunks requires disk I/O; no GC primitive |
-| BoltDB / badger | Both store large values in the LSM tree; same write amplification problem |
-| LevelDB | Same write amplification; no per-key Bloom filter config; no `fallocate(FALLOC_FL_PUNCH_HOLE)` in Go wrappers for GC |
-
-**Performance contract:** WiscKey write amplification ≈ 1.0 at 256 KB (Paper 27 Figure 10),
-satisfying NFR-013. Bloom filter (10 bits/key, ~1% FP rate) eliminates disk I/O for all
-audit challenges on unassigned chunks. One random disk read per lookup: ~1 ms SSD,
-~12–15 ms HDD — both within NFR-008 p99 thresholds.  
-**Lock-in risk.** Medium — vLog format is documented in ADR-023; migrating the index library
-requires translating crash-recovery tail-scan and GC logic.
-
-**RocksDB CGo build note:**RocksDB (`linxGnu/grocksdb`) is a CGo dependency requiring a pre-built shared library. The CI pipeline uses a pinned Docker image with the correct `librocksdb` version pre-installed. The exact image tag and RocksDB version are specified in `.github/workflows/ci.yml` and must be updated together when the Go binding version changes. A mismatch produces a link-time failure, not a runtime failure — this is detectable in CI.
 
 ---
 
