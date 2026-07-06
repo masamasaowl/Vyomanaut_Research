@@ -173,196 +173,1236 @@ Do not write any code. Analysis only.
 
 ## Milestone 7 — Audit System (`internal/audit`)
 
-**Deliverable:** Challenge generation, response validation, two-phase crash-safe receipt
-write, cluster secret cache, and JIT detection. The audit package does NOT import
-`scoring`, `repair`, or `payment` (IC §9 constraint).
+**Deliverable:** Challenge generation, response validation, two-phase crash-safe receipt write, cluster secret cache, and JIT detection.
 
-**Reference:** IC §5.5 (full package contract), IC §3.2 (Ed25519 signing conventions),
-IC §4.2 (audit challenge protocol wire format — this is what the microservice sends;
-the provider-side handler is in M8 provider daemon), DM §4.7 (audit_receipts schema),
-IC §8 (secrets manager contract), MVP §8.2 (file inventory for internal/audit)
+**Package import constraints (IC §9):** `internal/audit` must **NOT** import `internal/scoring`, `internal/repair`, or `internal/payment` — score updates and repair triggers are the caller's responsibility; the microservice entrypoint (Milestone 12) orchestrates those after the audit result is written. `internal/audit` **MAY** import `internal/config` (for `NetworkProfile.RequireSecretsManager`, consumed in Phase 7.4) and `internal/crypto` (for `VerifyBytes`, consumed in Phase 7.2, per IC §3.2's canonical verification procedure).
+
+**Reference:** IC §5.5 (full package contract), IC §3.2 (Ed25519 signing conventions), IC §4.2 (audit challenge protocol wire format — this is what the microservice sends; the provider-side stream handler is **Milestone 13, Phase 13.3**, not this milestone), DM §4.7 (`audit_receipts` schema), DM §3 Invariants 1 and 5, IC §8 (secrets manager contract), IC §6 (`audit_receipts` row-level DML contract), FR-037–FR-041 (audit system functional requirements), MVP §8.2 (file inventory)
+
+> **Corrected:** the original top-level reference read *"the provider-side handler is in M8 provider daemon."* Milestone 8 is the Scoring System and contains no `cmd/provider` code. The handler for `/vyomanaut/audit-challenge/1.0.0` is built in **Milestone 13 → Phase 13.3 → Session 13.3.1**.
+
+**Milestone review notes** (cross-session dependencies internal to M7):
+
+- Session 7.2.1 (`ValidateResponse`, secret-version check) has a soft dependency on Session 7.4.1 (`ClusterSecretCache.IsVersionValid`) — see the flagged gap in Phase 7.2.
+- Session 7.3.1 declares the `AuditResult` type; it also closes the `.golangci.yml` `exhaustive`-linter placeholder that Session 0.2.1 left as `# M7: internal/audit.AuditResult`.
+- Session 7.4.1 must exist and pass before Session 7.6.1 (the consolidated test session) can test rotation-overlap behavior end-to-end.
 
 ---
 
 ### Phase 7.1 — Challenge Nonce Generation
 
-**Reference:** IC §5.5 (`ChallengeNonce`), DM §3 Invariant 5 (33 bytes always),
-IC §11 (forbidden: `challenge_nonce` as 32-byte field)
+**Reference:** IC §5.5 (`ChallengeNonce`), DM §3 Invariant 5 (33 bytes always), FR-038 (nonce composition and unpredictability), IC §11 (forbidden: `challenge_nonce` as a 32-byte field)
 
-#### Session 7.1.1 — Implement `ChallengeNonce()`
+#### Session 7.1.1 — Implement `ChallengeNonce()`; initialise `internal/audit/errors.go`
 
-**Task:** In `internal/audit/challenge.go`, implement `ChallengeNonce(serverSecretVN
-[]byte, versionByte uint8, chunkID [32]byte, serverTsMs int64) [33]byte` per IC §5.5.
-Formula: `nonce = version_byte || HMAC-SHA256(serverSecretVN, chunkID || serverTsMs)`.
-Return type is `[33]byte` — a fixed-size array, not a slice — so any code attempting to
-use it as a 32-byte value fails at compile time.
+**PRECONDITIONS:**
 
-Add a CI grep check to `scripts/ci/grep_checks.sh`: fail if `ChallengeNonce` is called
-anywhere with a result cast to `[32]byte` (catches accidental truncation).
+- `internal/audit/doc.go` exists (stub from Session 0.1.3)
+- No external dependency required — this session uses only `crypto/hmac` and `crypto/sha256` from the standard library
+
+**TASK:**
+
+1. Create `internal/audit/errors.go`. This is the single accumulating home for every sentinel error this package exports across all of Milestone 7 (mirrors how `internal/crypto/errors.go` accumulates across Milestone 2) — do not declare sentinel errors in any other file. Seed it now with the three sentinels IC §5.5 declares for this package:
+
+```go
+package audit
+
+import "errors"
+
+var (
+ // ErrInvalidSignature is returned by ValidateResponse when the provider's
+ // Ed25519 signature does not verify (IC §5.5, IC §3.2).
+ ErrInvalidSignature = errors.New("audit: invalid Ed25519 signature")
+
+ // ErrNonceLength is returned by ValidateResponse when challengeNonce is not
+ // exactly 33 bytes (DM §3 Invariant 5, FR-038).
+ ErrNonceLength = errors.New("audit: challenge nonce must be exactly 33 bytes")
+
+ // ErrReceiptAlreadyFinal is returned by WriteReceiptPhase2 when the target row
+ // already has a non-NULL audit_result — idempotent retry (IC §5.5, ADR-015).
+ ErrReceiptAlreadyFinal = errors.New("audit: receipt already has a terminal result")
+)
+```
+
+   Sessions 7.4.1 and 7.6.1 append further sentinels to this same file (`ErrSecretExpired` and friends). Do not create a second errors file.
+
+1. Create `internal/audit/challenge.go`:
+
+```go
+// ChallengeNonce generates a 33-byte versioned challenge nonce (IC §5.5, FR-038).
+//   nonce = version_byte || HMAC-SHA256(serverSecretVN, chunkID || serverTsMs)
+//
+// Pre-conditions (panic in debug builds if violated):
+//   len(serverSecretVN) == 32
+//   versionByte must match the version of serverSecretVN
+// Post-conditions:
+//   returns a 33-byte nonce; nonce[0] == versionByte
+// Goroutine-safe: yes (pure function).
+func ChallengeNonce(serverSecretVN []byte, versionByte uint8, chunkID [32]byte, serverTsMs int64) [33]byte
+```
+
+   Signing input for the HMAC: `chunkID (32 bytes) || big-endian int64(serverTsMs) (8 bytes)`. The return type is a fixed `[33]byte` array — not a slice — precisely so that any later code path attempting to treat it as `[32]byte` fails to compile (IC §5.5, IC §11).
+
+1. Add a supplementary grep-fail check to `scripts/ci/grep_checks.sh` (created in Session 0.2.2): flag any call site that assigns `ChallengeNonce(...)`'s result to a `[32]byte`-typed variable. This is additional hardening on top of — not a replacement for — CI check 8 (`challenge_nonce BYTEA(32)` in SQL), since this one catches Go-level truncation rather than schema drift:
+
+```bash
+# Supplementary check (not one of the 16 numbered CI gates — add alongside them)
+check "NONCE_TRUNCATION_GO" \
+  "\[32\]byte.*ChallengeNonce\(|ChallengeNonce\([^)]*\).*\[32\]byte" \
+  "internal"
+```
+
+1. **Defer, do not skip:** the `.golangci.yml` `exhaustive` linter placeholder `# M7: internal/audit.AuditResult` (set up in Session 0.2.1) is closed in **Session 7.3.1**, where `AuditResult` is actually declared. Note it here so it isn't forgotten.
+
+**VERIFY:**
+
+```bash
+FILES_EXIST:
+  $ test -f internal/audit/errors.go    && echo PASS || echo FAIL
+  $ test -f internal/audit/challenge.go && echo PASS || echo FAIL
+
+COMPILE:
+  $ go build ./internal/audit/
+  EXPECT: exit 0
+
+FUNCTION_SIGNATURE:
+  $ grep -c "^func ChallengeNonce(serverSecretVN \[\]byte, versionByte uint8, chunkID \[32\]byte, serverTsMs int64) \[33\]byte" \
+      internal/audit/challenge.go
+  EXPECT: 1
+
+RETURN_TYPE_IS_FIXED_ARRAY:
+  # Must return [33]byte, never []byte — this is the compile-time truncation guard
+  $ grep -c "\[33\]byte {" internal/audit/challenge.go
+  EXPECT: >= 1
+  $ grep -n "ChallengeNonce" internal/audit/challenge.go | grep -c ") \[\]byte"
+  EXPECT: 0
+
+SENTINEL_ERRORS_SEEDED:
+  $ grep -c "ErrInvalidSignature\|ErrNonceLength\|ErrReceiptAlreadyFinal" internal/audit/errors.go
+  EXPECT: 3
+
+HMAC_CONSTRUCTION:
+  $ grep -c "hmac\.New\|sha256\.New" internal/audit/challenge.go
+  EXPECT: >= 1
+
+VERSION_BYTE_PREFIX:
+  $ grep -c "\[0\] = versionByte" internal/audit/challenge.go
+  EXPECT: 1
+
+GREP_CHECK_ADDED:
+  $ grep -c "NONCE_TRUNCATION_GO" scripts/ci/grep_checks.sh
+  EXPECT: 1
+
+UNIT_TESTS:
+  $ go test -v -run TestChallengeNonce ./internal/audit/
+  EXPECT: exit 0; tests include:
+    TestChallengeNonceLength         (always exactly 33 bytes for any input)
+    TestChallengeNonceVersionByte    (nonce[0] == versionByte, tried for 0, 1, 255)
+    TestChallengeNonceDeterministic  (identical inputs → identical nonce)
+    TestChallengeNonceVariesWithTs   (different serverTsMs → different nonce)
+    TestChallengeNonceVariesWithChunk (different chunkID → different nonce)
+
+NEGATIVE_CHECKS:
+  # IC §9: must not import the three prohibited packages
+  $ grep -n "Vyomanaut_V2/internal/scoring\|Vyomanaut_V2/internal/repair\|Vyomanaut_V2/internal/payment" \
+      internal/audit/challenge.go internal/audit/errors.go \
+      && echo "FAIL: prohibited import (IC §9)" || echo "PASS"
+
+VET:
+  $ go vet ./internal/audit/
+  EXPECT: exit 0; zero output
+```
 
 ---
 
 ### Phase 7.2 — Response Validation
 
-**Reference:** IC §5.5 (`ValidateResponse` and its explicit limitation note)
+**Reference:** IC §5.5 (`ValidateResponse` and its explicit limitation note), IC §4.2 (Frame 2 signing-input formula), IC §3.2 (canonical verification procedure), NFR-015 (unforgeability requirement)
+
+> **Flagged — signature gap between IC §5.5 and IC §4.2.** IC §5.5 declares
+> `func ValidateResponse(challengeNonce [33]byte, responseHash [32]byte, providerSig [64]byte, providerPubKey [32]byte) error`.
+> But IC §4.2 states the actual signing input the provider signed is
+> `SHA-256(response_hash ‖ challenge_nonce ‖ server_challenge_ts_ms ‖ provider_id)` — four components. The IC §5.5 signature has no parameter for `server_challenge_ts_ms` or `provider_id`, so as declared it cannot reconstruct the input it needs to verify the signature against. Separately, IC §5.5's own item 2 ("`challengeNonce[0]` identifies a currently-valid secret version") requires access to `ClusterSecretCache` (Phase 7.4), which this signature also doesn't carry.
+>
+> **Resolution used below** (needs reconciling with `interface-contracts.md` in a follow-up PR): extend the signature with `serverChallengeTsMs int64` and `providerID [16]byte`, matching IC §4.2's wire fields exactly. Treat the secret-version check (item 2) as the **caller's** responsibility via `ClusterSecretCache.IsVersionValid`, performed by the microservice audit-dispatch loop (Milestone 12, Session 12.1.2) around the call to `ValidateResponse` — not inside it.
 
 #### Session 7.2.1 — Implement `ValidateResponse()`
 
-**Task:** In `internal/audit/validate.go`, implement `ValidateResponse` per IC §5.5.
-What this function DOES verify:
+**PRECONDITIONS:**
 
-1. `len(challengeNonce) == 33`
-2. `challengeNonce[0]` identifies a currently-valid secret version
-3. `providerSig` is a valid Ed25519 signature
+- Session 7.1.1 complete (`errors.go` exists with `ErrInvalidSignature`, `ErrNonceLength`)
+- `internal/crypto` complete (Milestone 2), specifically `VerifyBytes` (Session 2.7.1)
+- Phase 7.4 need not be complete to compile this session, but its `ClusterSecretCache.IsVersionValid` is required to exercise item 2 of the contract in the consolidated test session (7.6.1) — see the milestone review note above
 
-What this function DOES NOT verify (add as a code comment per IC §5.5):
+**TASK:**
+
+In `internal/audit/validate.go`, implement:
 
 ```go
-// LIMITATION: The microservice cannot verify that responseHash == SHA-256(chunkData ||
-// challengeNonce) because it never holds chunkData. Correctness depends on economic
-// deterrence and JIT detection (ADR-014 Defence 3). This is a stated design property.
+// ValidateResponse verifies the structural and cryptographic properties of a
+// provider's audit response that the microservice CAN verify without holding
+// chunk_data (IC §5.5, IC §4.2):
+//   1. len(challengeNonce) == 33                                -> ErrNonceLength
+//   2. providerSig is a valid Ed25519 signature by providerPubKey
+//      over SHA-256(responseHash || challengeNonce || serverChallengeTsMs || providerID)
+//      (IC §4.2 Frame 2, IC §3.2)                                -> ErrInvalidSignature
+//
+// NOTE — secret-version currency (IC §5.5 item 2, "challengeNonce[0] identifies a
+// currently-valid secret version") is NOT checked here. This function has no
+// reference to ClusterSecretCache. The caller MUST additionally call
+// ClusterSecretCache.IsVersionValid(challengeNonce[0]) (Phase 7.4) — a nil error
+// from this function alone is not sufficient to accept the response.
+//
+// LIMITATION (IC §5.5, NFR-015): the microservice cannot verify that
+// responseHash == SHA-256(chunkData || challengeNonce) because it never holds
+// chunkData. Correctness depends on economic deterrence and JIT detection
+// (ADR-014 Defence 3). This is a stated design property, not a gap to close.
+//
+// Goroutine-safe: yes.
+func ValidateResponse(
+ challengeNonce [33]byte,
+ responseHash [32]byte,
+ serverChallengeTsMs int64,
+ providerID [16]byte, // UUID bytes, matching the IC §4.1 capability-token convention
+ providerSig [64]byte,
+ providerPubKey [32]byte,
+) error
 ```
 
-Return `ErrInvalidSignature` or `ErrNonceLength` from IC §5.5 sentinel errors.
+Build the signing input as a fixed-layout byte sequence per IC §3.2 (never JSON): `SHA-256(responseHash[:] ‖ challengeNonce[:] ‖ bigEndianInt64(serverChallengeTsMs) ‖ providerID[:])`, then call `crypto.VerifyBytes(providerPubKey, signingInput, providerSig)`.
+
+**VERIFY:**
+
+```bash
+FILES_EXIST:
+  $ test -f internal/audit/validate.go && echo PASS || echo FAIL
+
+COMPILE:
+  $ go build ./internal/audit/
+  EXPECT: exit 0
+
+FUNCTION_SIGNATURE:
+  $ grep -c "^func ValidateResponse(" internal/audit/validate.go
+  EXPECT: 1
+
+  # Confirms the corrected 6-parameter signature (adds serverChallengeTsMs, providerID)
+  $ grep -c "serverChallengeTsMs int64" internal/audit/validate.go
+  EXPECT: 1
+  $ grep -c "providerID \[16\]byte" internal/audit/validate.go
+  EXPECT: 1
+
+NONCE_LENGTH_CHECK_PRESENT:
+  $ grep -c "ErrNonceLength" internal/audit/validate.go
+  EXPECT: >= 1
+
+USES_CRYPTO_VERIFYBYTES:
+  # Must delegate to internal/crypto, not re-implement Ed25519 verification inline
+  $ grep -c "crypto\.VerifyBytes\|VerifyBytes(" internal/audit/validate.go
+  EXPECT: >= 1
+
+LIMITATION_COMMENT_PRESENT:
+  $ grep -c "LIMITATION" internal/audit/validate.go
+  EXPECT: 1
+
+VERSION_CHECK_NOTE_PRESENT:
+  # Confirms the caller-responsibility note is documented, not silently dropped
+  $ grep -c "ClusterSecretCache\|IsVersionValid" internal/audit/validate.go
+  EXPECT: >= 1
+
+NO_JSON_IN_SIGNING_INPUT:
+  $ grep -n "json\.Marshal" internal/audit/validate.go \
+      && echo "FAIL: signing input must be fixed-layout bytes, not JSON (IC §3.2)" || echo "PASS"
+
+UNIT_TESTS:
+  $ go test -v -run TestValidateResponse ./internal/audit/
+  EXPECT: exit 0; tests include:
+    TestValidateResponseAccepts         (correct nonce + correct signature -> nil)
+    TestValidateResponseRejectsBadNonceLength (32-byte nonce -> ErrNonceLength)
+    TestValidateResponseRejectsBadSignature   (tampered signature -> ErrInvalidSignature)
+    TestValidateResponseRejectsWrongPubKey    (signature from a different key -> ErrInvalidSignature)
+    TestValidateResponseSigningInputIsFixedLayout (changing field order changes the digest)
+
+NEGATIVE_CHECKS:
+  $ grep -n "Vyomanaut_V2/internal/scoring\|Vyomanaut_V2/internal/repair\|Vyomanaut_V2/internal/payment" \
+      internal/audit/validate.go \
+      && echo "FAIL: prohibited import (IC §9)" || echo "PASS"
+
+VET:
+  $ go vet ./internal/audit/
+  EXPECT: exit 0; zero output
+```
 
 ---
 
 ### Phase 7.3 — Two-Phase Receipt Write
 
-**Reference:** IC §5.5 (`WriteReceiptPhase1`, `WriteReceiptPhase2`, `ErrReceiptAlreadyFinal`),
-DM §4.7 (two-phase write semantics), DM §6 (RSP enforces the phase2 update constraint)
+**Reference:** IC §5.5 (`WriteReceiptPhase1`, `WriteReceiptPhase2`, `AuditResult`, `ErrReceiptAlreadyFinal`), DM §4.7 (`audit_receipts` schema, two-phase write semantics), DM §6 (row security policy enforcing the Phase-2 update), DM §3 Invariant 1 (append-only audit log), FR-039 (schema + two-phase requirement), ADR-015
 
-#### Session 7.3.1 — Implement `WriteReceiptPhase1()`
+> **Flagged — undefined type.** IC §5.5 declares `WriteReceiptPhase1(ctx, db, fields ReceiptFields)` but `ReceiptFields` is never defined anywhere in `interface-contracts.md`. A concrete definition is proposed below, derived directly from the `audit_receipts` column list in DM §4.7 (excluding DB-generated columns `receipt_id`, `schema_version` and Phase-2-only columns `audit_result`, `service_sig`, `service_countersign_ts`).
 
-**Task:** In `internal/audit/receipt.go`, implement Phase 1 per IC §5.5: INSERT a row
-with `audit_result = NULL` and `provider_sig` populated. The INSERT must be WAL-flushed
-(use `SELECT pg_wal_flush()` in the same transaction or rely on `synchronous_commit = on`).
-Return the assigned `receipt_id` (UUIDv7 generated at the application layer — IC §5.5).
+#### Session 7.3.1 — Implement `WriteReceiptPhase1()`; declare `AuditResult`; close the `.golangci.yml` placeholder
+
+**PRECONDITIONS:**
+
+- Session 7.1.1 complete
+- A UUIDv7-capable UUID library is added to `go.mod` (e.g. `github.com/google/uuid` v1.6.0+, which provides `uuid.NewV7()`) — `receipt_id` is generated at the application layer per IC §5.5, not by Postgres's `gen_random_uuid()` default (that default exists in the schema for defense-in-depth only; DM §4.7)
+
+**TASK:**
+
+1. In `internal/audit/receipt.go`, declare the shared type and the Phase-1 function:
+
+```go
+// AuditResult is the terminal state of an audit receipt (IC §5.5).
+type AuditResult int
+
+const (
+ AuditPass AuditResult = iota
+ AuditFail
+ AuditTimeout
+)
+
+// ReceiptFields carries every audit_receipts column that Phase 1 (the initial
+// INSERT) populates. Derived from DM §4.7 — excludes receipt_id and
+// schema_version (DB-generated) and audit_result/service_sig/
+// service_countersign_ts (Phase-2-only). PROPOSED definition — IC §5.5 uses
+// this type name without defining its fields; reconcile with interface-contracts.md.
+type ReceiptFields struct {
+ ChunkID           [32]byte
+ FileID            *uuid.UUID // nil for a synthetic vetting-chunk audit (DM §8.20)
+ ProviderID        uuid.UUID
+ ChallengeNonce    [33]byte
+ ServerChallengeTs time.Time
+ AddressWasStale   bool // DM §4.7 — true if dispatched via DHT fallback
+}
+
+// WriteReceiptPhase1 performs the crash-safe Phase 1 INSERT to audit_receipts.
+// Inserts a PENDING row (audit_result = NULL) with fields.ProviderSig left
+// unset — the provider's signature is not yet known before dispatch completes;
+// see DM §8.9 for the PENDING-state field semantics. (ADR-015)
+//
+// Pre-conditions:
+//   - fields.ChunkID, fields.ProviderID, fields.ChallengeNonce, fields.ServerChallengeTs
+//     are all populated
+//   - the database connection is open
+// Post-conditions (on nil error):
+//   - a row with audit_result = NULL exists in audit_receipts
+//   - the row is durable before this function returns: a plain `INSERT ... COMMIT`
+//     under PostgreSQL's default synchronous_commit = on already guarantees the
+//     WAL is flushed before COMMIT returns — no special flush call is needed.
+//     (There is no pg_wal_flush() function in PostgreSQL; do not reference one.)
+// Error semantics: database errors are returned; caller must not proceed to
+//   Phase 2 if Phase 1 fails.
+// Goroutine-safe: yes (uses connection pool).
+func WriteReceiptPhase1(ctx context.Context, db *sql.DB, fields ReceiptFields) (receiptID uuid.UUID, err error)
+```
+
+1. **Close the `.golangci.yml` placeholder from Session 0.2.1:** in the `exhaustive` linter settings comment block, replace `# M7: internal/audit.AuditResult` with an active list entry so any future `switch result AuditResult { ... }` (e.g. in Milestone 12's dispatch loop) is checked for exhaustiveness.
+
+**VERIFY:**
+
+```bash
+FILES_EXIST:
+  $ test -f internal/audit/receipt.go && echo PASS || echo FAIL
+
+COMPILE:
+  $ go build ./internal/audit/
+  EXPECT: exit 0
+
+AUDITRESULT_TYPE:
+  $ grep -c "^type AuditResult int" internal/audit/receipt.go
+  EXPECT: 1
+  $ grep -c "AuditPass\|AuditFail\|AuditTimeout" internal/audit/receipt.go
+  EXPECT: >= 3
+
+RECEIPTFIELDS_STRUCT:
+  $ grep -c "^type ReceiptFields struct" internal/audit/receipt.go
+  EXPECT: 1
+  $ grep -c "ChunkID\|ProviderID\|ChallengeNonce\|ServerChallengeTs\|AddressWasStale" internal/audit/receipt.go
+  EXPECT: >= 5
+
+FUNCTION_SIGNATURE:
+  $ grep -c "^func WriteReceiptPhase1(ctx context.Context, db \*sql.DB, fields ReceiptFields) (receiptID uuid.UUID, err error)" \
+      internal/audit/receipt.go
+  EXPECT: 1
+
+NO_FICTIONAL_PG_FUNCTION:
+  # pg_wal_flush() does not exist in PostgreSQL — must not appear anywhere
+  $ grep -rn "pg_wal_flush" internal/audit/ migrations/ 2>/dev/null \
+      && echo "FAIL: pg_wal_flush() is not a real PostgreSQL function" || echo "PASS"
+
+PENDING_ROW_SEMANTICS:
+  # audit_result must be left NULL on INSERT — never defaulted (DM §9 checklist)
+  $ grep -c "audit_result.*NULL\|audit_result = NULL" internal/audit/receipt.go
+  EXPECT: >= 1
+
+GOLANGCI_PLACEHOLDER_CLOSED:
+  $ grep -c "# M7: internal/audit.AuditResult" .golangci.yml
+  EXPECT: 0
+  $ grep -c "internal/audit\.AuditResult" .golangci.yml
+  EXPECT: 1
+
+UNIT_TESTS:
+  $ go test -v -run TestWriteReceiptPhase1 ./internal/audit/
+  EXPECT: exit 0; tests include:
+    TestWriteReceiptPhase1InsertsPending    (audit_result IS NULL after insert)
+    TestWriteReceiptPhase1ReturnsUUIDv7     (receipt_id is a valid, time-ordered UUIDv7)
+    TestWriteReceiptPhase1RejectsBadFields  (missing required field -> error, no row created)
+
+NEGATIVE_CHECKS:
+  $ grep -n "Vyomanaut_V2/internal/scoring\|Vyomanaut_V2/internal/repair\|Vyomanaut_V2/internal/payment" \
+      internal/audit/receipt.go \
+      && echo "FAIL: prohibited import (IC §9)" || echo "PASS"
+```
 
 #### Session 7.3.2 — Implement `WriteReceiptPhase2()`
 
-**Task:** Phase 2 per IC §5.5: UPDATE the row identified by `receiptID`, setting
-`audit_result`, `service_sig`, `service_countersign_ts` atomically. The `WHERE` clause:
-`WHERE receipt_id = $1 AND audit_result IS NULL AND abandoned_at IS NULL`
-(matches the RSP in DM §6). Return `ErrReceiptAlreadyFinal` if the row already has a
-non-NULL `audit_result` (idempotent retry: IC §5.5 post-condition "treat as success").
+**PRECONDITIONS:**
+
+- Session 7.3.1 complete (`AuditResult` type and `WriteReceiptPhase1` exist in `receipt.go`)
+- Migration from Session 4.6.1 applied to the test database (the `audit_receipts_phase2_update` row security policy must exist for the `WHERE`-clause behavior to be testable end-to-end)
+
+**TASK:**
+
+In `internal/audit/receipt.go`, implement:
+
+```go
+// WriteReceiptPhase2 performs the crash-safe Phase 2 UPDATE on audit_receipts.
+// Sets audit_result, service_sig, and service_countersign_ts atomically.
+// (ADR-015, DM §3 Invariant 1, DM §6 row security policy)
+//
+// Pre-conditions:
+//   - receiptID identifies an existing row
+//   - result is AuditPass, AuditFail, or AuditTimeout
+//   - len(serviceSig) == 64
+// Post-conditions (on nil error):
+//   - the row is updated; audit_result is no longer NULL
+// Error semantics:
+//   - ErrReceiptAlreadyFinal: the row already has a non-NULL audit_result.
+//     Idempotent — caller should treat this as success (IC §5.5 idempotent-retry
+//     protocol) and return the existing service_sig rather than surfacing an error.
+//   - other database errors: returned to caller.
+// Goroutine-safe: yes.
+func WriteReceiptPhase2(ctx context.Context, db *sql.DB, receiptID uuid.UUID, result AuditResult, serviceSig [64]byte, serviceTS time.Time) error
+```
+
+The `WHERE` clause — `WHERE receipt_id = $1 AND audit_result IS NULL AND abandoned_at IS NULL` — must match the `USING` clause of the `audit_receipts_phase2_update` policy from DM §6 exactly; a mismatch here would make legitimate Phase-2 updates silently fail under row-level security rather than surface a clear application error.
+
+**VERIFY:**
+
+```bash
+COMPILE:
+  $ go build ./internal/audit/
+  EXPECT: exit 0
+
+FUNCTION_SIGNATURE:
+  $ grep -c "^func WriteReceiptPhase2(ctx context.Context, db \*sql.DB, receiptID uuid.UUID, result AuditResult, serviceSig \[64\]byte, serviceTS time.Time) error" \
+      internal/audit/receipt.go
+  EXPECT: 1
+
+WHERE_CLAUSE_MATCHES_RSP:
+  $ grep -c "audit_result IS NULL AND abandoned_at IS NULL" internal/audit/receipt.go
+  EXPECT: 1
+
+IDEMPOTENT_RETRY_HANDLING:
+  $ grep -c "ErrReceiptAlreadyFinal" internal/audit/receipt.go
+  EXPECT: >= 2   # sentinel declaration (7.1.1) + return site (7.3.2)
+
+INTEGRATION_TEST_AGAINST_LIVE_RSP (requires CI Postgres with M4 migration applied):
+  $ go test -v -run TestWriteReceiptPhase2 ./internal/audit/
+  EXPECT: exit 0; tests include:
+    TestWriteReceiptPhase2PromotesToTerminal   (PENDING -> PASS/FAIL/TIMEOUT succeeds)
+    TestWriteReceiptPhase2Idempotent           (second call with same receiptID -> ErrReceiptAlreadyFinal, no second row)
+    TestWriteReceiptPhase2RejectsAbandonedRow  (abandoned_at IS NOT NULL -> update affects 0 rows -> error, not silent success)
+    TestWriteReceiptPhase2OnlyTouchesAllowedColumns (all other columns unchanged after update)
+
+NEGATIVE_CHECKS:
+  $ grep -n "Vyomanaut_V2/internal/scoring\|Vyomanaut_V2/internal/repair\|Vyomanaut_V2/internal/payment" \
+      internal/audit/receipt.go \
+      && echo "FAIL: prohibited import (IC §9)" || echo "PASS"
+
+  # Invariant 1: no DELETE path may exist anywhere near this file
+  $ grep -n "DELETE FROM audit_receipts" internal/audit/receipt.go \
+      && echo "FAIL: audit_receipts is append-only (DM §3 Invariant 1)" || echo "PASS"
+
+VET:
+  $ go vet ./internal/audit/
+  EXPECT: exit 0; zero output
+```
 
 ---
 
 ### Phase 7.4 — Cluster Secret Cache
 
-**Reference:** IC §8 (full secrets manager contract), IC §5.5 (`SecretsManagerClient`
-interface, `ErrSecretExpired`), MVP §8.2 (`secret.go`, `secrets_iface.go`)
+**Reference:** IC §8 (full secrets manager contract — `SecretsManagerClient` interface, path convention `/vyomanaut/audit-secret/v{N}`, 24-hour rotation overlap, fail-closed startup rule, `ErrSecretNotFound`/`ErrSecretManagerUnavailable`/`ErrSecretExpired`), MVP §8.2 (`secret.go`, `secrets_iface.go`), NFR-018 (key management requirement), MVP §5.4 (`RequireSecretsManager` toggle)
 
-#### Session 7.4.1 — Implement `SecretsManagerClient` interface and cache
+> **Corrected reference.** The original Phase 7.4 header cited "IC §5.5 (`SecretsManagerClient` interface, `ErrSecretExpired`)." Neither symbol is declared in IC §5.5 (the `internal/audit` package contract) — both live in **IC §8**. The session body already (correctly) said "from IC §8" for the interface; only the Phase-level header line was wrong. Fixed above.
 
-**Task:** Create `internal/audit/secrets_iface.go` with the `SecretsManagerClient`
-interface from IC §8. Create `internal/audit/secret.go` with `ClusterSecretCache`:
+> **Flagged — no method set specified.** `mvp.md §8.2` names `ClusterSecretCache` but no document gives it a method set. The proposal below is shaped to satisfy: (a) Phase 7.2's need for `IsVersionValid`, (b) IC §8's fail-closed-at-startup and TTL-expiry-during-operation requirements, and (c) the 24-hour rotation overlap (both `v{N}` and `v{N+1}` must be queryable simultaneously).
 
-- 5-minute TTL cache of the cluster audit secret
-- Reads `server_secret_vN` and `server_secret_v{N+1}` during rotation overlap window
-- Fail-closed on startup: if secrets manager is unreachable, return an error and the
-  caller (microservice startup) must refuse to start (IC §8: "fail-closed")
-- During operation: return `ErrSecretExpired` after TTL expiry if manager is unreachable;
-  caller must back off and not issue challenges (IC §8)
+#### Session 7.4.1 — Implement `SecretsManagerClient` interface and `ClusterSecretCache`
 
-**Local dev / demo mode:** If `RequireSecretsManager == false`, read from
-`VYOMANAUT_CLUSTER_MASTER_SEED` environment variable (IC §8). The presence of this env
-var in prod mode is caught by the guard in M1 Session 1.3.2.
+**PRECONDITIONS:**
+
+- Session 7.1.1 complete (`errors.go` exists to receive the additional local sentinels this session adds)
+- `internal/config` complete (Milestone 1) — `NetworkProfile.RequireSecretsManager` is read here
+- M1 Session 1.3.2's guard rail (`PROD_MODE_ENV_SECRET`) already exists and is what makes it safe for this session to read `VYOMANAUT_CLUSTER_MASTER_SEED` in demo mode — do not duplicate that guard here
+
+**TASK:**
+
+1. Create `internal/audit/secrets_iface.go` with a package-local interface matching IC §8's shape (this package cannot import the not-yet-built `internal/secrets`, created in Milestone 17; the adapters built there satisfy this interface implicitly via Go's structural typing — no import needed either direction):
+
+```go
+package audit
+
+import "context"
+
+// SecretsManagerClient abstracts over Vault, AWS SSM, and GCP Secret Manager
+// (IC §8). Concrete adapters are implemented in internal/secrets (Milestone 17)
+// and satisfy this interface structurally — internal/audit never imports
+// internal/secrets.
+type SecretsManagerClient interface {
+ // GetSecret retrieves the decoded (not base64) secret at path, e.g.
+ // "/vyomanaut/audit-secret/v3" (IC §8 path convention).
+ GetSecret(ctx context.Context, path string) ([]byte, error)
+}
+```
+
+1. Append to `internal/audit/errors.go` (do not create a second errors file):
+
+```go
+var (
+ // ErrSecretNotFound mirrors IC §8: the requested path does not exist.
+ ErrSecretNotFound = errors.New("audit: secret path not found")
+
+ // ErrSecretManagerUnavailable mirrors IC §8: the secrets manager is unreachable.
+ ErrSecretManagerUnavailable = errors.New("audit: secrets manager unreachable")
+
+ // ErrSecretExpired is returned once the 5-minute cached-secret TTL has elapsed
+ // and the secrets manager remains unreachable (IC §8). The caller must back
+ // off and must not issue further challenges while this is returned.
+ ErrSecretExpired = errors.New("audit: cached secret TTL expired and manager unavailable")
+)
+```
+
+1. Create `internal/audit/secret.go` with `ClusterSecretCache`:
+
+```go
+// ClusterSecretCache holds the cluster audit secret(s) with a 5-minute TTL
+// (IC §8). During the 24-hour rotation overlap window it holds both
+// server_secret_vN and server_secret_v{N+1} simultaneously.
+type ClusterSecretCache struct {
+ client SecretsManagerClient
+ ttl    time.Duration // always 5 minutes (IC §8) — not profile-variable
+ // unexported: mutex-guarded map[versionByte][]byte, loadedAt timestamp
+}
+
+// NewClusterSecretCache constructs a cache. In demo mode (profile.RequireSecretsManager
+// == false), client should be an env-var-backed adapter that reads
+// VYOMANAUT_CLUSTER_MASTER_SEED (IC §8) instead of a real Vault/SSM/GCP client.
+// The PROD_MODE_ENV_SECRET guard (M1 Session 1.3.2) is what prevents this env
+// var from being used in production — this constructor does not re-check that.
+func NewClusterSecretCache(client SecretsManagerClient) *ClusterSecretCache
+
+// Load performs the initial fail-closed fetch. Must be called once at
+// microservice startup, before any challenge is issued. On error, the caller
+// (Milestone 12 Session 12.1.1) must refuse to start the replica (IC §8:
+// "fail-closed" — better zero challenges than unvalidatable ones).
+func (c *ClusterSecretCache) Load(ctx context.Context) error
+
+// CurrentSecret returns the highest currently-valid server_secret and its
+// version byte, for use when issuing new challenges (ChallengeNonce). Returns
+// ErrSecretExpired if the cache TTL has elapsed and the manager is unreachable.
+func (c *ClusterSecretCache) CurrentSecret() (secret []byte, versionByte uint8, err error)
+
+// IsVersionValid reports whether versionByte corresponds to a
+// currently-accepted secret version — vN or vN+1 during the 24-hour rotation
+// overlap window (IC §8). Session 7.2.1's ValidateResponse caller uses this.
+func (c *ClusterSecretCache) IsVersionValid(versionByte uint8) bool
+
+// SecretForVersion returns the raw secret for a specific (possibly older, but
+// still-valid) version byte — needed to validate a challenge nonce issued
+// under a version other than the current one.
+func (c *ClusterSecretCache) SecretForVersion(versionByte uint8) (secret []byte, err error)
+```
+
+**VERIFY:**
+
+```bash
+FILES_EXIST:
+  $ test -f internal/audit/secrets_iface.go && echo PASS || echo FAIL
+  $ test -f internal/audit/secret.go        && echo PASS || echo FAIL
+
+COMPILE:
+  $ go build ./internal/audit/
+  EXPECT: exit 0
+
+INTERFACE_SHAPE_MATCHES_IC8:
+  $ grep -c "GetSecret(ctx context.Context, path string) (\[\]byte, error)" internal/audit/secrets_iface.go
+  EXPECT: 1
+
+NEW_SENTINELS_APPENDED_NOT_DUPLICATED:
+  $ grep -c "ErrSecretNotFound\|ErrSecretManagerUnavailable\|ErrSecretExpired" internal/audit/errors.go
+  EXPECT: 3
+  $ find internal/audit -name "*errors*.go" | wc -l
+  EXPECT: 1   # exactly one errors file for the whole package
+
+CACHE_METHODS_PRESENT:
+  $ grep -c "func (c \*ClusterSecretCache) Load\|func (c \*ClusterSecretCache) CurrentSecret\|func (c \*ClusterSecretCache) IsVersionValid\|func (c \*ClusterSecretCache) SecretForVersion" \
+      internal/audit/secret.go
+  EXPECT: 4
+
+TTL_IS_FIVE_MINUTES:
+  $ grep -c "5 \* time.Minute\|5\*time.Minute" internal/audit/secret.go
+  EXPECT: >= 1
+
+DEMO_MODE_ENV_VAR_PATH:
+  $ grep -c "VYOMANAUT_CLUSTER_MASTER_SEED" internal/audit/secret.go
+  EXPECT: >= 1
+
+UNIT_TESTS:
+  $ go test -v -run TestClusterSecretCache ./internal/audit/
+  EXPECT: exit 0; tests include:
+    TestClusterSecretCacheFailsClosedOnLoadError      (Load returns error when client unreachable; no panic)
+    TestClusterSecretCacheServesFromCacheDuringOutage  (client goes unreachable mid-TTL -> CurrentSecret still succeeds)
+    TestClusterSecretCacheExpiresAfterTTL              (TTL elapsed + client unreachable -> ErrSecretExpired)
+    TestClusterSecretCacheRotationOverlap               (both vN and vN+1 loaded -> IsVersionValid true for both)
+    TestClusterSecretCacheRejectsRetiredVersion         (version outside the 24h overlap -> IsVersionValid false)
+
+NEGATIVE_CHECKS:
+  $ grep -n "Vyomanaut_V2/internal/scoring\|Vyomanaut_V2/internal/repair\|Vyomanaut_V2/internal/payment" \
+      internal/audit/secret*.go \
+      && echo "FAIL: prohibited import (IC §9)" || echo "PASS"
+
+  # PROD_MODE_ENV_SECRET is M1's job — this session must not re-implement that guard
+  $ grep -c "profile.Mode == \"prod\"" internal/audit/secret.go
+  EXPECT: 0
+
+VET:
+  $ go vet ./internal/audit/
+  EXPECT: exit 0; zero output
+```
 
 ---
 
 ### Phase 7.5 — JIT Detection
 
-**Reference:** IC §4.2 (JIT detection note), DM §4.7 (`jit_flag` column),
-MVP §8.2 (`jit.go`)
+**Reference:** ARCH §14 (audit receipt schema table, `jit_flag` row — authoritative source of the `×0.3` factor), ARCH §20 §Outsourcing (adversarial-defence rationale for the threshold), DM §4.2 (`p95_throughput_kbps` NULL semantics), DM §4.7 (`jit_flag` column), MVP §8.2 (`jit.go`)
 
-#### Session 7.5.1 — Implement JIT threshold computation
+> **Corrected — internal document inconsistency.** IC §4.2's own aside describes "the JIT detection deadline `(256 / p95_throughput_kbps) × 1.5` ... the floor below which a response is flagged as anomalously fast." That `×1.5` is wrong: `×1.5` is the **audit response deadline / timeout** factor (FR-028, NFR-007, DM §4.2's `deadline_ms` comment), not the JIT floor. The JIT anomaly threshold is `×0.3`, per architecture.md §14's audit-receipt-schema table (`jit_flag` row) and §20's Outsourcing defence description — and that `×0.3` figure is what the original session task correctly used. The reference below cites the unambiguous ARCH sections instead of the IC §4.2 aside so this doesn't get miscopied again.
 
-**Task:** Create `internal/audit/jit.go`. Implement the JIT flag evaluation:
-`jit_flag = (response_latency_ms < (chunk_size_kb / p95_throughput_kbps) × 0.3)`.
+#### Session 7.5.1 — Implement JIT threshold evaluation
 
-**Important:** `p95_throughput_kbps` may be NULL for new providers (DM §4.2). When NULL,
-skip JIT detection (no flag set). Compute `chunk_size_kb = 256` (always, since
-`ShardSize = 262144 = 256 KB` from Invariant 7). Note per IC §4.2: this threshold
-"is distinct from the RTO" — document this separation in a code comment.
+**PRECONDITIONS:**
+
+- Session 7.1.1 complete (package skeleton, `errors.go` exists)
+- No dependency on Milestone 8 (`internal/scoring`) — this package must not import it (IC §9); `p95_throughput_kbps` is read directly from the `providers` table via SQL, not via a scoring-package call
+
+**TASK:**
+
+Create `internal/audit/jit.go`:
+
+```go
+// EvaluateJIT computes whether an audit response is anomalously fast — a
+// signal of just-in-time retrieval from a co-located source rather than a
+// genuine local-disk read (ARCH §20 §Outsourcing, ARCH §14 jit_flag row).
+//
+//   jit_flag = responseLatencyMs < (chunkSizeKB / p95ThroughputKbps) * 0.3
+//
+// chunkSizeKB is always 256, since ShardSize = 262,144 bytes = 256 KB is a
+// compile-time constant in both demo and production modes (DM §3 Invariant 7).
+//
+// p95ThroughputKbps may be nil for a new provider (DM §4.2: NULL until vetting
+// audits accumulate samples). When nil, this function returns false (no flag) —
+// deliberately, and asymmetrically from how the *audit deadline* handles the
+// same NULL case (DM §4.2: deadline computation substitutes the pool median).
+// JIT detection is a best-effort anti-fraud heuristic, not a required gate;
+// flagging a new, fast, honest provider before its real throughput is known
+// would be a false positive with real consequences (score/escrow impact), so
+// this function prefers a false negative over that risk.
+//
+// NOTE: this threshold is distinct from the per-provider RTO / audit deadline
+// (IC §4.2, (chunk_size / p95_throughput) * 1.5) — that is a maximum wait time
+// before TIMEOUT; this is a minimum plausible time below which a PASS is
+// flagged as suspicious. Do not conflate the two multipliers.
+func EvaluateJIT(responseLatencyMs int, p95ThroughputKbps *float64) bool
+```
+
+> **Flagged — no signature specified in IC.** IC §5.5 does not declare any JIT-related function at all, despite `mvp.md §8.2` naming `jit.go` explicitly. The signature above is proposed to make this testable and to match how the rest of the audit pipeline consumes `p95_throughput_kbps` (a nullable `*float64`, mirroring DM §4.2's column). Reconcile with `interface-contracts.md §5.5` in a follow-up PR.
+
+**VERIFY:**
+
+```bash
+FILES_EXIST:
+  $ test -f internal/audit/jit.go && echo PASS || echo FAIL
+
+COMPILE:
+  $ go build ./internal/audit/
+  EXPECT: exit 0
+
+FUNCTION_SIGNATURE:
+  $ grep -c "^func EvaluateJIT(responseLatencyMs int, p95ThroughputKbps \*float64) bool" internal/audit/jit.go
+  EXPECT: 1
+
+CORRECT_MULTIPLIER:
+  # Must be 0.3 (JIT floor), never 1.5 (that is the unrelated audit deadline)
+  $ grep -c "0\.3" internal/audit/jit.go
+  EXPECT: >= 1
+  $ grep -n "1\.5" internal/audit/jit.go \
+      && echo "FAIL: 1.5 is the audit-deadline multiplier, not the JIT floor" || echo "PASS"
+
+CHUNK_SIZE_CONSTANT:
+  $ grep -c "256" internal/audit/jit.go
+  EXPECT: >= 1
+
+NULL_HANDLING:
+  $ grep -c "p95ThroughputKbps == nil\|p95ThroughputKbps != nil" internal/audit/jit.go
+  EXPECT: >= 1
+
+DISTINCT_FROM_RTO_COMMENT:
+  $ grep -c "distinct from the per-provider RTO\|distinct from the RTO" internal/audit/jit.go
+  EXPECT: 1
+
+UNIT_TESTS:
+  $ go test -v -run TestEvaluateJIT ./internal/audit/
+  EXPECT: exit 0; tests include:
+    TestEvaluateJITFlagsAnomalouslyFastResponse   (latency well below 0.3x expected -> true)
+    TestEvaluateJITDoesNotFlagNormalResponse       (latency at or above 0.3x expected -> false)
+    TestEvaluateJITSkipsOnNilThroughput            (p95ThroughputKbps == nil -> false, no panic)
+    TestEvaluateJITBoundaryExactlyAtThreshold      (latency == 0.3x expected -> false; strict less-than)
+
+NEGATIVE_CHECKS:
+  $ grep -n "Vyomanaut_V2/internal/scoring" internal/audit/jit.go \
+      && echo "FAIL: must read providers.p95_throughput_kbps via SQL, not import scoring (IC §9)" \
+      || echo "PASS"
+
+VET:
+  $ go vet ./internal/audit/
+  EXPECT: exit 0; zero output
+```
+
+---
+
+### Phase 7.6 — Audit Package Tests *(new — closes an MVP §8.2 gap)*
+
+**Reference:** MVP §8.2 (`audit_test.go` — "two-phase crash safety, idempotent retry, cross-replica nonce validation"), DM §3 Invariant 1, IC §8 (rotation overlap)
+
+> No session in the original plan owned `audit_test.go`, though `mvp.md §8.2` names it explicitly with a specific coverage description. This phase adds it, consolidating what Sessions 7.1–7.5's individual `UNIT_TESTS` blocks already exercise in isolation, plus the cross-session integration behaviors that only make sense once every prior M7 session exists together.
+
+#### Session 7.6.1 — Implement `audit_test.go`
+
+**PRECONDITIONS:**
+
+- Sessions 7.1.1 through 7.5.1 all complete
+- CI Postgres instance available with the Milestone 4 migration applied (`audit_receipts` table, its row security policies, and the `audit_periods`/`providers` tables it references)
+
+**TASK:**
+
+Create `internal/audit/audit_test.go` covering the three areas `mvp.md §8.2` names for this file, each exercising the full pipeline (nonce → response → two-phase write) rather than a single function in isolation:
+
+| Test name | What it validates |
+|---|---|
+| `TestTwoPhaseCrashSafety` | Phase 1 succeeds, then simulate a "crash" (no Phase 2 call); confirm the row is queryable as PENDING (`audit_result IS NULL`) and not silently lost |
+| `TestTwoPhaseIdempotentRetry` | Call `WriteReceiptPhase2` twice with the same `receiptID` and the same result; second call returns `ErrReceiptAlreadyFinal`; exactly one row exists; no duplicate insert |
+| `TestCrossReplicaNonceValidation` | A nonce generated with `server_secret_vN` validates successfully against a `ClusterSecretCache` that has independently loaded `vN` (simulating a second replica) — this is the property IC §27's failover story depends on |
+| `TestFullChallengeResponseCycle` | End-to-end: `ChallengeNonce` → construct a signed response → `ValidateResponse` → `WriteReceiptPhase1` → `WriteReceiptPhase2`, asserting the final row's `challenge_nonce` is exactly 33 bytes and `audit_result` is the expected terminal value |
+| `TestJITAndValidationAreIndependent` | A response can fail `EvaluateJIT` (flagged as suspiciously fast) while still passing `ValidateResponse` (signature is valid) — confirms the two checks are orthogonal, matching how `jit_flag` and `audit_result` are independent columns in DM §4.7 |
+
+**VERIFY:**
+
+```bash
+FILES_EXIST:
+  $ test -f internal/audit/audit_test.go && echo PASS || echo FAIL
+
+TEST_NAMES_PRESENT:
+  $ grep -c "^func TestTwoPhaseCrashSafety\|^func TestTwoPhaseIdempotentRetry\|^func TestCrossReplicaNonceValidation\|^func TestFullChallengeResponseCycle\|^func TestJITAndValidationAreIndependent" \
+      internal/audit/audit_test.go
+  EXPECT: 5
+
+ALL_TESTS_PASS:
+  $ go test -race -count=1 -v ./internal/audit/
+  EXPECT: exit 0; every test in this file and every earlier M7 session's UNIT_TESTS block shows "--- PASS:"
+
+IDEMPOTENT_RETRY_NO_DUPLICATE_ROW:
+  $ grep -A15 "^func TestTwoPhaseIdempotentRetry" internal/audit/audit_test.go | grep -c "COUNT(\*)\|len(rows)"
+  EXPECT: >= 1
+
+CI_RACE_GATE (M0 CI check 4 must stay green with this package included):
+  $ go test -race -count=1 ./...
+  EXPECT: exit 0
+
+FULL_PACKAGE_BUILD:
+  $ go build ./internal/audit/
+  $ go vet ./internal/audit/
+  EXPECT: both exit 0
+```
 
 ---
 
 ## Milestone 8 — Scoring System (`internal/scoring`)
 
-**Deliverable:** Three-window reliability score, consecutive pass counter and
-VETTING→ACTIVE transition, EWMA RTO tracking. Read-only against the database.
-Must NOT import `repair` or `payment` (IC §9).
+**Deliverable:** Three-window reliability score, consecutive-pass counter with the VETTING→ACTIVE transition, EWMA RTO tracking. Read-only against the database.
 
-**Reference:** IC §5.6 (full package contract), DM §7 (`mv_provider_scores` view),
-MVP §8.2 (file inventory)
+**Package import constraints (IC §9):** `internal/scoring` must **NOT** import `internal/repair` or `internal/payment`. Score computation is read-only against the audit-receipt history; it does not trigger repairs or move money. Nothing prohibits `internal/scoring` from importing `internal/audit`, but there is also no need to — both packages query the `providers`/`audit_receipts` tables directly via SQL, independently. Keep `internal/scoring`'s only `internal/` import as `internal/config` (for `NetworkProfile`).
+
+**Reference:** IC §5.6 (full package contract), DM §7 (`mv_provider_scores` materialised view, including the `scores_as_of` staleness guard), DM §4.2 (`providers` scoring/RTO columns), DM §9 checklist (`p95_throughput_kbps`/`avg_rtt_ms` default to NULL, not 0/2000), ADR-008 (reliability scoring), FR-050 (dual-window trigger), FR-026 (VETTING→ACTIVE transition), FR-040 (RTO formula), MVP §5.4 (toggle map), MVP §3.4 (demo/prod vetting values), MVP §8.2 (file inventory)
+
+**Milestone review notes:**
+
+- Session 8.2.1's `IncrementConsecutivePasses` needs the active `NetworkProfile` to read `VettingMinPasses`/`VettingMinDuration` — IC §5.6's declared signature doesn't carry one. See the flagged fix in Phase 8.2.
+- Session 8.1.1's `GetScoreFromPrimary` is the function DM §7's "scores must be < 60 minutes old before use in payment decisions" rule depends on — Milestone 10 (`internal/payment`, release computation) is the actual caller and must use this variant, not plain `GetScore`.
 
 ---
 
 ### Phase 8.1 — Score Retrieval
 
-**Reference:** IC §5.6 (`GetScore`, `ProviderScore` struct)
+**Reference:** IC §5.6 (`GetScore`, `ProviderScore` struct), DM §7 (`mv_provider_scores` view and its `scores_as_of` column), ADR-008, ADR-024, FR-050 (dual-window trigger)
 
-#### Session 8.1.1 — Implement `GetScore()`
+> **Flagged — missing staleness field.** DM §7 requires consumers to "check the age before using scores for payment decisions" and has the view emit `NOW() AS scores_as_of` specifically so they can. IC §5.6's `ProviderScore` struct has no field to carry that value. Added below as `ScoresAsOf time.Time`.
 
-**Task:** In `internal/scoring/score.go`, implement `GetScore()` querying the
-`mv_provider_scores` materialised view. The view may be up to 60 seconds stale — this
-is acceptable (IC §5.6). Compute `DualWindowFlag = (score30d - score7d > 0.20)` in
-application code, not in SQL (easier to unit-test). Return `ErrProviderNotFound` if
-the provider does not appear in the view.
+#### Session 8.1.1 — Implement `GetScore()` and `GetScoreFromPrimary()`; initialise `internal/scoring/errors.go`
 
-Add `GetScoreFromPrimary()` (MVP §8.2: "monthly release multiplier must use primary") —
-this version forces a read from the primary replica via connection hint (implementation
-detail: pass a different `*sql.DB` handle pointing to the primary).
+**PRECONDITIONS:**
+
+- `internal/scoring/doc.go` exists (stub from Session 0.1.3)
+- Migration from Session 4.7.1 applied (`mv_provider_scores` view, including its `scores_as_of` column, exists in the test database)
+
+**TASK:**
+
+1. Create `internal/scoring/errors.go` (the single accumulating home for this package's sentinels, mirroring the `internal/audit/errors.go` pattern from Session 7.1.1):
+
+```go
+package scoring
+
+import "errors"
+
+var (
+ // ErrProviderNotFound is returned by GetScore when the provider has no rows
+ // in mv_provider_scores yet (no audit history) (IC §5.6).
+ ErrProviderNotFound = errors.New("scoring: provider not found in score view")
+
+ // ErrProviderNotVetting is returned by IncrementConsecutivePasses when the
+ // provider is not in VETTING status (IC §5.6).
+ ErrProviderNotVetting = errors.New("scoring: provider is not in VETTING status")
+)
+```
+
+1. Create `internal/scoring/score.go`:
+
+```go
+// ProviderScore holds the three-window scores and the weighted composite
+// (ADR-008). ScoresAsOf carries the view's own NOW()-at-refresh-time column
+// (DM §7) so callers — especially payment release computation (Milestone 10)
+// — can enforce the "< 60 minutes old" staleness rule before using a score
+// for a payment decision (DM §7 CRITICAL note, ADR-024).
+type ProviderScore struct {
+ Score24h       float64   // window weight 0.50 in the composite
+ Score7d        float64   // window weight 0.30
+ Score30d       float64   // window weight 0.20
+ Composite      float64   // 0.50*24h + 0.30*7d + 0.20*30d
+ DualWindowFlag bool      // true when score30d - score7d > 0.20 (FR-050, ADR-024 §3)
+ ScoresAsOf     time.Time // from mv_provider_scores.scores_as_of (DM §7)
+}
+
+// GetScore queries mv_provider_scores for providerID. The view may be up to
+// 60 seconds stale — acceptable for general scoring queries (IC §5.6). Reads
+// via the connection pool, which may route to a read replica (ARCH §24).
+//
+// DualWindowFlag is computed in application code, not SQL, per IC §5.6 (easier
+// to unit-test in isolation from the database).
+//
+// Error semantics:
+//   - ErrProviderNotFound: no row for providerID in the view yet.
+// Goroutine-safe: yes.
+func GetScore(ctx context.Context, db *sql.DB, providerID uuid.UUID) (ProviderScore, error)
+
+// GetScoreFromPrimary is identical to GetScore except it forces the read to
+// the primary replica (pass a *sql.DB handle pointing at the primary, not the
+// pooled/replica-routed one used elsewhere). Required whenever a score is
+// about to be used for a payment decision — the monthly release multiplier
+// computation (Milestone 10) MUST call this, not GetScore, per DM §7's
+// staleness requirement.
+func GetScoreFromPrimary(ctx context.Context, primaryDB *sql.DB, providerID uuid.UUID) (ProviderScore, error)
+```
+
+> **Flagged — `GetScoreFromPrimary` has no declared signature in IC.** It is named only in `mvp.md §8.2`'s file-inventory parenthetical, with no signature given anywhere. The signature above mirrors `GetScore` exactly except for which `*sql.DB` handle it's given — this keeps the "primary vs. replica" distinction a caller-side wiring concern rather than adding branching logic inside the function.
+
+**VERIFY:**
+
+```bash
+FILES_EXIST:
+  $ test -f internal/scoring/errors.go && echo PASS || echo FAIL
+  $ test -f internal/scoring/score.go  && echo PASS || echo FAIL
+
+COMPILE:
+  $ go build ./internal/scoring/
+  EXPECT: exit 0
+
+SENTINEL_ERRORS:
+  $ grep -c "ErrProviderNotFound\|ErrProviderNotVetting" internal/scoring/errors.go
+  EXPECT: 2
+
+PROVIDERSCORE_STRUCT:
+  $ grep -c "^type ProviderScore struct" internal/scoring/score.go
+  EXPECT: 1
+  $ grep -c "Score24h\|Score7d\|Score30d\|Composite\|DualWindowFlag\|ScoresAsOf" internal/scoring/score.go
+  EXPECT: >= 6
+
+SCORESASOF_FIELD_PRESENT:
+  # The gap-fix: DM §7 requires staleness checking; the struct must expose it
+  $ grep -c "ScoresAsOf time.Time" internal/scoring/score.go
+  EXPECT: 1
+
+FUNCTION_SIGNATURES:
+  $ grep -c "^func GetScore(ctx context.Context, db \*sql.DB, providerID uuid.UUID) (ProviderScore, error)" \
+      internal/scoring/score.go
+  EXPECT: 1
+  $ grep -c "^func GetScoreFromPrimary(ctx context.Context, primaryDB \*sql.DB, providerID uuid.UUID) (ProviderScore, error)" \
+      internal/scoring/score.go
+  EXPECT: 1
+
+DUALWINDOWFLAG_COMPUTED_IN_GO_NOT_SQL:
+  $ grep -c "DualWindowFlag = \|score30d - score7d > 0.20\|Score30d - .*Score7d.* > 0.20" internal/scoring/score.go
+  EXPECT: >= 1
+
+UNIT_TESTS:
+  $ go test -v -run TestGetScore ./internal/scoring/
+  EXPECT: exit 0; tests include:
+    TestGetScoreReturnsAllThreeWindows       (Score24h, Score7d, Score30d all populated)
+    TestGetScoreDualWindowFlagTrue            (score30d - score7d > 0.20 -> DualWindowFlag == true)
+    TestGetScoreDualWindowFlagFalse           (difference <= 0.20 -> DualWindowFlag == false)
+    TestGetScoreNotFound                      (unknown providerID -> ErrProviderNotFound)
+    TestGetScoreFromPrimaryUsesGivenHandle    (queries route through the supplied *sql.DB, not a pooled default)
+    TestGetScoreExposesScoresAsOf             (returned ProviderScore.ScoresAsOf is non-zero and matches the view's NOW())
+
+NEGATIVE_CHECKS:
+  $ grep -n "Vyomanaut_V2/internal/repair\|Vyomanaut_V2/internal/payment" internal/scoring/*.go \
+      && echo "FAIL: prohibited import (IC §9)" || echo "PASS"
+
+VET:
+  $ go vet ./internal/scoring/
+  EXPECT: exit 0; zero output
+```
 
 ---
 
 ### Phase 8.2 — Consecutive Pass Counter
 
-**Reference:** IC §5.6 (`IncrementConsecutivePasses`, `ResetConsecutivePasses`),
-DM §4.2 (`consecutive_audit_passes`), MVP §3.4 (`VettingMinPasses` from profile)
+**Reference:** IC §5.6 (`IncrementConsecutivePasses`, `ResetConsecutivePasses`), DM §4.2 (`consecutive_audit_passes`, `first_chunk_assignment_at`), DM §4.7 (`address_was_stale` — stale-timeout exemption), FR-026 (VETTING→ACTIVE transition conditions), MVP §3.4 (demo/prod vetting values table), MVP §5.4 (exact toggle-to-code mapping — names this function directly)
 
-#### Session 8.2.1 — Implement `IncrementConsecutivePasses()` with VETTING→ACTIVE transition
+> **Flagged — signature cannot fulfill its own documented contract.** IC §5.6 declares `func IncrementConsecutivePasses(ctx context.Context, db *sql.DB, providerID uuid.UUID) error` and its doc comment says *"If the new value equals 80, also sets status = 'ACTIVE'."* Two problems: (1) "80" is the **production** value only — `mvp.md §5.4` explicitly assigns this function the job of checking `NetworkProfile.VettingMinPasses` (80 in prod, 5 in demo), and demo mode breaks entirely if 80 is hardcoded; (2) the declared signature has no `profile` parameter at all, so it has no way to read `VettingMinPasses` or `VettingMinDuration` even if it wanted to. Corrected signature below adds `profile config.NetworkProfile`, matching the pattern already used for `erasure.NewEngine(profile)` and `repair.RepairPromotionTimeout(profile)` elsewhere in this codebase.
 
-**Task:** In `internal/scoring/passes.go`, implement per IC §5.6. Critical: the
-transition check is `profile.VettingMinPasses` (read from NetworkProfile — 80 in prod,
-5 in demo), NOT a hardcoded 80. The VETTING→ACTIVE transition also requires the minimum
-duration check: `first_chunk_assignment_at + profile.VettingMinDuration <= NOW()`
-(IC §5.6 cross-reference to FR-026, MVP §5.4).
+#### Session 8.2.1 — Implement `IncrementConsecutivePasses()` with the VETTING→ACTIVE transition; implement `ResetConsecutivePasses()`
 
-Use `SELECT FOR UPDATE` within a transaction to prevent concurrent increments from
-both triggering the transition (IC §5.6 goroutine-safe note).
+**PRECONDITIONS:**
 
-Return `ErrProviderNotVetting` if the provider is not in VETTING status (IC §5.6).
+- Session 8.1.1 complete (`errors.go` exists with `ErrProviderNotVetting`)
+- `internal/config` complete (Milestone 1) — this session is the first in `internal/scoring` to import it
 
-**Note on stale address timeouts (DM §4.7):** `ResetConsecutivePasses` must NOT be
-called when `audit_result = 'TIMEOUT' AND address_was_stale = TRUE` — this was added
-to `audit_receipts` specifically to prevent false resets on DHT-fallback timeouts.
-The scoring package must check this flag before calling `ResetConsecutivePasses`.
+**TASK:**
+
+In `internal/scoring/passes.go`:
+
+```go
+// IncrementConsecutivePasses atomically increments consecutive_audit_passes
+// for a provider and, if both VETTING→ACTIVE conditions are now satisfied,
+// transitions status to 'ACTIVE' in the same transaction (FR-026, ADR-005).
+//
+// The threshold is profile.VettingMinPasses (80 in production, 5 in demo) —
+// NEVER a hardcoded 80; see MVP §5.4, which names this exact function as the
+// enforcement point for that field. The duration condition is also checked:
+// first_chunk_assignment_at + profile.VettingMinDuration <= NOW() (FR-026,
+// MVP §5.4).
+//
+// Pre-conditions:
+//   - providerID identifies a provider with status = 'VETTING'
+// Post-conditions (on nil error):
+//   - consecutive_audit_passes is incremented by 1
+//   - if the new value >= profile.VettingMinPasses AND the duration condition
+//     holds, status is set to 'ACTIVE' in the same transaction
+// Error semantics:
+//   - ErrProviderNotVetting: provider is not in VETTING status; no-op, no error
+//     side effects on consecutive_audit_passes
+// Goroutine-safe: yes — uses SELECT ... FOR UPDATE within a transaction so two
+// concurrent audit-PASS events for the same provider cannot both observe the
+// pre-increment count and both trigger the transition redundantly.
+func IncrementConsecutivePasses(ctx context.Context, db *sql.DB, providerID uuid.UUID, profile config.NetworkProfile) error
+
+// ResetConsecutivePasses resets consecutive_audit_passes to 0 on any non-PASS
+// audit result (ADR-005).
+//
+// CALLER PRE-CONDITION (enforced by the caller, not inside this function — see
+// note below): the caller MUST NOT invoke this when the just-recorded audit
+// row has audit_result = 'TIMEOUT' AND address_was_stale = TRUE (DM §4.7). A
+// TIMEOUT against a known-stale heartbeat address is evidence the DHT
+// fallback didn't work, not evidence the provider failed, and must not reset
+// vetting progress. This function's signature carries no addressWasStale
+// parameter (matching IC §5.6 as declared), so the gate lives in the audit
+// dispatch loop (Milestone 12, Session 12.1.2) which already has the receipt
+// row in hand when deciding whether to call this function at all.
+//
+// Goroutine-safe: yes.
+func ResetConsecutivePasses(ctx context.Context, db *sql.DB, providerID uuid.UUID) error
+```
+
+**VERIFY:**
+
+```bash
+FILES_EXIST:
+  $ test -f internal/scoring/passes.go && echo PASS || echo FAIL
+
+COMPILE:
+  $ go build ./internal/scoring/
+  EXPECT: exit 0
+
+FUNCTION_SIGNATURES:
+  $ grep -c "^func IncrementConsecutivePasses(ctx context.Context, db \*sql.DB, providerID uuid.UUID, profile config.NetworkProfile) error" \
+      internal/scoring/passes.go
+  EXPECT: 1
+  $ grep -c "^func ResetConsecutivePasses(ctx context.Context, db \*sql.DB, providerID uuid.UUID) error" \
+      internal/scoring/passes.go
+  EXPECT: 1
+
+PROFILE_DRIVEN_NOT_HARDCODED:
+  $ grep -c "profile.VettingMinPasses" internal/scoring/passes.go
+  EXPECT: >= 1
+  $ grep -c "profile.VettingMinDuration" internal/scoring/passes.go
+  EXPECT: >= 1
+  # The literal 80 must not appear as a comparison threshold
+  $ grep -n ">= 80\|== 80\|> 79" internal/scoring/passes.go \
+      && echo "FAIL: hardcoded vetting-pass threshold — must read profile.VettingMinPasses" \
+      || echo "PASS"
+
+DURATION_CHECK_PRESENT:
+  $ grep -c "first_chunk_assignment_at" internal/scoring/passes.go
+  EXPECT: >= 1
+
+CONCURRENCY_GUARD:
+  $ grep -c "FOR UPDATE" internal/scoring/passes.go
+  EXPECT: >= 1
+
+STALE_TIMEOUT_NOTE_DOCUMENTED:
+  # The self-contradiction in the original task text ("scoring package must check
+  # this flag before calling ResetConsecutivePasses", when ResetConsecutivePasses
+  # IS the scoring-package function) is resolved: the note must say the CALLER
+  # (M12) performs the check, not this function internally.
+  $ grep -c "address_was_stale\|addressWasStale" internal/scoring/passes.go
+  EXPECT: >= 1
+  $ grep -c "Milestone 12\|Session 12.1.2" internal/scoring/passes.go
+  EXPECT: >= 1
+
+UNIT_TESTS:
+  $ go test -v -run TestIncrementConsecutivePasses ./internal/scoring/
+  EXPECT: exit 0; tests include:
+    TestIncrementConsecutivePassesUsesDemoProfile        (with config.DemoProfile, transitions to ACTIVE at 5 passes, not 80)
+    TestIncrementConsecutivePassesUsesProductionProfile   (with config.ProductionProfile, does NOT transition before 80 passes)
+    TestIncrementConsecutivePassesRequiresDurationToo     (VettingMinPasses met but VettingMinDuration not yet elapsed -> stays VETTING)
+    TestIncrementConsecutivePassesRejectsNonVettingProvider (status=ACTIVE provider -> ErrProviderNotVetting)
+    TestIncrementConsecutivePassesConcurrentSafe          (N concurrent goroutines incrementing the same provider -> exactly one ACTIVE transition, race-detector clean)
+
+  $ go test -v -run TestResetConsecutivePasses ./internal/scoring/
+  EXPECT: exit 0; tests include:
+    TestResetConsecutivePassesZeroesCounter   (any non-PASS -> counter back to 0)
+
+NEGATIVE_CHECKS:
+  $ grep -n "Vyomanaut_V2/internal/repair\|Vyomanaut_V2/internal/payment" internal/scoring/passes.go \
+      && echo "FAIL: prohibited import (IC §9)" || echo "PASS"
+
+RACE_DETECTOR:
+  $ go test -race -count=1 -run TestIncrementConsecutivePassesConcurrentSafe ./internal/scoring/
+  EXPECT: exit 0; zero data-race reports
+
+VET:
+  $ go vet ./internal/scoring/
+  EXPECT: exit 0; zero output
+```
 
 ---
 
 ### Phase 8.3 — EWMA RTO Tracking
 
-**Reference:** IC §4.2 (RTO formula), DM §4.2 (`avg_rtt_ms`, `var_rtt_ms`,
-`rto_sample_count`, `p95_throughput_kbps`), MVP §8.2 (`rto.go`)
+**Reference:** IC §4.2 (RTO formula, `rto_sample_count >= 5` pool-median cutover), DM §4.2 (`avg_rtt_ms`, `var_rtt_ms`, `rto_sample_count`, `p95_throughput_kbps` — all NULL-until-established), DM §9 checklist ("default to NULL, not 0/2000"), FR-040 (ADR-006, Paper 28 — "TCP-style RTO"), MVP §8.2 (`rto.go`)
+
+> **Corrected — "pool-median" computed as a mean.** DM §4.2, IC §4.2, and FR-040 all consistently name this the **pool-median** RTO. The original task's SQL was `AVG(avg_rtt_ms + 4 * var_rtt_ms)`, which computes the arithmetic mean, not a median — a mean is more sensitive to a handful of very slow (or very fast) providers than a true median would be, which is presumably why "median" was chosen as the term throughout three separate documents. Fixed below to use `PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY ...)`, PostgreSQL's standard true-median construction, so the implementation matches its own name.
+>
+> **Note on EWMA constants.** No document in scope specifies the smoothing constants (α for the mean, β for the variance). "TCP-style RTO" (FR-040's own phrase, citing ADR-006 and Paper 28) is the standard name for the Jacobson/Karels algorithm, whose conventional constants are α = 1/8 for the smoothed mean and β = 1/4 for the mean deviation, combined as `RTO = SRTT + 4×RTTVAR` — which is exactly the `AVG + 4×VAR` formula used throughout this design. The session below uses those conventional values as the best available inference; confirm against Paper 28 directly before treating them as final.
 
 #### Session 8.3.1 — Implement EWMA update functions
 
-**Task:** In `internal/scoring/rto.go`, implement:
+**PRECONDITIONS:**
 
-- EWMA update for `avg_rtt_ms` and `var_rtt_ms` after each audit response
-- EWMA update for `p95_throughput_kbps` (the 95th-percentile upload throughput)
-- `rto_sample_count` increment to track when to switch from pool-median RTO to
-  per-provider formula (threshold: `rto_sample_count >= 5` per IC §4.2)
+- Session 8.1.1 complete (package skeleton, `errors.go` exists)
+- Session 8.2.1 complete (establishes the `internal/config` import already used for other profile-driven values in this package, though this specific session's constants are not profile-variable)
 
-Pool-median RTO fallback: query `AVG(avg_rtt_ms + 4 * var_rtt_ms)` across all ACTIVE
-providers when `rto_sample_count < 5`. Cache this pool median for 5 minutes.
+**TASK:**
 
-**`p95_throughput_kbps` and `avg_rtt_ms` NULL handling (DM §4.2):** Both default to NULL
-for new providers. The EWMA update initialises them on the first sample; never write 0
-as the initial value (DM §9 checklist: "default to NULL, not 0/2000").
+In `internal/scoring/rto.go`:
+
+```go
+// UpdateRTO updates a provider's EWMA response-time and throughput statistics
+// after one audit response is recorded, and increments rto_sample_count.
+// Must be called once per PASS or FAIL response (a TIMEOUT has no
+// response_latency_ms to sample, per DM §4.7 §8.10, and must not call this).
+//
+// EWMA constants follow the conventional TCP RTO estimation (Jacobson/Karels),
+// consistent with FR-040's "TCP-style RTO" framing (ADR-006, Paper 28):
+//   avg_rtt_ms' = avg_rtt_ms + alpha * (sample_ms - avg_rtt_ms),        alpha = 1/8
+//   var_rtt_ms' = var_rtt_ms + beta  * (|sample_ms - avg_rtt_ms| - var_rtt_ms), beta = 1/4
+// On the FIRST sample for a provider (avg_rtt_ms/var_rtt_ms are NULL — DM
+// §4.2), initialise avg_rtt_ms = sample_ms and var_rtt_ms = 0 directly, rather
+// than blending against a NULL. NEVER write 0 or 2000 as a placeholder default
+// outside of this first-sample initialisation (DM §9 checklist).
+//
+// p95_throughput_kbps is updated the same way, from the measured upload
+// throughput of this response.
+func UpdateRTO(ctx context.Context, db *sql.DB, providerID uuid.UUID, responseLatencyMs int, throughputKbps float64) error
+
+// PoolMedianRTO returns the network-wide median RTO across ACTIVE providers,
+// for use by any provider with rto_sample_count < 5 (IC §4.2, FR-040). This is
+// a TRUE median (PERCENTILE_CONT(0.5)), matching the "pool-median" name used
+// throughout DM §4.2 / IC §4.2 / FR-040 — NOT an AVG()/mean, which several
+// providers with unusually slow or fast connections would skew.
+//
+//   SELECT PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY avg_rtt_ms + 4 * var_rtt_ms)
+//   FROM providers WHERE status = 'ACTIVE' AND rto_sample_count >= 5
+//
+// The result is cached in-process for 5 minutes to avoid recomputing this
+// aggregate on every audit dispatch (an implementation optimisation, not a
+// documented requirement — revisit the cache duration if measured DB load
+// warrants it).
+func PoolMedianRTO(ctx context.Context, db *sql.DB) (float64, error)
+```
+
+> **Flagged — `UpdateRTO`/`PoolMedianRTO` have no signature in IC §5.6.** Both are referenced by name only: `UpdateRTO` is called from Milestone 12, Session 12.1.2 ("Update EWMA metrics via `scoring.UpdateRTO()`"), and the pool-median fallback is described narratively in IC §4.2 and DM §4.2 without ever being given a Go signature. The two signatures above are proposed to close that gap; reconcile with `interface-contracts.md §5.6` in a follow-up PR.
+
+**VERIFY:**
+
+```bash
+FILES_EXIST:
+  $ test -f internal/scoring/rto.go && echo PASS || echo FAIL
+
+COMPILE:
+  $ go build ./internal/scoring/
+  EXPECT: exit 0
+
+FUNCTION_SIGNATURES:
+  $ grep -c "^func UpdateRTO(ctx context.Context, db \*sql.DB, providerID uuid.UUID, responseLatencyMs int, throughputKbps float64) error" \
+      internal/scoring/rto.go
+  EXPECT: 1
+  $ grep -c "^func PoolMedianRTO(ctx context.Context, db \*sql.DB) (float64, error)" internal/scoring/rto.go
+  EXPECT: 1
+
+TRUE_MEDIAN_NOT_MEAN:
+  # The corrected fix: must use PERCENTILE_CONT, not AVG, for the "pool-median"
+  $ grep -c "PERCENTILE_CONT(0.5)" internal/scoring/rto.go
+  EXPECT: >= 1
+  $ grep -n "AVG(avg_rtt_ms" internal/scoring/rto.go \
+      && echo "FAIL: pool-median must be a true median (PERCENTILE_CONT), not AVG" \
+      || echo "PASS"
+
+SAMPLE_COUNT_THRESHOLD:
+  $ grep -c "rto_sample_count >= 5\|rto_sample_count < 5" internal/scoring/rto.go
+  EXPECT: >= 1
+
+NULL_INITIALISATION_NOT_ZERO_OR_2000:
+  # DM §9 checklist: p95_throughput_kbps / avg_rtt_ms must default to NULL, not 0/2000
+  $ grep -n "= 0\.0\b" internal/scoring/rto.go | grep -v "beta\|alpha\|var_rtt_ms.*=.*0" \
+      && echo "WARN: verify this is the deliberate first-sample var_rtt_ms=0 case, not a hidden default" \
+      || echo "PASS"
+  $ grep -c "2000" internal/scoring/rto.go
+  EXPECT: 0
+
+EWMA_CONSTANTS_DOCUMENTED:
+  $ grep -c "alpha = 1/8\|1 / 8\|0.125" internal/scoring/rto.go
+  EXPECT: >= 1
+  $ grep -c "beta = 1/4\|1 / 4\|0.25" internal/scoring/rto.go
+  EXPECT: >= 1
+
+CACHE_TTL_NOTED_AS_IMPLEMENTATION_DETAIL:
+  $ grep -c "5 \* time.Minute\|5\*time.Minute" internal/scoring/rto.go
+  EXPECT: >= 1
+
+UNIT_TESTS:
+  $ go test -v -run TestUpdateRTO ./internal/scoring/
+  EXPECT: exit 0; tests include:
+    TestUpdateRTOFirstSampleInitialises      (NULL avg_rtt_ms/var_rtt_ms -> avg=sample, var=0, not 0/2000)
+    TestUpdateRTOSubsequentSampleBlends       (second call blends via EWMA, does not overwrite)
+    TestUpdateRTOIncrementsSampleCount        (rto_sample_count += 1 each call)
+    TestUpdateRTOThroughputNeverDefaultsToZero
+
+  $ go test -v -run TestPoolMedianRTO ./internal/scoring/
+  EXPECT: exit 0; tests include:
+    TestPoolMedianRTOIsTrueMedian    (constructed dataset with a skewing outlier -> median differs from mean; assert function returns the median value)
+    TestPoolMedianRTOExcludesLowSampleProviders (providers with rto_sample_count < 5 excluded from the pool)
+    TestPoolMedianRTOCachedFor5Minutes
+
+NEGATIVE_CHECKS:
+  $ grep -n "Vyomanaut_V2/internal/repair\|Vyomanaut_V2/internal/payment" internal/scoring/rto.go \
+      && echo "FAIL: prohibited import (IC §9)" || echo "PASS"
+
+VET:
+  $ go vet ./internal/scoring/
+  EXPECT: exit 0; zero output
+```
+
+---
+
+### Phase 8.4 — Scoring Package Tests *(new — closes an MVP §8.2 gap)*
+
+**Reference:** MVP §8.2 (`score_test.go` — "dual-window flag, VETTING→ACTIVE transition race guard")
+
+> Same gap pattern as Milestone 7: `mvp.md §8.2` names `score_test.go` with a specific coverage description, but no session in the original plan owned it. This phase adds it.
+
+#### Session 8.4.1 — Implement `score_test.go`
+
+**PRECONDITIONS:**
+
+- Sessions 8.1.1 through 8.3.1 all complete
+- CI Postgres instance available with the Milestone 4 migration applied, including `mv_provider_scores` (Session 4.7.1)
+
+**TASK:**
+
+Create `internal/scoring/score_test.go` consolidating the two behaviors `mvp.md §8.2` names for this file, at the integration level (spanning `score.go` + `passes.go` + `rto.go` together, not just re-running each file's own unit tests):
+
+| Test name | What it validates |
+|---|---|
+| `TestDualWindowFlagAgainstRealView` | Seed `audit_receipts` so the 7-day pass rate is deliberately worse than the 30-day rate by more than 0.20; refresh `mv_provider_scores`; confirm `GetScore` reports `DualWindowFlag == true` — exercising the real materialised view, not a mocked struct |
+| `TestVettingActiveTransitionRaceGuard` | Launch N concurrent calls to `IncrementConsecutivePasses` for the same provider at exactly `VettingMinPasses - 1` remaining passes; confirm the provider transitions to `ACTIVE` exactly once (no double-transition, no lost update) under `-race` |
+| `TestDemoAndProductionProfilesBothReachActive` | Run the full pass sequence once with `config.DemoProfile` (expect transition at 5 passes) and once with `config.ProductionProfile` (expect transition at 80 passes) against the same schema, confirming the profile — not a hardcoded literal — drives the outcome |
+
+**VERIFY:**
+
+```bash
+FILES_EXIST:
+  $ test -f internal/scoring/score_test.go && echo PASS || echo FAIL
+
+TEST_NAMES_PRESENT:
+  $ grep -c "^func TestDualWindowFlagAgainstRealView\|^func TestVettingActiveTransitionRaceGuard\|^func TestDemoAndProductionProfilesBothReachActive" \
+      internal/scoring/score_test.go
+  EXPECT: 3
+
+ALL_TESTS_PASS_WITH_RACE_DETECTOR:
+  $ go test -race -count=1 -v ./internal/scoring/
+  EXPECT: exit 0; every test in this file and every earlier M8 session's UNIT_TESTS block shows "--- PASS:"
+
+RACE_GUARD_ACTUALLY_CONCURRENT:
+  $ grep -A20 "^func TestVettingActiveTransitionRaceGuard" internal/scoring/score_test.go | grep -c "go func("
+  EXPECT: >= 2   # must launch multiple goroutines, not call sequentially
+
+NO_HARDCODED_THRESHOLD_IN_TEST:
+  # The test itself must reference profile.VettingMinPasses, not a bare "80" or "5"
+  $ grep -A15 "^func TestDemoAndProductionProfilesBothReachActive" internal/scoring/score_test.go | \
+      grep -c "config.DemoProfile\|config.ProductionProfile"
+  EXPECT: 2
+
+CI_RACE_GATE (M0 CI check 4 must stay green with this package included):
+  $ go test -race -count=1 ./...
+  EXPECT: exit 0
+
+FULL_PACKAGE_BUILD:
+  $ go build ./internal/scoring/
+  $ go vet ./internal/scoring/
+  EXPECT: both exit 0
+```
 
 ---
 

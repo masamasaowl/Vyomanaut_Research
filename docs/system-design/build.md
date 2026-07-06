@@ -60,7 +60,7 @@
 - [Appendix B - Session Registry](#appendix-b--session-registry)
 - [Appendix C - File Creation Index](#appendix-c--file-creation-index)
 
-### Remaining Milestones
+### Remaining Milestones covered in Part 2
 
 - [Milestone 7 — Audit System (`internal/audit`)](./build_part2.md#milestone-7--audit-system-internalaudit)
   - [Phase 7.1 — Challenge Nonce Generation](./build_part2.md#phase-71--challenge-nonce-generation)
