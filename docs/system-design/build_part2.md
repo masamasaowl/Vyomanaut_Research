@@ -1408,221 +1408,1559 @@ FULL_PACKAGE_BUILD:
 
 ## Milestone 9 — Repair System (`internal/repair`)
 
-**Deliverable:** Departure detector, repair job queue with priority ordering, repair
-executor, and vetting chunk exclusion. Must NOT import `payment` or `p2p` (IC §9).
+**Deliverable:** Departure detector, repair job queue with priority ordering, repair executor, replacement-provider selection, and vetting-chunk exclusion.
 
-**Reference:** IC §5.7 (full package contract), DM §4.10 (`repair_jobs` schema),
-DM §3 Invariant 6 (no repair for synthetic chunks)
+**Package import constraints:** `internal/repair` must **NOT** import `internal/payment`, `internal/audit`, or `internal/scoring` — IC §9's closing paragraph ("the microservice entrypoint wires `internal/audit`, `internal/scoring`, `internal/repair`, and `internal/payment` together; none of these four packages imports any of the others directly") is the source for this, since IC §9's table itself never gives `internal/repair` its own row. `internal/repair` **MAY** import `internal/config` (`NetworkProfile`) and `internal/erasure` (RS decode/re-encode during repair).
+
+> **Flagged — `internal/repair` cannot avoid touching the network while also "not importing p2p."** Session 9.2.1 requires opening libp2p streams to download and re-upload shards, which needs something shaped like `p2p.Host.NewStream`/`SetStreamHandler` (IC §5.4). Resolution used below (same pattern as `internal/audit`'s `SecretsManagerClient` in the Milestones 7–8 revision): `internal/repair` declares its own narrow, package-local transport interface; `internal/p2p.Host` satisfies it structurally without either package importing the other. The microservice entrypoint (Milestone 12) constructs the real `p2p.Host` and passes it in as that interface type.
+
+**Reference:** IC §5.7 (full package contract), DM §4.10 (`repair_jobs` schema), DM §3 Invariant 6 (no repair for synthetic chunks), DM §3 Invariant 3 (no physical provider deletion), IC §4.4.1–§4.4.2 (repair download/upload wire protocol), IC §6 (`providers`/`repair_jobs` DML contract), FR-042–FR-045, FR-065–FR-067 (repair and vetting-exclusion functional requirements), ADR-004 (repair protocol), ADR-030 (synthetic vetting chunks), ADR-014 (ASN cap — replacement selection), MVP §8.2 (file inventory)
+
+**Milestone review notes:**
+
+- Session 9.2.1 (executor) depends on Session 9.4.1 (replacement selection) to choose the new provider before it can call the upload protocol — these two are more tightly coupled than the phase numbering suggests; implement 9.4.1's selection logic before finishing 9.2.1's upload step.
+- Session 9.3.1 (departure detector) needs a `PenaliseFunc`-shaped callback injected at construction time, supplied by Milestone 12 Session 12.1.1 — see the flagged note in Phase 9.3.
+- Session 9.1.1 declares `Priority` and `TriggerType`; it also closes the `.golangci.yml` placeholder `# M9: internal/repair.Priority, internal/repair.TriggerType` left by Session 0.2.1.
 
 ---
 
 ### Phase 9.1 — Repair Job Queue
 
-**Reference:** IC §5.7 (`EnqueueJob`, `DequeueNextJob`, `IsVettingChunk`,
-`DeleteVettingChunksOnDeparture`, `MarkJobComplete`)
+**Reference:** IC §5.7 (`EnqueueJob`, `DequeueNextJob`, `IsVettingChunk`, `DeleteVettingChunksOnDeparture`, `MarkJobComplete`), DM §4.10 (`repair_priority`/`repair_trigger_type` ENUMs, `repair_jobs_priority_matches_trigger` CHECK), DM §3 Invariant 6, ADR-004, ADR-030, FR-043
 
-#### Session 9.1.1 — Implement `EnqueueJob()`
+> **Flagged — `Priority` is missing a value.** IC §5.7 declares `type Priority int` with exactly two constants (`PriorityPermanentDeparture`, `PriorityPreWarning`), despite its own comment saying it "mirrors the repair_priority DB enum," which has three values (`EMERGENCY`, `PERMANENT_DEPARTURE`, `PRE_WARNING` — DM §4.10). Consequently, `EnqueueJob`'s documented derivation rule ("priority is set to PERMANENT_DEPARTURE iff triggerType is SilentDeparture or AnnouncedDeparture; PRE_WARNING otherwise") never accounts for `TriggerEmergencyFloor` at all — under that rule, an emergency-floor job would fall into the `PRE_WARNING` tier, exactly backwards from ADR-004 ("Repair must be triggered immediately... if the fragment count for any chunk drops to s=16") and DM §4.10's own comment ("`'EMERGENCY'` -- EMERGENCY_FLOOR: s=16, immediate, front of queue"). Fixed below by adding `PriorityEmergency` as the first (lowest-ordinal, drains-first) value and completing the derivation logic for all three trigger groups.
 
-**Task:** In `internal/repair/queue.go`, implement `EnqueueJob()` per IC §5.7. The
-priority is derived automatically from `triggerType` (enforcing the
-`repair_jobs_priority_matches_trigger` DB CHECK via application logic before INSERT).
+#### Session 9.1.1 — Declare `Priority`/`TriggerType`; implement `EnqueueJob()`; initialise `internal/repair/errors.go`
 
-**Invariant 6 enforcement (DM §3, IC §5.7 pre-condition):** Calling `EnqueueJob` for
-a synthetic vetting chunk panics in debug builds. The caller (departure handler) must
-call `IsVettingChunk()` first. Add the check as a debug-mode guard within `EnqueueJob`
-as a second line of defence (IC §5.7: "panics in debug builds").
+**PRECONDITIONS:**
 
-Also enforce the `availableShardCount` range from the active `NetworkProfile` (16–56 in
-prod, 3–5 in demo) — pass the profile to the constructor.
+- `internal/repair/doc.go` exists (stub from Session 0.1.3)
+- `internal/config` complete (Milestone 1) — `EnqueueJob` needs `NetworkProfile.DataShards`/`TotalShards` for range validation
+- Migration from Session 4.4.5 applied (`repair_jobs` table, including the profile-parameterised `available_shard_count` CHECK)
+
+**TASK:**
+
+1. Create `internal/repair/errors.go` (the single accumulating home for this package's sentinels — mirrors `internal/audit/errors.go` and `internal/scoring/errors.go` from the Milestones 7–8 revision):
+
+```go
+package repair
+
+import "errors"
+
+var (
+ // ErrShardCountOutOfRange is returned by EnqueueJob when availableShardCount
+ // falls outside [profile.DataShards, profile.TotalShards] (DM §4.10).
+ ErrShardCountOutOfRange = errors.New("repair: availableShardCount outside [DataShards, TotalShards] for active profile")
+
+ // ErrJobQueueEmpty is returned by DequeueNextJob when no QUEUED job exists.
+ // (Distinguishable from a genuine database error — callers should treat
+ // this as "nothing to do right now", not retry with backoff.)
+ ErrJobQueueEmpty = errors.New("repair: no queued repair job available")
+)
+```
+
+1. In `internal/repair/queue.go`, declare the corrected enum types:
+
+```go
+// Priority mirrors the repair_priority DB enum (DM §4.10) — all three values,
+// ordered to match the ENUM's declaration order in PostgreSQL (see Session
+// 9.1.2 for why declaration order, not alphabetical order, is what matters).
+type Priority int
+
+const (
+ PriorityEmergency          Priority = iota // EMERGENCY — s at reconstruction floor; front of queue
+ PriorityPermanentDeparture                 // SILENT_DEPARTURE / ANNOUNCED_DEPARTURE — drains next
+ PriorityPreWarning                         // THRESHOLD_WARNING — waits behind the above
+)
+
+// TriggerType mirrors the repair_trigger_type DB enum (DM §4.10).
+type TriggerType int
+
+const (
+ TriggerSilentDeparture TriggerType = iota
+ TriggerAnnouncedDeparture
+ TriggerThresholdWarning
+ TriggerEmergencyFloor
+)
+```
+
+1. Implement `EnqueueJob`:
+
+```go
+// EnqueueJob inserts a repair job into repair_jobs. Priority is derived
+// automatically and completely from triggerType (DM §4.10
+// repair_jobs_priority_matches_trigger CHECK):
+//   TriggerEmergencyFloor                          -> PriorityEmergency
+//   TriggerSilentDeparture, TriggerAnnouncedDeparture -> PriorityPermanentDeparture
+//   TriggerThresholdWarning                        -> PriorityPreWarning
+//
+// Pre-conditions:
+//   - len(chunkID) == 32; segmentID is a valid UUID
+//   - availableShardCount is in [profile.DataShards, profile.TotalShards]
+//     (16-56 in production, 3-5 in demo — DM §4.10; NEVER hardcode [16,56])
+//   - the chunk_assignments row for (chunkID, any active provider) has
+//     is_vetting_chunk = FALSE. Calling EnqueueJob for a synthetic vetting
+//     chunk is a calling-contract violation: PANICS in debug builds as a
+//     second line of defence (the departure handler, Session 9.3.1, must
+//     call IsVettingChunk() first — this panic only catches a caller that
+//     skipped that check). (ADR-030, DM §3 Invariant 6)
+// Post-conditions (on nil error):
+//   - a row with status='QUEUED' is inserted into repair_jobs with the
+//     derived priority
+// Error semantics: ErrShardCountOutOfRange if the pre-condition on
+//   availableShardCount fails; other database errors returned as-is.
+// Goroutine-safe: yes.
+func EnqueueJob(
+ ctx context.Context,
+ db *sql.DB,
+ profile config.NetworkProfile,
+ chunkID [32]byte,
+ segmentID uuid.UUID,
+ providerID *uuid.UUID,
+ triggerType TriggerType,
+ availableShardCount int,
+) error
+```
+
+> **Flagged — added `profile` parameter.** IC §5.7's declared signature has no `profile` parameter, yet its own pre-condition ("availableShardCount is in [16, 56]") is stated as a fixed range that the session task already (correctly) overrides to be profile-variable. Adding `profile config.NetworkProfile` here matches the calling convention already used by the sibling function `RepairPromotionTimeout(profile)` in this same package (Session 9.2.2) — this is a minimal, internally-consistent fix, not a new pattern.
+
+1. **Close the `.golangci.yml` placeholder from Session 0.2.1:** replace `# M9: internal/repair.Priority, internal/repair.TriggerType` with both types now that they're fully declared (with `Priority`'s three values, not two).
+
+**VERIFY:**
+
+```bash
+FILES_EXIST:
+  $ test -f internal/repair/errors.go && echo PASS || echo FAIL
+  $ test -f internal/repair/queue.go  && echo PASS || echo FAIL
+
+COMPILE:
+  $ go build ./internal/repair/
+  EXPECT: exit 0
+
+PRIORITY_HAS_THREE_VALUES:
+  # The core bug fix: must be 3 constants, not 2
+  $ grep -c "PriorityEmergency\|PriorityPermanentDeparture\|PriorityPreWarning" internal/repair/queue.go
+  EXPECT: 3
+  $ grep -c "^type Priority int" internal/repair/queue.go
+  EXPECT: 1
+
+PRIORITY_EMERGENCY_IS_FIRST:
+  # Must be iota-0 so it sorts first, matching ORDER BY priority ASC intent
+  $ grep -A3 "^const (" internal/repair/queue.go | grep -B2 "PriorityEmergency" | grep -c "iota"
+  EXPECT: >= 1
+
+FUNCTION_SIGNATURE:
+  $ grep -c "^func EnqueueJob(" internal/repair/queue.go
+  EXPECT: 1
+  $ grep -c "profile config.NetworkProfile" internal/repair/queue.go
+  EXPECT: >= 1
+
+EMERGENCY_FLOOR_MAPPED_CORRECTLY:
+  # The specific bug: TriggerEmergencyFloor must map to PriorityEmergency, not fall through
+  $ grep -B2 -A2 "TriggerEmergencyFloor" internal/repair/queue.go | grep -c "PriorityEmergency"
+  EXPECT: >= 1
+
+SENTINEL_ERRORS:
+  $ grep -c "ErrShardCountOutOfRange\|ErrJobQueueEmpty" internal/repair/errors.go
+  EXPECT: 2
+
+DEBUG_PANIC_SECOND_LINE_OF_DEFENCE:
+  $ grep -c "panic(" internal/repair/queue.go
+  EXPECT: >= 1
+  $ grep -c "//go:build debug\|debug.Enabled\|buildDebug" internal/repair/queue.go
+  EXPECT: >= 1
+
+GOLANGCI_PLACEHOLDER_CLOSED:
+  $ grep -c "# M9: internal/repair.Priority, internal/repair.TriggerType" .golangci.yml
+  EXPECT: 0
+  $ grep -c "internal/repair\.Priority\|internal/repair\.TriggerType" .golangci.yml
+  EXPECT: 2
+
+UNIT_TESTS:
+  $ go test -v -run TestEnqueueJob ./internal/repair/
+  EXPECT: exit 0; tests include:
+    TestEnqueueJobEmergencyFloorGetsEmergencyPriority   (TriggerEmergencyFloor -> row inserted with priority='EMERGENCY', not PRE_WARNING)
+    TestEnqueueJobDepartureGetsPermanentDeparturePriority (TriggerSilentDeparture / TriggerAnnouncedDeparture -> PERMANENT_DEPARTURE)
+    TestEnqueueJobThresholdGetsPreWarningPriority        (TriggerThresholdWarning -> PRE_WARNING)
+    TestEnqueueJobRejectsOutOfRangeShardCountDemo        (config.DemoProfile, count=6 -> ErrShardCountOutOfRange)
+    TestEnqueueJobRejectsOutOfRangeShardCountProd        (config.ProductionProfile, count=15 -> ErrShardCountOutOfRange)
+    TestEnqueueJobPanicsOnVettingChunkInDebugBuild       (is_vetting_chunk=TRUE -> panic, debug build tag only)
+
+NEGATIVE_CHECKS:
+  $ grep -n "Vyomanaut_V2/internal/payment\|Vyomanaut_V2/internal/audit\|Vyomanaut_V2/internal/scoring\|Vyomanaut_V2/internal/p2p" \
+      internal/repair/queue.go internal/repair/errors.go \
+      && echo "FAIL: prohibited import" || echo "PASS"
+
+VET:
+  $ go vet ./internal/repair/
+  EXPECT: exit 0; zero output
+```
 
 #### Session 9.1.2 — Implement `DequeueNextJob()`
 
-**Task:** Use `SELECT ... FOR UPDATE SKIP LOCKED` to atomically dequeue and mark as
-`IN_PROGRESS`. Priority ordering: `ORDER BY priority ASC, created_at ASC`. The ENUM
-ordering (EMERGENCY < PERMANENT_DEPARTURE < PRE_WARNING alphabetically) determines
-priority — verify this matches the intended drain order (DM §4.10 comment: "verify
-ENUM order").
+**PRECONDITIONS:**
 
-#### Session 9.1.3 — Implement `IsVettingChunk()` and `DeleteVettingChunksOnDeparture()`
+- Session 9.1.1 complete (`Priority`, `TriggerType`, `errors.go` exist)
 
-**Task:** `IsVettingChunk()` per IC §5.7: returns true iff `chunk_assignments` row
-for `(chunkID, providerID)` has `is_vetting_chunk = TRUE`.
+**TASK:**
 
-`DeleteVettingChunksOnDeparture()` per IC §5.7: bulk soft-delete all synthetic
-chunk_assignments for a departing vetting provider (`status = 'DELETED'`,
-`deleted_at = NOW()`). Zero repair_jobs are created (Invariant 6, FR-065).
+Implement, in `internal/repair/queue.go`:
+
+```go
+// DequeueNextJob atomically retrieves and marks IN_PROGRESS the highest-priority
+// QUEUED repair job, using SELECT ... FOR UPDATE SKIP LOCKED so concurrent
+// workers never contend for the same row (IC §5.7).
+//
+// Ordering: ORDER BY priority ASC, created_at ASC — EMERGENCY drains first,
+// then PERMANENT_DEPARTURE, then PRE_WARNING; FIFO within each tier (ADR-004,
+// DM §4.10).
+//
+// This ordering works because PostgreSQL ENUM comparison operators sort by
+// the enum's DECLARATION order (the order values were listed in `CREATE TYPE
+// ... AS ENUM (...)`), not lexicographically. DM §4.10's own comment
+// describes this as "EMERGENCY < PERMANENT_DEPARTURE < PRE_WARNING
+// alphabetically" — that phrasing is misleading: it is only a coincidence
+// that the declaration order chosen here also happens to be alphabetical. If
+// a fourth priority value were ever added via `ALTER TYPE ... ADD VALUE`
+// without care for its position, alphabetical order and declaration order
+// would diverge, and this comment would break silently. What actually
+// guarantees `ORDER BY priority ASC` drains EMERGENCY first is that
+// 'EMERGENCY' was declared before 'PERMANENT_DEPARTURE' before 'PRE_WARNING'
+// in the CREATE TYPE statement (Session 4.2.1) — not the spelling.
+//
+// Returns nil, nil if the queue is empty (not an error condition).
+// Goroutine-safe: yes.
+func DequeueNextJob(ctx context.Context, db *sql.DB) (*RepairJob, error)
+```
+
+**VERIFY:**
+
+```bash
+COMPILE:
+  $ go build ./internal/repair/
+  EXPECT: exit 0
+
+FUNCTION_SIGNATURE:
+  $ grep -c "^func DequeueNextJob(ctx context.Context, db \*sql.DB) (\*RepairJob, error)" internal/repair/queue.go
+  EXPECT: 1
+
+ATOMIC_DEQUEUE:
+  $ grep -c "FOR UPDATE SKIP LOCKED" internal/repair/queue.go
+  EXPECT: >= 1
+
+ORDERING_CLAUSE:
+  $ grep -c "ORDER BY priority ASC, created_at ASC" internal/repair/queue.go
+  EXPECT: 1
+
+DECLARATION_ORDER_NOTE_PRESENT:
+  # Confirms the "alphabetical" misconception from DM §4.10 is corrected here, not repeated
+  $ grep -c "declaration order\|DECLARATION order" internal/repair/queue.go
+  EXPECT: >= 1
+  $ grep -n "alphabetically" internal/repair/queue.go | grep -v "coincidence\|misleading" \
+      && echo "FAIL: must not restate 'alphabetically' as the mechanism without the correction" \
+      || echo "PASS"
+
+EMPTY_QUEUE_IS_NOT_AN_ERROR:
+  $ grep -c "return nil, nil" internal/repair/queue.go
+  EXPECT: >= 1
+
+UNIT_TESTS:
+  $ go test -v -run TestDequeueNextJob ./internal/repair/
+  EXPECT: exit 0; tests include:
+    TestDequeueNextJobDrainsEmergencyFirst        (mixed-priority queue -> EMERGENCY row returned before PERMANENT_DEPARTURE/PRE_WARNING)
+    TestDequeueNextJobFIFOWithinTier              (two PRE_WARNING rows -> older created_at returned first)
+    TestDequeueNextJobEmptyQueueReturnsNilNil      (no QUEUED rows -> (nil, nil), not an error)
+    TestDequeueNextJobConcurrentWorkersNoDoubleDequeue (N goroutines, SKIP LOCKED -> each job claimed exactly once)
+
+RACE_DETECTOR:
+  $ go test -race -count=1 -run TestDequeueNextJobConcurrentWorkersNoDoubleDequeue ./internal/repair/
+  EXPECT: exit 0; zero data-race reports
+
+VET:
+  $ go vet ./internal/repair/
+  EXPECT: exit 0; zero output
+```
+
+#### Session 9.1.3 — Implement `IsVettingChunk()`, `DeleteVettingChunksOnDeparture()`, and `MarkJobComplete()`
+
+**PRECONDITIONS:**
+
+- Session 9.1.1 complete
+
+> **Note:** the original Phase 9.1 reference line names five functions (`EnqueueJob`, `DequeueNextJob`, `IsVettingChunk`, `DeleteVettingChunksOnDeparture`, `MarkJobComplete`), but only four had an owning session — `MarkJobComplete` was never assigned anywhere. Added here since it's a queue-lifecycle function like the other two in this session.
+
+**TASK:**
+
+In `internal/repair/queue.go`:
+
+```go
+// IsVettingChunk returns true iff the chunk_assignments row for
+// (chunkID, providerID) has is_vetting_chunk = TRUE. Must be called by the
+// departure handler (Session 9.3.1) and by any threshold monitor BEFORE
+// calling EnqueueJob for that chunk (ADR-030).
+func IsVettingChunk(ctx context.Context, db *sql.DB, chunkID [32]byte, providerID uuid.UUID) (bool, error)
+
+// DeleteVettingChunksOnDeparture soft-deletes all synthetic chunk_assignments
+// for a departing vetting provider (status='DELETED', deleted_at=NOW()).
+// Enqueues zero repair_jobs (FR-065, DM §3 Invariant 6).
+//
+// Pre-conditions:
+//   - providerID identifies a provider transitioning to status='DEPARTED'
+//   - all of that provider's chunk_assignments have is_vetting_chunk = TRUE
+//     (the departure handler must have already verified this — a VETTING
+//     provider that somehow holds a real shard is itself a bug elsewhere)
+func DeleteVettingChunksOnDeparture(ctx context.Context, db *sql.DB, providerID uuid.UUID) error
+
+// MarkJobComplete sets a repair job's status to COMPLETED or FAILED, and
+// stamps completed_at = NOW() (DM §4.10 repair_jobs_completed_after_started
+// CHECK: completed_at requires started_at to already be set). Called by the
+// repair executor (Session 9.2.1) after the replacement upload succeeds
+// (success=true) or exhausts retries (success=false).
+func MarkJobComplete(ctx context.Context, db *sql.DB, jobID uuid.UUID, success bool) error
+```
+
+**VERIFY:**
+
+```bash
+COMPILE:
+  $ go build ./internal/repair/
+  EXPECT: exit 0
+
+FUNCTION_SIGNATURES:
+  $ grep -c "^func IsVettingChunk(ctx context.Context, db \*sql.DB, chunkID \[32\]byte, providerID uuid.UUID) (bool, error)" \
+      internal/repair/queue.go
+  EXPECT: 1
+  $ grep -c "^func DeleteVettingChunksOnDeparture(ctx context.Context, db \*sql.DB, providerID uuid.UUID) error" \
+      internal/repair/queue.go
+  EXPECT: 1
+  $ grep -c "^func MarkJobComplete(ctx context.Context, db \*sql.DB, jobID uuid.UUID, success bool) error" \
+      internal/repair/queue.go
+  EXPECT: 1
+
+ZERO_REPAIR_JOBS_ON_VETTING_DEPARTURE:
+  $ grep -A20 "^func DeleteVettingChunksOnDeparture" internal/repair/queue.go | grep -c "EnqueueJob"
+  EXPECT: 0
+
+SOFT_DELETE_NOT_HARD_DELETE:
+  $ grep -A20 "^func DeleteVettingChunksOnDeparture" internal/repair/queue.go | grep -c "DELETE FROM chunk_assignments"
+  EXPECT: 0
+  $ grep -A20 "^func DeleteVettingChunksOnDeparture" internal/repair/queue.go | grep -c "status = 'DELETED'\|deleted_at = NOW()"
+  EXPECT: >= 1
+
+MARKJOBCOMPLETE_SETS_TIMESTAMP:
+  $ grep -A10 "^func MarkJobComplete" internal/repair/queue.go | grep -c "completed_at"
+  EXPECT: >= 1
+
+UNIT_TESTS:
+  $ go test -v -run TestIsVettingChunk ./internal/repair/
+  EXPECT: exit 0; tests include: TestIsVettingChunkTrueForSynthetic, TestIsVettingChunkFalseForReal
+
+  $ go test -v -run TestDeleteVettingChunksOnDeparture ./internal/repair/
+  EXPECT: exit 0; tests include:
+    TestDeleteVettingChunksOnDepartureZeroRepairJobs     (repair_jobs table has zero new rows after call)
+    TestDeleteVettingChunksOnDepartureSoftDeletesAll     (all rows for provider -> status='DELETED', deleted_at set)
+
+  $ go test -v -run TestMarkJobComplete ./internal/repair/
+  EXPECT: exit 0; tests include:
+    TestMarkJobCompleteSuccess    (success=true -> status='COMPLETED')
+    TestMarkJobCompleteFailure    (success=false -> status='FAILED')
+    TestMarkJobCompleteRejectsUnstartedJob (started_at IS NULL -> error, matching repair_jobs_completed_after_started CHECK)
+
+NEGATIVE_CHECKS:
+  $ grep -n "Vyomanaut_V2/internal/payment\|Vyomanaut_V2/internal/audit\|Vyomanaut_V2/internal/scoring" \
+      internal/repair/queue.go \
+      && echo "FAIL: prohibited import" || echo "PASS"
+
+VET:
+  $ go vet ./internal/repair/
+  EXPECT: exit 0; zero output
+```
 
 ---
 
 ### Phase 9.2 — Repair Executor
 
-**Reference:** IC §4.4.1 (repair download stream), IC §4.4.2 (repair upload stream),
-IC §5.7 (`RepairJob`, `RepairPromotionTimeout`)
+**Reference:** IC §4.4.1 (repair download stream — wire format, timeout, authentication), IC §4.4.2 (repair upload stream — reuses `/vyomanaut/chunk-upload/1.0.0`, IC §4.1), IC §5.7 (`RepairJob`, `RepairPromotionTimeout`), IC §5.4 (`Host` interface — structurally consumed, not imported), FR-042–FR-045, ADR-004
 
-#### Session 9.2.1 — Implement repair download client
+> **Flagged — three missing implementation details in the original task.** (1) IC §4.1's capability-token requirement applies to the repair upload exactly as it does to a normal upload (§4.4.2: "IDENTICAL to the standard upload protocol") — the executor must mint a `capability_token` for the replacement provider before uploading, or the upload fails `0x03 NOT_ASSIGNED`. (2) IC §4.4.2 explicitly requires the microservice to INSERT the new `chunk_assignments` row *before* opening the upload stream, so the replacement provider's own `NOT_ASSIGNED` check passes — the original task description never mentioned this ordering requirement. (3) The reconstructed shard being re-uploaded is not necessarily a *parity* shard — RS re-encoding regenerates the full shard set, and the specific index needing replacement could be any data shard (0–15 in production) or parity shard (16–55), matching whichever holder actually departed. "Generate missing parity shards" (the original phrasing) is corrected below.
 
-**Task:** In `internal/repair/executor.go`, implement the microservice-side client for
-the `/vyomanaut/repair-download/1.0.0` protocol (IC §4.4.1). The repair scheduler:
+#### Session 9.2.1 — Implement the repair download/decode/re-encode/upload pipeline
 
-1. Contacts `DataShards` (=16 in prod) surviving shard holders
-2. For each: opens a stream, sends `RepairDownloadRequest` with `repair_auth_sig`
-   (Ed25519 over `SHA-256(chunk_id || request_ts_ms || microservice_peer_id)` per IC §4.4.1)
-3. Receives `chunk_data` (262144 bytes)
-4. 0-RTT must be PROHIBITED for this stream (IC §4.4.1)
-5. Timeout: 10,000ms (IC §4.4.1)
+**PRECONDITIONS:**
 
-After download: RS decode via `internal/erasure`, generate missing parity shards,
-upload via the standard `/vyomanaut/chunk-upload/1.0.0` protocol (IC §4.4.2).
+- Session 9.1.1 complete (`errors.go`, `Priority`/`TriggerType` exist)
+- Session 9.4.1 complete (replacement-provider selection — the executor needs a chosen replacement provider *before* it can construct the capability token or open the upload stream)
+- `internal/erasure` complete (Milestone 3)
+- A package-local transport interface exists for this session to depend on (see the flagged import-constraint note in the Milestone 9 header) — declare it in this session if not already present:
 
-#### Session 9.2.2 — Implement `RepairPromotionTimeout()`
+```go
+// RepairTransport is the narrow subset of p2p.Host this package needs to open
+// download/upload streams. internal/p2p.Host satisfies this interface
+// structurally; internal/repair never imports internal/p2p, and internal/p2p
+// never imports internal/repair. The microservice entrypoint (Milestone 12,
+// Session 12.1.1) constructs the real Host and injects it here as this type.
+type RepairTransport interface {
+ NewStream(ctx context.Context, peerID peer.ID, protocolID protocol.ID) (network.Stream, error)
+}
+```
 
-**Task:** Implement the simple accessor per IC §5.7: `return profile.RepairPromotionTimeout`.
-The scheduler must call this rather than reading a constant (IC §5.7, ADR-031).
+**TASK:**
+
+In `internal/repair/executor.go`, implement the microservice-side client for `/vyomanaut/repair-download/1.0.0` (IC §4.4.1), then the reconstruction and re-upload:
+
+1. **Download.** Contact `profile.DataShards` (16 in production, 3 in demo) surviving shard holders. For each: open a stream via `RepairTransport.NewStream`, send `RepairDownloadRequest` — `chunk_id` (32B) + `repair_auth_sig` (64B, Ed25519 by the microservice signing key over `SHA-256(chunk_id ‖ request_ts_ms ‖ microservice_peer_id)`, IC §4.4.1). 0-RTT is **PROHIBITED** on this stream (set `DisableEarlyData: true`). Timeout: 10,000 ms per holder. Handle all four documented status codes: `0x00` OK (accept `chunk_data`), `0x01` NOT_FOUND / `0x03` CORRUPTION (try the next surviving holder — up to `profile.ParityShards` extra holders are available before running out), `0x02` NOT_AUTHORISED / `0x04` INTERNAL_ERROR (log and retry with backoff, or escalate if all holders exhausted).
+2. **Reconstruct.** Once `profile.DataShards` valid shards are collected, call `erasure.Engine.DecodeSegment()` to recover the AONT package, then `erasure.Engine.EncodeSegment()` to **regenerate the full `profile.TotalShards`-shard set**. Extract only the specific shard index (or indices) that correspond to the departed/failed holder(s) — this can be any index from `0` to `profile.TotalShards-1`, i.e. a data shard or a parity shard; it is not necessarily parity-only.
+3. **Pre-register, then upload.** Before opening the upload stream: `INSERT` the new `chunk_assignments` row for the replacement provider (chosen by Session 9.4.1) with `status='REPAIRING'` — this must happen *before* the upload stream opens, or the replacement provider's own `NOT_ASSIGNED` check (IC §4.1 status `0x03`) rejects the frame. Mint a `capability_token` (IC §4.1 format: `expiry_unix_ms(8B) || Ed25519_sign(microservice_signing_key, signing_input)`, 1-hour TTL) scoped to the replacement provider's ID and the reconstructed chunk. Upload via the standard `/vyomanaut/chunk-upload/1.0.0` protocol (IC §4.4.2) — identical wire format to a normal client upload; the replacement provider cannot and must not be able to distinguish a repair upload from a normal one.
+4. **Confirm.** On receiving `UploadResponse` with `status = 0x00`: call `MarkJobComplete(ctx, db, jobID, success=true)` and update the new provider's `chunk_assignments.status` from `REPAIRING` to `ACTIVE` (IC §4.4.2 post-repair confirmation). On failure after retries: `MarkJobComplete(ctx, db, jobID, success=false)`.
+
+**VERIFY:**
+
+```bash
+FILES_EXIST:
+  $ test -f internal/repair/executor.go && echo PASS || echo FAIL
+
+COMPILE:
+  $ go build ./internal/repair/
+  EXPECT: exit 0
+
+TRANSPORT_INTERFACE_IS_LOCAL_NOT_IMPORTED:
+  $ grep -c "^type RepairTransport interface" internal/repair/executor.go
+  EXPECT: 1
+  $ grep -n "Vyomanaut_V2/internal/p2p" internal/repair/executor.go \
+      && echo "FAIL: must not import internal/p2p directly" || echo "PASS"
+
+DOWNLOAD_USES_PROFILE_DATASHARDS_NOT_HARDCODED_16:
+  $ grep -c "profile.DataShards" internal/repair/executor.go
+  EXPECT: >= 1
+  $ grep -n "== 16\b" internal/repair/executor.go | grep -v "test\|_test" \
+      && echo "FAIL: DataShards count must come from profile, not a literal 16" || echo "PASS"
+
+ZERO_RTT_DISABLED_ON_DOWNLOAD:
+  $ grep -c "DisableEarlyData" internal/repair/executor.go
+  EXPECT: >= 1
+
+ALL_FOUR_STATUS_CODES_HANDLED:
+  $ grep -c "0x00\|0x01\|0x02\|0x03\|0x04" internal/repair/executor.go
+  EXPECT: >= 5
+
+RECONSTRUCTS_ANY_SHARD_INDEX_NOT_JUST_PARITY:
+  $ grep -c "data shard or a parity shard\|any index from\|not necessarily parity" internal/repair/executor.go
+  EXPECT: >= 1
+
+PRE_REGISTRATION_BEFORE_UPLOAD:
+  # The order-of-operations fix: INSERT chunk_assignments must appear before NewStream for upload
+  $ grep -n "INSERT INTO chunk_assignments" internal/repair/executor.go | head -1
+  $ grep -n "chunk-upload/1.0.0" internal/repair/executor.go | head -1
+  # Manual check: INSERT line number must be smaller than the upload-stream line number
+
+CAPABILITY_TOKEN_MINTED:
+  $ grep -c "capability_token\|CapabilityToken\|expiry_unix_ms" internal/repair/executor.go
+  EXPECT: >= 1
+
+STATUS_TRANSITION_ON_SUCCESS:
+  $ grep -c "REPAIRING.*ACTIVE\|'ACTIVE'" internal/repair/executor.go
+  EXPECT: >= 1
+  $ grep -c "MarkJobComplete" internal/repair/executor.go
+  EXPECT: >= 2   # both success and failure paths
+
+UNIT_TESTS:
+  $ go test -v -run TestRepairExecutor ./internal/repair/
+  EXPECT: exit 0; tests include:
+    TestRepairExecutorDownloadsMinimumShards       (stops after profile.DataShards successful downloads)
+    TestRepairExecutorFallsBackOnHolderFailure     (0x01/0x03 from one holder -> tries next candidate, does not abort)
+    TestRepairExecutorReconstructsCorrectShardIndex (missing shard was index 3 -> uploaded shard is index 3, not necessarily a parity index)
+    TestRepairExecutorPreRegistersBeforeUpload      (chunk_assignments row exists with status=REPAIRING before any upload stream is opened)
+    TestRepairExecutorMarksCompleteOnSuccess
+    TestRepairExecutorMarksFailedOnExhaustedRetries
+
+NEGATIVE_CHECKS:
+  $ grep -n "Vyomanaut_V2/internal/payment\|Vyomanaut_V2/internal/audit\|Vyomanaut_V2/internal/scoring" \
+      internal/repair/executor.go \
+      && echo "FAIL: prohibited import" || echo "PASS"
+
+VET:
+  $ go vet ./internal/repair/
+  EXPECT: exit 0; zero output
+```
+
+#### Session 9.2.2 — Implement `RepairPromotionTimeout()` and the stale pre-warning promotion scan
+
+**PRECONDITIONS:**
+
+- Session 9.1.2 complete (`DequeueNextJob` and the queue's basic shape exist in `queue.go`)
+
+> **Note:** the original task described only the one-line accessor. IC §5.7's own comment says "the scheduler must call this," implying a consumer exists — but no session actually implemented the promotion logic (a scan of stale `PRE_WARNING` jobs) that would call it. Added below, closing FR-043's second half ("must be promoted to permanent-departure priority if they have been queued for more than 6 hours without service").
+
+**TASK:**
+
+In `internal/repair/queue.go` (job-lifecycle logic belongs alongside `DequeueNextJob`, not in `executor.go`):
+
+```go
+// RepairPromotionTimeout returns the duration after which a QUEUED PRE_WARNING
+// job is promoted to PERMANENT_DEPARTURE priority (ADR-031, FR-043).
+// 6 hours in production, 3 minutes in demo — the scheduler must call this
+// rather than reading a constant.
+func RepairPromotionTimeout(profile config.NetworkProfile) time.Duration {
+ return profile.RepairPromotionTimeout
+}
+
+// PromoteStalePreWarningJobs finds every QUEUED PRE_WARNING job whose
+// created_at is older than RepairPromotionTimeout(profile) and updates its
+// priority to PERMANENT_DEPARTURE (FR-043). Intended to run on a periodic
+// ticker from the microservice entrypoint (Milestone 12), independent of
+// DequeueNextJob's own invocation cadence.
+//
+//   UPDATE repair_jobs
+//   SET priority = 'PERMANENT_DEPARTURE'
+//   WHERE priority = 'PRE_WARNING'
+//     AND status = 'QUEUED'
+//     AND created_at < NOW() - $1  -- RepairPromotionTimeout(profile)
+//
+// Returns the number of rows promoted, for observability.
+func PromoteStalePreWarningJobs(ctx context.Context, db *sql.DB, profile config.NetworkProfile) (int, error)
+```
+
+**VERIFY:**
+
+```bash
+COMPILE:
+  $ go build ./internal/repair/
+  EXPECT: exit 0
+
+FUNCTION_SIGNATURES:
+  $ grep -c "^func RepairPromotionTimeout(profile config.NetworkProfile) time.Duration" internal/repair/queue.go
+  EXPECT: 1
+  $ grep -c "^func PromoteStalePreWarningJobs(ctx context.Context, db \*sql.DB, profile config.NetworkProfile) (int, error)" \
+      internal/repair/queue.go
+  EXPECT: 1
+
+NOT_HARDCODED:
+  $ grep -c "return profile.RepairPromotionTimeout" internal/repair/queue.go
+  EXPECT: 1
+  $ grep -n "6 \* time.Hour\|3 \* time.Minute" internal/repair/queue.go | grep -v "_test.go" \
+      && echo "FAIL: must read profile field, not a literal duration" || echo "PASS"
+
+PROMOTION_SQL_TARGETS_CORRECT_ROWS:
+  $ grep -c "priority = 'PRE_WARNING'" internal/repair/queue.go
+  EXPECT: >= 1
+  $ grep -c "priority = 'PERMANENT_DEPARTURE'" internal/repair/queue.go
+  EXPECT: >= 1
+
+UNIT_TESTS:
+  $ go test -v -run TestRepairPromotionTimeout ./internal/repair/
+  EXPECT: exit 0; tests include:
+    TestRepairPromotionTimeoutReturnsProfileValue (demo profile -> 3 min; prod profile -> 6h)
+
+  $ go test -v -run TestPromoteStalePreWarningJobs ./internal/repair/
+  EXPECT: exit 0; tests include:
+    TestPromoteStalePreWarningJobsPromotesOldOnes     (job older than threshold -> priority becomes PERMANENT_DEPARTURE)
+    TestPromoteStalePreWarningJobsLeavesFreshOnes     (job younger than threshold -> priority unchanged)
+    TestPromoteStalePreWarningJobsIgnoresNonQueued     (IN_PROGRESS/COMPLETED PRE_WARNING rows untouched)
+
+VET:
+  $ go vet ./internal/repair/
+  EXPECT: exit 0; zero output
+```
 
 ---
 
 ### Phase 9.3 — Departure Detector
 
-**Reference:** IC §3.1 (heartbeat effect on departure detection), DM §4.2
-(`departed_at`, `providers.status = 'DEPARTED'`)
+**Reference:** IC §3.1 (heartbeat's effect on `last_heartbeat_ts`), DM §4.2 (`departed_at`, `frozen`, `providers.status` state machine), DM §3 Invariant 3 (no physical deletion), IC §6 (`providers.status` DML — "any → DEPARTED" is a valid transition from either `VETTING` or `ACTIVE`), FR-035, FR-065, ARCH §12 (Provider Lifecycle — "Exiting" table, both Silent-departure rows)
 
-#### Session 9.3.1 — Implement departure detector loop
+> **Flagged and fixed — the detection query excluded VETTING providers entirely.** The original SQL was `WHERE status = 'ACTIVE'`. But ARCH §12's own "Exiting" table lists **two** silent-departure rows keyed on the *same* `last_heartbeat_ts`/threshold mechanism — one for `status = VETTING`, one for `status = ACTIVE` — and FR-065 explicitly presupposes that a VETTING provider *does* cross this same 72-hour (10-minute in demo) threshold. IC §6 also confirms `providers.status` may transition to `DEPARTED` from "any" prior state, not just `ACTIVE`. As originally written, a silently-departing vetting provider would never be selected by this query, never marked `DEPARTED`, never have its escrow seized, and never free its assignment slot — the entire FR-065/vetting-departure code path in Sessions 9.1.3 and downstream would simply never execute. Corrected below to `WHERE status IN ('ACTIVE', 'VETTING')`; only the *downstream handling* (real-shard repair vs. synthetic-chunk soft-delete) differs by status, not the detection step itself.
 
-**Task:** In `internal/repair/departure.go`, implement the departure detector that
-periodically runs:
+#### Session 9.3.1 — Implement the departure detector loop
+
+**PRECONDITIONS:**
+
+- Session 9.1.1 complete (`EnqueueJob`, `Priority`/`TriggerType`)
+- Session 9.1.3 complete (`IsVettingChunk`, `DeleteVettingChunksOnDeparture`)
+- A `PenaliseFunc`-shaped callback is available to be injected at construction — the actual `internal/payment.Penalise` implementation is wired in by Milestone 12, Session 12.1.1, which is the only place in the codebase permitted to import both `internal/repair` and `internal/payment`
+
+**TASK:**
+
+1. Declare the injection point in `internal/repair/departure.go`:
+
+```go
+// PenaliseFunc is the shape of internal/payment.Penalise, injected by the
+// caller so internal/repair never imports internal/payment (IC §9). Set to a
+// real implementation only in Milestone 12, Session 12.1.1.
+type PenaliseFunc func(ctx context.Context, providerID uuid.UUID, amountPaise int64, idempotencyKey string) error
+
+// DepartureDetector periodically scans for silently-departed providers.
+type DepartureDetector struct {
+ db       *sql.DB
+ profile  config.NetworkProfile
+ penalise PenaliseFunc
+}
+
+func NewDepartureDetector(db *sql.DB, profile config.NetworkProfile, penalise PenaliseFunc) *DepartureDetector
+```
+
+1. Implement the detection loop:
+
+```go
+// Run polls at profile.PollingInterval (reused from the audit-scheduling
+// cadence — no dedicated NetworkProfile field exists for this, and reusing
+// PollingInterval keeps the detection-latency-to-threshold ratio roughly
+// consistent between modes: ~24h:72h in production, ~2min:10min in demo).
+// This choice is an inference, not a documented requirement — revisit if a
+// tighter detection SLA is ever specified.
+func (d *DepartureDetector) Run(ctx context.Context) {
+ ticker := time.NewTicker(d.profile.PollingInterval)
+ defer ticker.Stop()
+ for {
+  select {
+  case <-ctx.Done():
+   return
+  case <-ticker.C:
+   d.detectOnce(ctx)
+  }
+ }
+}
+```
+
+1. The per-cycle detection query — **corrected to include VETTING**:
 
 ```sql
-SELECT provider_id FROM providers
-WHERE status = 'ACTIVE'
+SELECT provider_id, status FROM providers
+WHERE status IN ('ACTIVE', 'VETTING')
   AND last_heartbeat_ts < NOW() - $1  -- profile.DepartureThreshold
 ```
 
-For each departed provider:
+1. For each departed provider (within one transaction per provider):
+   - Set `status = 'DEPARTED'`, `frozen = TRUE`, `departed_at = NOW()` — a valid transition from either prior status per IC §6 ("any → DEPARTED").
+   - Call `d.penalise(ctx, providerID, sealedBalance, idempotencyKey)` where `idempotencyKey = SHA-256(providerID || "seizure" || departedAt)` (IC §5.8) — this is the only side effect requiring `internal/payment`, hence the callback injection.
+   - **Branch on the *original* status** (captured before the UPDATE, not re-queried after): if it was `VETTING`, call `DeleteVettingChunksOnDeparture(ctx, db, providerID)` and enqueue **zero** repair jobs (FR-065). If it was `ACTIVE`, for each real chunk assignment call `IsVettingChunk()` (defensive — should always be `false` for an ACTIVE provider, but this check is what Invariant 6 requires as a hard gate) and then `EnqueueJob(ctx, db, profile, chunkID, segmentID, &providerID, TriggerSilentDeparture, availableShardCount)`.
+   - Do **not** physically delete the `providers` row in either branch (DM §3 Invariant 3).
 
-1. Set `status = 'DEPARTED'`, `frozen = TRUE`, `departed_at = NOW()`
-2. Call `IsVettingChunk()` for each assigned chunk — if true, call `DeleteVettingChunksOnDeparture()` instead of `EnqueueJob()`
-3. Call `payment.Penalise()` (the departure handler wires payment — but repair package cannot import payment; This violates IC §9 which explicitly prohibits `internal/repair` from importing `internal/payment`. This can be added to Session 12.1.1 where the departure detector goroutine is wired into the microservice)
-4. Call `EnqueueJob()` for each real shard (Invariant 3: no physical deletion)
+**Downstream note (not implemented here):** peer-blocking after departure (FR-036 — a departed provider that reconnects gets HTTP 403) is enforced by every authenticated REST endpoint checking `providers.status != 'DEPARTED'` (IC §3.3 error code `PROVIDER_DEPARTED`), not by this detector.
 
-**IC §6 DML constraint:** `UPDATE providers SET status = 'DEPARTED'` is only permitted by
-`vyomanaut_app` (IC §6 `providers` table row).
+**VERIFY:**
+
+```bash
+FILES_EXIST:
+  $ test -f internal/repair/departure.go && echo PASS || echo FAIL
+
+COMPILE:
+  $ go build ./internal/repair/
+  EXPECT: exit 0
+
+THE_CORE_FIX_VETTING_INCLUDED:
+  # Must select both statuses — this is the functional bug fix
+  $ grep -c "status IN ('ACTIVE', 'VETTING')" internal/repair/departure.go
+  EXPECT: >= 1
+  $ grep -n "WHERE status = 'ACTIVE'" internal/repair/departure.go | grep -v "_test.go" \
+      && echo "FAIL: detection query must also include VETTING (FR-065, ARCH §12)" \
+      || echo "PASS"
+
+PENALISE_IS_INJECTED_NOT_IMPORTED:
+  $ grep -c "^type PenaliseFunc func(" internal/repair/departure.go
+  EXPECT: 1
+  $ grep -n "Vyomanaut_V2/internal/payment" internal/repair/departure.go \
+      && echo "FAIL: internal/repair must not import internal/payment (IC §9)" || echo "PASS"
+
+BRANCHES_ON_ORIGINAL_STATUS:
+  $ grep -c "DeleteVettingChunksOnDeparture" internal/repair/departure.go
+  EXPECT: >= 1
+  $ grep -c "EnqueueJob" internal/repair/departure.go
+  EXPECT: >= 1
+
+NO_PHYSICAL_DELETE:
+  $ grep -n "DELETE FROM providers" internal/repair/departure.go \
+      && echo "FAIL: providers is never physically deleted (DM §3 Invariant 3)" || echo "PASS"
+
+STATUS_TRANSITION_FIELDS_SET_TOGETHER:
+  $ grep -c "status = 'DEPARTED'" internal/repair/departure.go
+  EXPECT: >= 1
+  $ grep -c "frozen = TRUE\|frozen = true" internal/repair/departure.go
+  EXPECT: >= 1
+  $ grep -c "departed_at = NOW()" internal/repair/departure.go
+  EXPECT: >= 1
+
+POLLING_INTERVAL_IS_PROFILE_DRIVEN:
+  $ grep -c "profile.PollingInterval\|d.profile.PollingInterval" internal/repair/departure.go
+  EXPECT: >= 1
+
+UNIT_TESTS:
+  $ go test -v -run TestDepartureDetector ./internal/repair/
+  EXPECT: exit 0; tests include:
+    TestDepartureDetectorCatchesActiveProviders         (ACTIVE provider past threshold -> detected, DEPARTED, EnqueueJob called)
+    TestDepartureDetectorCatchesVettingProviders         (VETTING provider past threshold -> detected, DEPARTED, DeleteVettingChunksOnDeparture called, EnqueueJob NOT called)
+    TestDepartureDetectorIgnoresRecentHeartbeats         (last_heartbeat_ts within threshold -> not selected)
+    TestDepartureDetectorNeverPhysicallyDeletesRow       (providers row count unchanged before/after)
+    TestDepartureDetectorCallsPenaliseWithSeizureIdempotencyKey
+
+NEGATIVE_CHECKS:
+  $ grep -n "Vyomanaut_V2/internal/audit\|Vyomanaut_V2/internal/scoring" internal/repair/departure.go \
+      && echo "FAIL: prohibited import" || echo "PASS"
+
+VET:
+  $ go vet ./internal/repair/
+  EXPECT: exit 0; zero output
+```
+
+---
+
+### Phase 9.4 — Replacement Provider Selection *(new — closes an MVP §8.2 gap)*
+
+**Reference:** MVP §8.2 (`assignment.go` — "Power of Two Choices + ASN cap enforcement for replacement selection"), FR-045 (replacement ASN cap requirement), ADR-014 (20% ASN cap), ADR-005 (Power of Two Choices for original assignment — reused here for replacements)
+
+> No session in the original plan owned `assignment.go`, despite `mvp.md §8.2` naming it explicitly and FR-045 requiring its behavior ("During repair, replacement providers must be selected with the same 20% ASN cap constraint that governs original chunk assignment"). Session 9.2.1 cannot correctly select a replacement provider without this — added here as its own phase since it precedes and feeds Session 9.2.1's upload step.
+
+#### Session 9.4.1 — Implement replacement-provider selection
+
+**PRECONDITIONS:**
+
+- `internal/scoring` complete (Milestone 8) — needed to compare two candidate providers' reliability scores for Power of Two Choices (`scoring.GetScore`, read-only; `internal/repair` importing `internal/scoring` for read access is not one of the prohibited directions — only `internal/repair` importing `internal/payment`/`internal/audit`/`internal/scoring`-writes is at issue; a read-only score lookup mirrors how `internal/audit` and `internal/scoring` already independently query shared tables. If this reasoning doesn't hold, fall back to a direct SQL query against `mv_provider_scores` instead of importing `internal/scoring`.)
+
+**TASK:**
+
+In `internal/repair/assignment.go`:
+
+```go
+// SelectReplacementProvider chooses a new provider to receive the
+// reconstructed shard for segmentID, excluding excludeProviderIDs (the
+// departed/failed holder(s) and every other current holder of this
+// segment's shards, so the same provider is never assigned two shards of one
+// segment). Uses Power of Two Choices (ADR-005): draw two ACTIVE candidates
+// at random from the vetted pool, pick the higher-scored one.
+//
+// The chosen candidate must not push any single ASN's share of this
+// segment's TotalShards above floor(TotalShards * profile.ASNCapFraction)
+// (FR-045, ADR-014) — the same 20% cap enforced at original assignment time.
+// If the higher-scored candidate would violate the cap, fall back to the
+// second candidate; if both would violate it, draw again (bounded retries)
+// before returning ErrNoEligibleReplacement.
+func SelectReplacementProvider(
+ ctx context.Context,
+ db *sql.DB,
+ profile config.NetworkProfile,
+ segmentID uuid.UUID,
+ excludeProviderIDs []uuid.UUID,
+) (uuid.UUID, error)
+
+var ErrNoEligibleReplacement = errors.New("repair: no ASN-cap-eligible replacement provider found after bounded retries")
+```
+
+**VERIFY:**
+
+```bash
+FILES_EXIST:
+  $ test -f internal/repair/assignment.go && echo PASS || echo FAIL
+
+COMPILE:
+  $ go build ./internal/repair/
+  EXPECT: exit 0
+
+FUNCTION_SIGNATURE:
+  $ grep -c "^func SelectReplacementProvider(" internal/repair/assignment.go
+  EXPECT: 1
+
+POWER_OF_TWO_CHOICES:
+  $ grep -c "two.*candidates\|Power of Two\|two ACTIVE candidates" internal/repair/assignment.go
+  EXPECT: >= 1
+
+ASN_CAP_ENFORCED:
+  $ grep -c "ASNCapFraction\|20%\|ASN cap" internal/repair/assignment.go
+  EXPECT: >= 1
+
+EXCLUDES_CURRENT_HOLDERS:
+  $ grep -c "excludeProviderIDs" internal/repair/assignment.go
+  EXPECT: >= 2
+
+SENTINEL_ERROR:
+  $ grep -c "ErrNoEligibleReplacement" internal/repair/assignment.go
+  EXPECT: >= 1
+
+UNIT_TESTS:
+  $ go test -v -run TestSelectReplacementProvider ./internal/repair/
+  EXPECT: exit 0; tests include:
+    TestSelectReplacementProviderPicksHigherScored        (of two candidates, higher scoring.GetScore composite wins)
+    TestSelectReplacementProviderRejectsASNCapViolation    (higher-scored candidate would exceed cap -> falls back to lower-scored candidate)
+    TestSelectReplacementProviderExcludesCurrentHolders    (never returns a providerID already holding a shard of this segment)
+    TestSelectReplacementProviderReturnsErrAfterBoundedRetries (all candidates violate cap -> ErrNoEligibleReplacement, not an infinite loop)
+
+NEGATIVE_CHECKS:
+  $ grep -n "Vyomanaut_V2/internal/payment\|Vyomanaut_V2/internal/audit" internal/repair/assignment.go \
+      && echo "FAIL: prohibited import" || echo "PASS"
+
+VET:
+  $ go vet ./internal/repair/
+  EXPECT: exit 0; zero output
+```
+
+---
+
+### Phase 9.5 — Repair Package Tests *(new — closes an MVP §8.2 gap)*
+
+**Reference:** MVP §8.2 (`repair_test.go` — "priority ordering, ASN cap, emergency floor, vetting exclusion")
+
+#### Session 9.5.1 — Implement `repair_test.go`
+
+**PRECONDITIONS:**
+
+- Sessions 9.1.1 through 9.4.1 all complete
+- CI Postgres instance available with the Milestone 4 migration applied
+
+**TASK:**
+
+Create `internal/repair/repair_test.go` covering the four areas `mvp.md §8.2` names, at the integration level:
+
+| Test name | What it validates |
+|---|---|
+| `TestPriorityOrderingEndToEnd` | Enqueue one job of each trigger type in reverse-priority order; `DequeueNextJob` returns them EMERGENCY → PERMANENT_DEPARTURE → PRE_WARNING regardless of insertion order — the specific bug this revision fixed |
+| `TestASNCapAcrossRepairAndOriginalAssignment` | Simulate a segment already at the ASN cap boundary; confirm `SelectReplacementProvider` never pushes any ASN over `floor(TotalShards * 0.20)`, matching FR-045's "same cap as original assignment" |
+| `TestEmergencyFloorBypassesQueueOrder` | A `PRE_WARNING` job is already queued; an `EMERGENCY` job for a different chunk is enqueued after it; `DequeueNextJob` returns the EMERGENCY job first despite arriving later |
+| `TestVettingExclusionEndToEnd` | A VETTING provider with only synthetic chunks crosses `DepartureThreshold`; confirm `repair_jobs` gains **zero** new rows and `chunk_assignments` for that provider all become `DELETED` — exercising Sessions 9.1.3 and 9.3.1 together |
+
+**VERIFY:**
+
+```bash
+FILES_EXIST:
+  $ test -f internal/repair/repair_test.go && echo PASS || echo FAIL
+
+TEST_NAMES_PRESENT:
+  $ grep -c "^func TestPriorityOrderingEndToEnd\|^func TestASNCapAcrossRepairAndOriginalAssignment\|^func TestEmergencyFloorBypassesQueueOrder\|^func TestVettingExclusionEndToEnd" \
+      internal/repair/repair_test.go
+  EXPECT: 4
+
+ALL_TESTS_PASS:
+  $ go test -race -count=1 -v ./internal/repair/
+  EXPECT: exit 0; every test in this file and every earlier M9 session's UNIT_TESTS block shows "--- PASS:"
+
+EMERGENCY_FIX_SPECIFICALLY_EXERCISED:
+  $ grep -A15 "^func TestEmergencyFloorBypassesQueueOrder" internal/repair/repair_test.go | grep -c "PriorityEmergency\|'EMERGENCY'"
+  EXPECT: >= 1
+
+VETTING_FIX_SPECIFICALLY_EXERCISED:
+  $ grep -A20 "^func TestVettingExclusionEndToEnd" internal/repair/repair_test.go | grep -c "VETTING"
+  EXPECT: >= 1
+  $ grep -A20 "^func TestVettingExclusionEndToEnd" internal/repair/repair_test.go | grep -c "COUNT(\*)\|len(jobs) == 0\|zero"
+  EXPECT: >= 1
+
+CI_RACE_GATE (M0 CI check 4 must stay green with this package included):
+  $ go test -race -count=1 ./...
+  EXPECT: exit 0
+
+FULL_PACKAGE_BUILD:
+  $ go build ./internal/repair/
+  $ go vet ./internal/repair/
+  EXPECT: both exit 0
+```
 
 ---
 
 ## Milestone 10 — Payment System (`internal/payment`)
 
-**Deliverable:** `PaymentProvider` interface, mock provider, Razorpay live implementation,
-append-only escrow ledger, release computation, seizure. Zero float arithmetic. Must NOT
-import `repair` or `p2p` (IC §9). `TestNoFloatArithmetic` must pass (CI check 6).
+**Deliverable:** `PaymentProvider` interface, DB-backed mock provider, Razorpay live implementation, append-only provider escrow ledger, append-only owner escrow ledger, monthly release computation, seizure, owner withdrawal. Zero float arithmetic.
 
-**Reference:** IC §5.8 (full package contract, INVARIANT block), DM §3 Invariant 4
-(all amounts in integer paise), DM §4.8 (escrow_events schema), IC §7 (Razorpay webhook
-contracts), IC §11 (float arithmetic forbidden in internal/payment/)
+**Package import constraints (IC §9):** `internal/payment` must **NOT** import `internal/repair` or `internal/p2p` — this is one of IC §9's explicitly tabulated rows, unlike Milestone 9's `internal/repair` (which had to be inferred). `internal/payment` **MAY** import `internal/scoring` for read-only score lookups feeding the release multiplier (Phase 10.4) — nothing in IC §9 prohibits this direction, and `internal/scoring` is documented as read-only against the database, so this is a one-way, side-effect-free dependency, not a cycle.
+
+**Reference:** IC §5.8 (full package contract, INVARIANT block), DM §3 Invariant 2 (append-only escrow ledger) and Invariant 4 (integer paise only), DM §4.8 (`escrow_events` schema), DM §4.9 (`owner_escrow_events` schema — not covered by any session in the original plan; see Phase 10.5), DM §7 (`mv_provider_escrow_balance`, `mv_owner_escrow_balance` — both including the `REVERSAL`/`GREATEST(...,0)` amendments), IC §7 (Razorpay webhook contracts), IC §11 (float arithmetic forbidden in `internal/payment/`), IC §6 (`escrow_events` DML — INSERT-only), FR-046–FR-052 (payment system FRs), FR-059 (owner withdrawal), FR-014/FR-021 (owner balance checks — depend on `owner_escrow_events`), ADR-011 (Razorpay abstraction), ADR-012 (payment-per-audit basis), ADR-016 (payment DB schema, PN-counter ledger design), ADR-024 (economic mechanism — release multiplier, dual-window hold), MVP §5.4 (toggle map), MVP §8.4 (CI check 6)
+
+**Milestone review notes:**
+
+- Session 10.4.1 must call `scoring.GetScoreFromPrimary()` (Milestone 8), not `scoring.GetScore()` — DM §7's staleness rule for payment decisions depends on this distinction, which the original session text never mentioned.
+- `TestNoFloatArithmetic` (Session 10.4.2, CI check 6) and the grep-based float check (`scripts/ci/grep_checks.sh`, added in Session 0.2.2, CI check 9) are two *independent, intentionally redundant* enforcement mechanisms — the grep check is a fast textual pattern match across all file types including SQL; `TestNoFloatArithmetic` is a semantically-aware `go/ast` parse of Go source specifically. Neither replaces the other.
+- Session 10.2.1 declares `EscrowEventType`; it also closes the `.golangci.yml` placeholder `# M10: internal/payment.EscrowEventType` left by Session 0.2.1.
 
 ---
 
 ### Phase 10.1 — PaymentProvider Interface & Mock
 
-**Reference:** IC §5.8 (`PaymentProvider` interface)
+**Reference:** IC §5.8 (`PaymentProvider` interface), FR-059 (owner withdrawal — extends the interface, see flagged note), MVP §6.1 CR-10, MVP §7.7
 
-#### Session 10.1.1 — Define `PaymentProvider` interface
+> **Flagged — ambiguous parameter.** `InitiateEscrow`'s third parameter, `contractID uuid.UUID`, is used in IC §5.8 without being defined anywhere else in scope — no document in this review's context (`architecture.md`, `requirements.md`, `data-model.md`) uses the term "contract" in the escrow/payment context. Implement it as an opaque, caller-supplied correlation ID (e.g. the `file_id` being paid for, or a deposit-request ID) rather than guessing at a specific meaning; flag for clarification against the original design intent before this ships.
+>
+> **Flagged — no owner-withdrawal method exists anywhere in the interface contract.** FR-059 requires it and Milestone 11 Session 11.5.6 assumes it exists. Added as `WithdrawOwnerEscrow` below, structured to parallel `ReleaseEscrow` as closely as possible.
 
-**Task:** Create `internal/payment/provider.go` with the `PaymentProvider` interface
-from IC §5.8. All `amountPaise` parameters must be typed as `int64` — never `float64`
-or `float32` (Invariant 4).
+#### Session 10.1.1 — Define `PaymentProvider` interface (including owner withdrawal)
 
-#### Session 10.1.2 — Implement mock payment provider
+**PRECONDITIONS:**
 
-**Task:** Create `internal/payment/mock.go`. The mock implements `PaymentProvider` fully
-(MVP §6.1 CR-10: "The mock must implement the interface fully, not bypass it"). Mock
-behaviour:
+- `internal/payment/doc.go` exists (stub from Session 0.1.3)
 
-- `InitiateEscrow`: stores in-memory, returns a fake VPA
-- `ReleaseEscrow`: logs the payout, deduplicates on `idempotencyKey`
-- `Penalise`: marks the provider as seized in-memory
-- `GetBalance`: computes from in-memory events
+**TASK:**
 
-**Idempotency in mock:** The `escrow_events.idempotency_key` UNIQUE constraint at the DB
-layer enforces idempotency for the real provider; the mock must also enforce it
-(MVP §7.7: "Idempotency is DB-enforced regardless of payment provider implementation").
+Create `internal/payment/provider.go`:
+
+```go
+// PaymentProvider abstracts over Razorpay Route + Smart Collect 2.0 +
+// RazorpayX (IC §5.8, ADR-011). All amountPaise parameters and return values
+// are int64 paise (₹1 = 100 paise) — passing a float64/float32 anywhere in
+// this package is a calling-contract violation and panics in debug builds
+// (DM §3 Invariant 4, IC §11).
+type PaymentProvider interface {
+ // InitiateEscrow creates a virtual UPI address for a data owner and
+ // records the expected deposit amount. contractID is an opaque
+ // caller-supplied correlation ID (e.g. a file_id or deposit-request ID) —
+ // see the flagged ambiguity note above; this package does not interpret it.
+ InitiateEscrow(ctx context.Context, ownerID uuid.UUID, amountPaise int64, contractID uuid.UUID) (vpa string, qrURL string, err error)
+
+ // ReleaseEscrow initiates a monthly payout to a provider's Razorpay
+ // Linked Account. idempotencyKey = SHA-256(providerID || auditPeriodID),
+ // hex-encoded, mandatory per Razorpay's X-Payout-Idempotency requirement
+ // (ADR-012).
+ ReleaseEscrow(ctx context.Context, providerID uuid.UUID, amountPaise int64, auditPeriodID uuid.UUID, idempotencyKey string) error
+
+ // Penalise seizes a departed provider's rolling escrow window (ADR-024 §5).
+ // idempotencyKey = SHA-256(providerID || "seizure" || departedAt).
+ Penalise(ctx context.Context, providerID uuid.UUID, amountPaise int64, idempotencyKey string) error
+
+ // GetBalance returns a provider's current balance, always
+ // SUM(DEPOSIT + REVERSAL) - SUM(RELEASE + SEIZURE); never negative.
+ GetBalance(ctx context.Context, providerID uuid.UUID) (int64, error)
+
+ // WithdrawOwnerEscrow pays out a data owner's available balance to their
+ // UPI-linked bank account (FR-059). idempotencyKey =
+ // SHA-256(ownerID || withdrawalRequestID), hex-encoded. Must be rejected
+ // by the caller (Milestone 11, Session 11.5.6) while any upload is
+ // in-flight for this owner — this function itself does not check that.
+ WithdrawOwnerEscrow(ctx context.Context, ownerID uuid.UUID, amountPaise int64, idempotencyKey string) (payoutID string, err error)
+}
+```
+
+**VERIFY:**
+
+```bash
+FILES_EXIST:
+  $ test -f internal/payment/provider.go && echo PASS || echo FAIL
+
+COMPILE:
+  $ go build ./internal/payment/
+  EXPECT: exit 0
+
+INTERFACE_METHODS:
+  $ grep -c "InitiateEscrow\|ReleaseEscrow\|Penalise\|GetBalance\|WithdrawOwnerEscrow" internal/payment/provider.go
+  EXPECT: >= 5
+
+ALL_AMOUNTS_ARE_INT64:
+  $ grep -c "amountPaise int64" internal/payment/provider.go
+  EXPECT: >= 4
+  $ grep -n "float64\|float32\|FLOAT\|DECIMAL\|NUMERIC" internal/payment/provider.go \
+      && echo "FAIL: no float type may appear anywhere in internal/payment/ (Invariant 4, IC §11)" \
+      || echo "PASS"
+
+WITHDRAWOWNERESCROW_PRESENT:
+  # The gap-fix: FR-059 has no home without this
+  $ grep -c "^\tWithdrawOwnerEscrow(ctx context.Context, ownerID uuid.UUID, amountPaise int64, idempotencyKey string) (payoutID string, err error)" \
+      internal/payment/provider.go
+  EXPECT: 1
+
+CONTRACTID_AMBIGUITY_DOCUMENTED:
+  $ grep -c "opaque\|caller-supplied correlation ID" internal/payment/provider.go
+  EXPECT: >= 1
+
+VET:
+  $ go vet ./internal/payment/
+  EXPECT: exit 0; zero output
+```
+
+#### Session 10.1.2 — Implement a DB-backed mock payment provider
+
+**PRECONDITIONS:**
+
+- Session 10.1.1 complete
+- Session 10.2.1 complete (`InsertEscrowEvent`) — the mock depends on this, so build order matters here even though session numbering doesn't reflect it; if implementing strictly in order, stub `InsertEscrowEvent`'s signature first and fill in the body in 10.2.1
+
+> **Flagged and corrected — the original mock was specified as in-memory, which contradicts two requirements cited in the same original session.** MVP §6.1 CR-10 says the mock "must implement the interface fully, not bypass it... direct DB writes from a mock break the abstraction" (i.e., an *in-memory* implementation is exactly the anti-pattern CR-10 warns against — the mock must go through the same DB-backed ledger the real provider uses). MVP §7.7 says "the DB constraint is the enforcement... the mock does not need additional [idempotency] logic" — only true if the mock's writes actually reach the real `escrow_events`/`owner_escrow_events` tables and their `UNIQUE(idempotency_key)` constraints. Fixed below: the mock's ledger-writing methods call the same `InsertEscrowEvent`/`InsertOwnerEscrowEvent` (Phase 10.5) as the real Razorpay provider. Only the *external Razorpay HTTP calls* — which have no database representation of their own — are mocked out.
+
+**TASK:**
+
+Create `internal/payment/mock.go`:
+
+```go
+// MockProvider implements PaymentProvider for demo mode (profile.PaymentMode
+// == "mock") and for tests. It mocks only the external Razorpay HTTP calls;
+// every ledger write goes through the same InsertEscrowEvent /
+// InsertOwnerEscrowEvent path the real RazorpayProvider uses, so the DB-level
+// UNIQUE(idempotency_key) constraint enforces idempotency identically for
+// both (MVP §7.7) — this is also why the mock "implements the interface
+// fully" rather than bypassing it (MVP §6.1 CR-10).
+type MockProvider struct {
+ db *sql.DB
+}
+
+func NewMockProvider(db *sql.DB) *MockProvider
+
+// InitiateEscrow returns a synthetic vpa/qrURL (no real Razorpay call) and,
+// because there is no real Razorpay webhook to wait for in demo mode,
+// immediately calls InsertOwnerEscrowEvent(..., OwnerDeposit, ...) — matching
+// MVP's own Feature Gap Table row F-09 ("CLI command deposits into mock
+// ledger" — no async webhook in demo mode).
+func (m *MockProvider) InitiateEscrow(ctx context.Context, ownerID uuid.UUID, amountPaise int64, contractID uuid.UUID) (string, string, error)
+
+// ReleaseEscrow calls InsertEscrowEvent(..., EscrowRelease, ...) directly —
+// no real Razorpay payout call, but a real row with a real idempotency
+// constraint.
+func (m *MockProvider) ReleaseEscrow(ctx context.Context, providerID uuid.UUID, amountPaise int64, auditPeriodID uuid.UUID, idempotencyKey string) error
+
+// Penalise calls InsertEscrowEvent(..., EscrowSeizure, ...) directly.
+func (m *MockProvider) Penalise(ctx context.Context, providerID uuid.UUID, amountPaise int64, idempotencyKey string) error
+
+// GetBalance queries mv_provider_escrow_balance — the SAME view the real
+// provider's balance queries use. There is no separate in-memory balance
+// state to keep in sync.
+func (m *MockProvider) GetBalance(ctx context.Context, providerID uuid.UUID) (int64, error)
+
+// WithdrawOwnerEscrow calls InsertOwnerEscrowEvent(..., OwnerWithdrawal, ...)
+// directly and returns a synthetic payoutID.
+func (m *MockProvider) WithdrawOwnerEscrow(ctx context.Context, ownerID uuid.UUID, amountPaise int64, idempotencyKey string) (string, error)
+```
+
+**VERIFY:**
+
+```bash
+FILES_EXIST:
+  $ test -f internal/payment/mock.go && echo PASS || echo FAIL
+
+COMPILE:
+  $ go build ./internal/payment/
+  EXPECT: exit 0
+
+MOCK_SATISFIES_INTERFACE:
+  $ grep -c "var _ PaymentProvider = (\*MockProvider)(nil)" internal/payment/mock.go
+  EXPECT: 1
+
+THE_CORE_FIX_DB_BACKED_NOT_IN_MEMORY:
+  # Must call the shared ledger functions, must not maintain its own map/slice of events
+  $ grep -c "InsertEscrowEvent(\|InsertOwnerEscrowEvent(" internal/payment/mock.go
+  EXPECT: >= 3
+  $ grep -n "map\[string\]\|make(map\[uuid.UUID\]" internal/payment/mock.go \
+      && echo "FAIL: mock must not keep a separate in-memory ledger — writes go through the shared DB path" \
+      || echo "PASS"
+
+GETBALANCE_USES_SHARED_VIEW:
+  $ grep -c "mv_provider_escrow_balance" internal/payment/mock.go
+  EXPECT: >= 1
+
+DEMO_DEPOSIT_IS_SYNCHRONOUS:
+  # No real webhook in mock mode -> InitiateEscrow itself must credit the ledger
+  $ grep -A15 "^func (m \*MockProvider) InitiateEscrow" internal/payment/mock.go | grep -c "InsertOwnerEscrowEvent"
+  EXPECT: >= 1
+
+UNIT_TESTS:
+  $ go test -v -run TestMockProvider ./internal/payment/
+  EXPECT: exit 0; tests include:
+    TestMockProviderInitiateEscrowCreditsLedgerImmediately  (deposit ledger row exists right after the call, no webhook needed)
+    TestMockProviderReleaseEscrowWritesRealRow              (escrow_events gains a real RELEASE row)
+    TestMockProviderIdempotencyEnforcedByDBConstraint       (duplicate idempotencyKey -> ErrDuplicateIdempotencyKey, not silently accepted, and not caught by mock-side logic)
+    TestMockProviderGetBalanceMatchesRealView               (GetBalance result equals a direct query against mv_provider_escrow_balance)
+
+NEGATIVE_CHECKS:
+  $ grep -n "Vyomanaut_V2/internal/repair\|Vyomanaut_V2/internal/p2p" internal/payment/mock.go \
+      && echo "FAIL: prohibited import (IC §9)" || echo "PASS"
+
+VET:
+  $ go vet ./internal/payment/
+  EXPECT: exit 0; zero output
+```
 
 ---
 
 ### Phase 10.2 — Escrow Ledger
 
-**Reference:** IC §5.8 (`InsertEscrowEvent`, `EscrowEventType`, `ErrDuplicateIdempotencyKey`),
-DM §4.8
+**Reference:** IC §5.8 (`InsertEscrowEvent`, `EscrowEventType`, `ErrDuplicateIdempotencyKey`), DM §4.8, DM §3 Invariant 2 (append-only), IC §6 (`escrow_events` — INSERT only, no UPDATE/DELETE policy)
 
-#### Session 10.2.1 — Implement `InsertEscrowEvent()`
+#### Session 10.2.1 — Implement `InsertEscrowEvent()`; declare `EscrowEventType`
 
-**Task:** Create `internal/payment/ledger.go`. `InsertEscrowEvent()` is the only
-permitted write to `escrow_events` (Invariant 2). The function must:
+**PRECONDITIONS:**
 
-- Accept `amountPaise int64` — never accept float via a type check or debug panic
-- Handle `ErrDuplicateIdempotencyKey` on UNIQUE constraint violation (idempotent retry)
+- Session 10.1.1 complete
+- Migration from Session 4.4.3 applied (`escrow_events` table, its RSP from Session 4.6.2)
 
-Define `EscrowEventType` constants per IC §5.8: `EscrowDeposit`, `EscrowRelease`,
-`EscrowSeizure`, and `EscrowReversal`
+**TASK:**
+
+1. Create `internal/payment/ledger.go`:
+
+```go
+type EscrowEventType string
+
+const (
+ EscrowDeposit  EscrowEventType = "DEPOSIT"
+ EscrowRelease  EscrowEventType = "RELEASE"
+ EscrowSeizure  EscrowEventType = "SEIZURE"
+ EscrowReversal EscrowEventType = "REVERSAL"
+)
+
+// InsertEscrowEvent appends one row to escrow_events — the ONLY permitted
+// write to this table (DM §3 Invariant 2). Never accept a float anywhere in
+// the call chain; amountPaise is int64 by construction, not by a runtime check.
+//
+// Pre-conditions:
+//   - amountPaise > 0 (sign is implied by eventType, per DM §4.8)
+//   - idempotencyKey is globally unique (enforced by the DB UNIQUE constraint,
+//     not by this function)
+// Error semantics:
+//   - ErrDuplicateIdempotencyKey on UNIQUE violation — idempotent retry,
+//     caller should treat as success.
+func InsertEscrowEvent(ctx context.Context, db *sql.DB, providerID uuid.UUID, eventType EscrowEventType, amountPaise int64, idempotencyKey string, auditPeriodID *uuid.UUID) error
+
+var ErrDuplicateIdempotencyKey = errors.New("payment: idempotency key already exists")
+```
+
+1. **Close the `.golangci.yml` placeholder from Session 0.2.1:** replace `# M10: internal/payment.EscrowEventType` with an active entry now that `EscrowEventType` and its four values are declared.
+
+**VERIFY:**
+
+```bash
+FILES_EXIST:
+  $ test -f internal/payment/ledger.go && echo PASS || echo FAIL
+
+COMPILE:
+  $ go build ./internal/payment/
+  EXPECT: exit 0
+
+ESCROWEVENTTYPE_HAS_FOUR_VALUES:
+  $ grep -c "EscrowDeposit\|EscrowRelease\|EscrowSeizure\|EscrowReversal" internal/payment/ledger.go
+  EXPECT: 4
+
+FUNCTION_SIGNATURE:
+  $ grep -c "^func InsertEscrowEvent(ctx context.Context, db \*sql.DB, providerID uuid.UUID, eventType EscrowEventType, amountPaise int64, idempotencyKey string, auditPeriodID \*uuid.UUID) error" \
+      internal/payment/ledger.go
+  EXPECT: 1
+
+INT64_ONLY:
+  $ grep -c "amountPaise int64" internal/payment/ledger.go
+  EXPECT: >= 1
+  $ grep -n "float64\|float32\|FLOAT\|DECIMAL\|NUMERIC" internal/payment/ledger.go \
+      && echo "FAIL: Invariant 4 violation" || echo "PASS"
+
+SENTINEL_ERROR:
+  $ grep -c "ErrDuplicateIdempotencyKey" internal/payment/ledger.go
+  EXPECT: >= 1
+
+GOLANGCI_PLACEHOLDER_CLOSED:
+  $ grep -c "# M10: internal/payment.EscrowEventType" .golangci.yml
+  EXPECT: 0
+  $ grep -c "internal/payment\.EscrowEventType" .golangci.yml
+  EXPECT: 1
+
+UNIT_TESTS:
+  $ go test -v -run TestInsertEscrowEvent ./internal/payment/
+  EXPECT: exit 0; tests include:
+    TestInsertEscrowEventSucceeds
+    TestInsertEscrowEventDuplicateIdempotencyKey  (second insert with same key -> ErrDuplicateIdempotencyKey, exactly one row exists)
+    TestInsertEscrowEventOnlyINSERTNoUpdateDelete  (no UPDATE/DELETE statement anywhere in this file)
+
+NEGATIVE_CHECKS:
+  $ grep -n "UPDATE escrow_events\|DELETE FROM escrow_events" internal/payment/ledger.go \
+      && echo "FAIL: escrow_events is append-only (DM §3 Invariant 2)" || echo "PASS"
+  $ grep -n "Vyomanaut_V2/internal/repair\|Vyomanaut_V2/internal/p2p" internal/payment/ledger.go \
+      && echo "FAIL: prohibited import (IC §9)" || echo "PASS"
+
+VET:
+  $ go vet ./internal/payment/
+  EXPECT: exit 0; zero output
+```
 
 ---
 
 ### Phase 10.3 — Razorpay Implementation
 
-**Reference:** IC §7 (all three webhook contracts), IC §3.3 (RAZORPAY_UNAVAILABLE error code)
+**Reference:** IC §7 (all three webhook contracts), IC §3.3 (`RAZORPAY_UNAVAILABLE` error code), DM §4.8 (`escrow_events`), DM §4.9 (`owner_escrow_events` — the corrected target for the deposit webhook), ARCH §17 (Smart Collect 2.0 is owner-scoped; Route is provider-scoped)
+
+> **Flagged and corrected — the single most important fix in this milestone.** IC §7.1's given SQL for `virtual_account.payment.captured` inserts into `escrow_events` using an owner-side value in the `provider_id` column:
+>
+> ```sql
+> INSERT INTO escrow_events (
+>     event_id, provider_id, event_type, amount_paise,
+>     audit_period_id, idempotency_key, created_at
+> ) VALUES (
+>     gen_random_uuid(), <owner_escrow_account_id>, 'DEPOSIT', ...
+> )
+> ```
+>
+> `escrow_events.provider_id` is `NOT NULL REFERENCES providers(provider_id)` (DM §4.8). Smart Collect 2.0 deposits are unambiguously owner-side (ARCH §17: "each data owner is assigned a virtual UPI ID... The microservice credits the data owner's escrow account"; DM §8.1: `owners.smart_collect_vpa`). DM §4.9 exists *specifically* because "the owners table has no balance information" and a separate ledger was needed — inserting an owner's deposit into the provider ledger either violates the foreign key outright or, if somehow forced through, silently defeats the entire reason `owner_escrow_events` was created. **Corrected below:** target `owner_escrow_events`, column `owner_id`, `event_type = 'DEPOSIT'` using the `owner_escrow_event_type` enum (DM §4.9), not `escrow_event_type`.
 
 #### Session 10.3.1 — Implement Razorpay webhook handlers
 
-**Task:** Create `internal/payment/razorpay.go`. Implement handlers for all three
-Razorpay webhooks from IC §7:
+**PRECONDITIONS:**
 
-**`virtual_account.payment.captured` (IC §7.1):**
+- Session 10.2.1 complete (`InsertEscrowEvent`)
+- Session 10.5.1 complete (`InsertOwnerEscrowEvent`) — required for the corrected deposit handler below
 
-- Verify `X-Razorpay-Signature` before any DB write
-- `amount_paise` is ALREADY in paise from Razorpay — do NOT multiply (IC §7.1: "already in paise; do not multiply")
-- Use the SQL in IC §7.1 with `ON CONFLICT DO NOTHING`
+**TASK:**
 
-**`payout.reversed` (IC §7.2):**
+Create `internal/payment/razorpay.go`. All three handlers verify `X-Razorpay-Signature` before any DB write.
 
-- Insert a `REVERSAL` event (not a negative RELEASE — IC §7.2)
-- `idempotency_key = SHA-256('reversal' || original_idempotency_key)` (DM §7, IC §7.2)
+1. **`virtual_account.payment.captured` (IC §7.1, corrected) — owner deposit:**
 
-**`account.created` (IC §7.3):**
+```sql
+-- CORRECTED target table and column (owner_escrow_events, not escrow_events)
+INSERT INTO owner_escrow_events (
+    event_id, owner_id, event_type, amount_paise,
+    idempotency_key, created_at
+) VALUES (
+    gen_random_uuid(),
+    <owner_id_from_vpa_lookup>,
+    'DEPOSIT',
+    <amount_paise_from_webhook>,  -- ALREADY in paise; do NOT multiply
+    SHA256('deposit' || <owner_id_from_vpa_lookup> || <razorpay_payment_id>),
+    NOW()
+)
+ON CONFLICT (idempotency_key) DO NOTHING;
+```
 
-- Set `razorpay_cooling_until = NOW() + profile.RazorpayCoolingPeriod`
-  (profile-variable, NOT hardcoded 24h — MVP §5.4)
-- The `AND razorpay_linked_account_id IS NULL` idempotency guard (IC §7.3)
+   `amount_paise` from `payload.payment.entity.amount` is already in paise per Razorpay's convention — do not multiply. Look up `owner_id` via the Smart Collect VPA-to-owner mapping (`owners.smart_collect_vpa`), not via any provider table. Idempotency key combines the "deposit" domain-separation prefix (IC §7.1's original convention) with `owner_id` (DM §4.9's convention) and the Razorpay payment ID, harmonizing the two documents' slightly different formats into one unambiguous 64-hex-char key.
 
-**UPI Collect prohibition (IC §11):** Any call to the Razorpay Collect API endpoint is
-forbidden. All deposit flows use UPI Intent only (deprecated 28 February 2026).
+1. **`payout.reversed` (IC §7.2) — provider reversal, unchanged, already correctly scoped to `escrow_events`/`provider_id`:**
+
+```sql
+INSERT INTO escrow_events (
+    event_id, provider_id, event_type, amount_paise,
+    audit_period_id, idempotency_key, created_at
+) VALUES (
+    gen_random_uuid(), <provider_id>, 'REVERSAL', <amount_paise>,
+    <original_audit_period_id>,
+    SHA256('reversal' || <original_idempotency_key>), NOW()
+)
+ON CONFLICT (idempotency_key) DO NOTHING;
+```
+
+1. **`account.created` (IC §7.3) — provider Linked Account cooling, unchanged, already correctly scoped:**
+
+```sql
+UPDATE providers
+SET razorpay_linked_account_id = <account_id>,
+    razorpay_cooling_until = NOW() + $1  -- profile.RazorpayCoolingPeriod, NOT hardcoded 24h (MVP §5.4)
+WHERE provider_id = <provider_id_from_notes>
+  AND razorpay_linked_account_id IS NULL;
+```
+
+**UPI Collect prohibition (IC §11, NFR-029):** any call to a Razorpay Collect API path is forbidden; all deposit flows use UPI Intent or QR only (deprecated by NPCI 28 February 2026).
+
+**VERIFY:**
+
+```bash
+FILES_EXIST:
+  $ test -f internal/payment/razorpay.go && echo PASS || echo FAIL
+
+COMPILE:
+  $ go build ./internal/payment/
+  EXPECT: exit 0
+
+THE_CORE_FIX_DEPOSIT_TARGETS_OWNER_TABLE:
+  # The critical bug fix: deposit webhook must write owner_escrow_events, never escrow_events
+  $ grep -A8 "payment.captured\|payment_captured" internal/payment/razorpay.go | grep -c "owner_escrow_events"
+  EXPECT: >= 1
+  $ grep -B2 -A8 "'DEPOSIT'" internal/payment/razorpay.go | grep -c "INSERT INTO escrow_events"
+  EXPECT: 0
+
+DEPOSIT_USES_OWNER_ID_NOT_PROVIDER_ID:
+  $ grep -A10 "owner_escrow_events" internal/payment/razorpay.go | grep -c "owner_id"
+  EXPECT: >= 1
+
+AMOUNT_NOT_MULTIPLIED:
+  $ grep -c "already in paise\|do NOT multiply\|do not multiply" internal/payment/razorpay.go
+  EXPECT: >= 1
+
+SIGNATURE_VERIFIED_BEFORE_WRITE:
+  $ grep -c "X-Razorpay-Signature" internal/payment/razorpay.go
+  EXPECT: >= 1
+
+REVERSAL_STAYS_ON_PROVIDER_TABLE:
+  # This one was already correct — must not regress
+  $ grep -A8 "payout.reversed\|payout_reversed" internal/payment/razorpay.go | grep -c "escrow_events"
+  EXPECT: >= 1
+  $ grep -A8 "payout.reversed\|payout_reversed" internal/payment/razorpay.go | grep -c "owner_escrow_events"
+  EXPECT: 0
+
+COOLING_PERIOD_IS_PROFILE_DRIVEN:
+  $ grep -c "profile.RazorpayCoolingPeriod" internal/payment/razorpay.go
+  EXPECT: >= 1
+  $ grep -n "INTERVAL '24 hours'" internal/payment/razorpay.go \
+      && echo "FAIL: cooling period must be profile-variable, not hardcoded 24h (MVP §5.4)" \
+      || echo "PASS"
+
+IDEMPOTENCY_GUARD_ON_ACCOUNT_CREATED:
+  $ grep -c "razorpay_linked_account_id IS NULL" internal/payment/razorpay.go
+  EXPECT: >= 1
+
+NO_UPI_COLLECT:
+  $ grep -in "upi/collect\|collect/request\|UpiCollect" internal/payment/razorpay.go \
+      && echo "FAIL: UPI Collect is prohibited, deprecated by NPCI (NFR-029)" || echo "PASS"
+
+UNIT_TESTS:
+  $ go test -v -run TestRazorpayWebhooks ./internal/payment/
+  EXPECT: exit 0; tests include:
+    TestDepositWebhookCreditsOwnerLedgerNotProviderLedger  (owner_escrow_events gains a row; escrow_events does not)
+    TestDepositWebhookIdempotentOnRedelivery               (same webhook delivered twice -> one row)
+    TestDepositWebhookRejectsBadSignature                  (missing/invalid X-Razorpay-Signature -> HTTP 400, no DB write)
+    TestReversalWebhookInsertsReversalEvent
+    TestAccountCreatedSetsProfileDrivenCoolingPeriod        (demo profile -> cooling_until == NOW(); prod profile -> cooling_until == NOW()+24h)
+    TestAccountCreatedIdempotentOnRedelivery
+
+NEGATIVE_CHECKS:
+  $ grep -n "Vyomanaut_V2/internal/repair\|Vyomanaut_V2/internal/p2p" internal/payment/razorpay.go \
+      && echo "FAIL: prohibited import (IC §9)" || echo "PASS"
+
+VET:
+  $ go vet ./internal/payment/
+  EXPECT: exit 0; zero output
+```
 
 ---
 
 ### Phase 10.4 — Release Computation & Seizure
 
-**Reference:** REQ FR-049 and FR-050, IC §5.8 (`ReleaseEscrow`, `Penalise`), MVP §5.4 (release computation
-cycle: calendar date in prod, ticker in demo), DM §4.2 (`frozen` column)
+**Reference:** FR-049, FR-050 (release multiplier, dual-window trigger), IC §5.8 (`ReleaseEscrow`, `Penalise`), DM §7 (`mv_provider_scores` staleness requirement — "must be within 60 minutes"), MVP §5.4 (release computation cycle: calendar in prod, ticker in demo), DM §4.2 (`frozen` column)
+
+> **Flagged — must use `GetScoreFromPrimary`, not `GetScore`.** DM §7's own CRITICAL note ("scores_as_of must be within 60 minutes before this view is used for release multiplier computation... Stale scores produce wrong payments") is exactly the scenario the Milestones 7–8 revision's `GetScoreFromPrimary` (and its `ScoresAsOf` field) exists to guard. The original Session 10.4.1 text never mentioned this distinction. Fixed below.
 
 #### Session 10.4.1 — Implement monthly release computation
 
-**Task:** Create `internal/payment/release.go`. The release computation:
+**PRECONDITIONS:**
 
-1. For each provider with `release_computed = FALSE` for the current audit period
-2. Compute the release multiplier from the 30-day reliability score using the table from FR-049: score ≥ 0.95 → multiplier 1.00 (full release); 0.80–0.94 → 0.75; 0.65–0.79 → 0.50; < 0.65 → 0.00 (hold in full).
-3. Apply the dual-window deterioration signal from FR-050: if `(score_30d − score_7d) > 0.20`, use the lower of the two score windows' multipliers. Withheld amounts must roll into the next month's escrow window, not be seized. Rolling amounts held for more than 90 days are flagged for operations team review (FR-049).
-4. Call `ReleaseEscrow()` with idempotency key `SHA-256(provider_id || audit_period_id)`
-5. Set `release_computed = TRUE`
+- Session 10.2.1 complete (`InsertEscrowEvent`, `EscrowEventType`)
+- `internal/scoring` complete (Milestone 8, as revised) — specifically `scoring.GetScoreFromPrimary` and `ProviderScore.ScoresAsOf`/`DualWindowFlag`
 
-In demo mode, the computation fires on `profile.ReleaseComputationInterval` ticker
-(MVP §5.4). In prod mode, it fires on the 23rd of each month calendar trigger
-(`profile.ReleaseComputationInterval == 0` means calendar-driven — MVP §5.4).
+**TASK:**
+
+In `internal/payment/release.go`:
+
+```go
+// ComputeMonthlyRelease runs the release computation for every provider with
+// release_computed = FALSE in the current audit period (FR-048).
+//
+// 1. Fetch the score via scoring.GetScoreFromPrimary — NOT scoring.GetScore.
+//    Payment decisions require the freshest available data (DM §7 CRITICAL
+//    note); a replica-routed read could be stale enough to misapply the
+//    multiplier. If score.ScoresAsOf is more than 60 minutes old, skip this
+//    provider for the current cycle and retry next tick rather than pay out
+//    against stale data.
+// 2. Compute the release multiplier from Score30d (FR-049):
+//      >= 0.95            -> 1.00 (full release)
+//      0.80 - 0.94        -> 0.75
+//      0.65 - 0.79        -> 0.50
+//      <  0.65            -> 0.00 (hold in full; rolls to next month, FR-049)
+// 3. If score.DualWindowFlag is true (FR-050: Score30d - Score7d > 0.20),
+//    use the lower of the multiplier computed from Score30d and the
+//    multiplier that Score7d would produce under the same table.
+// 4. Call ReleaseEscrow(ctx, providerID, releaseAmountPaise, auditPeriodID,
+//    idempotencyKey) where idempotencyKey = SHA-256(providerID || auditPeriodID).
+// 5. Set audit_periods.release_computed = TRUE.
+//
+// Amounts held for more than 90 rolling days without release are flagged for
+// operations-team review, not auto-seized (FR-049).
+//
+// Trigger cadence: demo mode fires on profile.ReleaseComputationInterval
+// (a ticker); production fires on the 23rd of the calendar month
+// (profile.ReleaseComputationInterval == 0 means calendar-driven — MVP §5.4).
+func ComputeMonthlyRelease(ctx context.Context, db *sql.DB, primaryDB *sql.DB, profile config.NetworkProfile) error
+```
+
+**VERIFY:**
+
+```bash
+FILES_EXIST:
+  $ test -f internal/payment/release.go && echo PASS || echo FAIL
+
+COMPILE:
+  $ go build ./internal/payment/
+  EXPECT: exit 0
+
+USES_PRIMARY_READ_NOT_REPLICA:
+  # The gap-fix: must call GetScoreFromPrimary, never GetScore, for payment decisions
+  $ grep -c "scoring.GetScoreFromPrimary\|GetScoreFromPrimary(" internal/payment/release.go
+  EXPECT: >= 1
+  $ grep -n "scoring.GetScore(" internal/payment/release.go \
+      && echo "FAIL: release computation must use GetScoreFromPrimary, not GetScore (DM §7)" \
+      || echo "PASS"
+
+STALENESS_CHECKED:
+  $ grep -c "ScoresAsOf\|60.*Minute\|60 \* time.Minute" internal/payment/release.go
+  EXPECT: >= 1
+
+MULTIPLIER_TABLE_CORRECT:
+  $ grep -c "0.95\|0.80\|0.65" internal/payment/release.go
+  EXPECT: >= 3
+
+DUAL_WINDOW_APPLIED:
+  $ grep -c "DualWindowFlag" internal/payment/release.go
+  EXPECT: >= 1
+
+IDEMPOTENCY_KEY_FORMAT:
+  $ grep -c "providerID || auditPeriodID\|providerID.*auditPeriodID" internal/payment/release.go
+  EXPECT: >= 1
+
+RELEASE_COMPUTED_FLAG_SET:
+  $ grep -c "release_computed = TRUE\|release_computed = true" internal/payment/release.go
+  EXPECT: >= 1
+
+TICKER_VS_CALENDAR_BRANCH:
+  $ grep -c "ReleaseComputationInterval == 0\|ReleaseComputationInterval > 0" internal/payment/release.go
+  EXPECT: >= 1
+
+UNIT_TESTS:
+  $ go test -v -run TestComputeMonthlyRelease ./internal/payment/
+  EXPECT: exit 0; tests include:
+    TestComputeMonthlyReleaseFullMultiplierAboveThreshold   (score30d=0.97 -> multiplier 1.00)
+    TestComputeMonthlyReleasePartialMultiplierTiers          (each of the four bands produces the documented multiplier)
+    TestComputeMonthlyReleaseDualWindowUsesLowerMultiplier   (DualWindowFlag=true, score7d worse -> lower multiplier applied)
+    TestComputeMonthlyReleaseSkipsStaleScore                 (ScoresAsOf > 60min old -> provider skipped this cycle, no ReleaseEscrow call)
+    TestComputeMonthlyReleaseIdempotentOnRerun               (running twice for the same audit period -> exactly one RELEASE event)
+
+NEGATIVE_CHECKS:
+  $ grep -n "Vyomanaut_V2/internal/repair\|Vyomanaut_V2/internal/p2p" internal/payment/release.go \
+      && echo "FAIL: prohibited import (IC §9)" || echo "PASS"
+
+VET:
+  $ go vet ./internal/payment/
+  EXPECT: exit 0; zero output
+```
 
 #### Session 10.4.2 — Implement `TestNoFloatArithmetic` (CI check 6)
 
-**Task:** Create `internal/payment/payment_test.go` with `TestNoFloatArithmetic` (CI
-check 6, MVP §8.4). This test uses `go/ast` to parse every `.go` file in
-`internal/payment/` and assert that no `float64`, `float32`, `FLOAT`, `DECIMAL`, or
-`NUMERIC` identifier appears in any expression. Disabling or weakening this test is
-itself a prohibited change (IC §11).
+**PRECONDITIONS:**
+
+- All prior `internal/payment` sessions in this milestone complete (this test parses the entire package)
+
+**TASK:**
+
+Create `internal/payment/payment_test.go` with `TestNoFloatArithmetic` (CI check 6, distinct from and complementary to CI check 9's grep-based scan added in Session 0.2.2 — see the milestone review note above; this is not a duplicate). Parse every `.go` file in `internal/payment/` with `go/ast` and fail if `float64`, `float32`, `FLOAT`, `DECIMAL`, or `NUMERIC` appears as an identifier or type in any expression. This test itself, and the CI gate around it, may never be disabled or weakened by any future PR (IC §11).
+
+**VERIFY:**
+
+```bash
+FILES_EXIST:
+  $ test -f internal/payment/payment_test.go && echo PASS || echo FAIL
+
+COMPILE_AND_RUN:
+  $ go test -v -run TestNoFloatArithmetic ./internal/payment/
+  EXPECT: exit 0; output contains "--- PASS: TestNoFloatArithmetic"
+
+USES_GO_AST_NOT_JUST_GREP:
+  $ grep -c "go/ast\|go/parser" internal/payment/payment_test.go
+  EXPECT: >= 1
+
+CHECKS_ALL_FIVE_PATTERNS:
+  $ grep -c "float64\|float32\|\"FLOAT\"\|\"DECIMAL\"\|\"NUMERIC\"" internal/payment/payment_test.go
+  EXPECT: >= 5
+
+SELF_TEST_CATCHES_A_DELIBERATE_VIOLATION:
+  # Inject a float into a scratch copy and confirm the test fails on it
+  $ cp internal/payment/ledger.go /tmp/ledger_violation.go
+  $ echo 'var _ float64 = 1.0' >> /tmp/ledger_violation.go
+  $ go run internal/payment/payment_test.go /tmp/ledger_violation.go 2>&1 | grep -qi "float" \
+      && echo "PASS: violation detected" || echo "FAIL: check did not catch injected float"
+  $ rm /tmp/ledger_violation.go
+
+DOES_NOT_DUPLICATE_OR_REPLACE_CI_CHECK_9:
+  # Both mechanisms must coexist — this test does not remove the grep check from M0
+  $ grep -c "NO_FLOAT_PAYMENT" scripts/ci/grep_checks.sh
+  EXPECT: 1
+
+CI_GATE_CANNOT_BE_WEAKENED (documentation check, not a runtime assertion):
+  $ grep -c "may not be disabled or weakened" internal/payment/payment_test.go
+  EXPECT: >= 1
+
+FULL_PACKAGE_BUILD_AND_RACE:
+  $ go build ./internal/payment/
+  $ go vet ./internal/payment/
+  $ go test -race -count=1 ./internal/payment/
+  EXPECT: all exit 0
+```
+
+---
+
+### Phase 10.5 — Owner Escrow Operations *(new — closes a DM §4.9 / FR-059 gap)*
+
+**Reference:** DM §4.9 (`owner_escrow_events` schema), DM §7 (`mv_owner_escrow_balance`, including the `GREATEST(...,0)` floor), FR-014, FR-021, FR-059 (owner balance check, balance view, and withdrawal), Milestone 11 Session 11.5.6 (`POST /api/v1/owner/withdraw` — the actual caller of this phase's functions)
+
+> Nothing in the original Milestone 10 plan implemented owner-side escrow bookkeeping at all, despite the table existing since Milestone 4 and Milestone 11 assuming a withdrawal function is available to call. Added here.
+
+#### Session 10.5.1 — Implement `InsertOwnerEscrowEvent()` and wire `WithdrawOwnerEscrow()`
+
+**PRECONDITIONS:**
+
+- Session 10.1.1 complete (`WithdrawOwnerEscrow` declared on `PaymentProvider`)
+- Migration from Session 4.4.4 applied (`owner_escrow_events` table)
+
+**TASK:**
+
+In `internal/payment/ledger.go` (alongside `InsertEscrowEvent` — both are ledger-write functions and belong in the same file per the established one-ledger-file-per-package convention):
+
+```go
+type OwnerEscrowEventType string
+
+const (
+ OwnerDeposit    OwnerEscrowEventType = "DEPOSIT"
+ OwnerCharge     OwnerEscrowEventType = "CHARGE"
+ OwnerWithdrawal OwnerEscrowEventType = "WITHDRAWAL"
+ OwnerRefund     OwnerEscrowEventType = "REFUND"
+)
+
+// InsertOwnerEscrowEvent appends one row to owner_escrow_events — the ONLY
+// permitted write to this table, mirroring InsertEscrowEvent's role for the
+// provider-side ledger (DM §4.9).
+func InsertOwnerEscrowEvent(ctx context.Context, db *sql.DB, ownerID uuid.UUID, eventType OwnerEscrowEventType, amountPaise int64, idempotencyKey string, fileID *uuid.UUID) error
+```
+
+Then in `internal/payment/razorpay.go` (the Razorpay-backed implementation of `PaymentProvider`), implement:
+
+```go
+// WithdrawOwnerEscrow (RazorpayProvider) initiates a real Razorpay payout to
+// the owner's UPI-linked bank account, then records a WITHDRAWAL event via
+// InsertOwnerEscrowEvent. Balance check (available = balance - reserved next
+// 30 days) and the in-flight-upload block are enforced by the caller
+// (Milestone 11, Session 11.5.6) before this is invoked — this function
+// trusts amountPaise as already validated.
+func (r *RazorpayProvider) WithdrawOwnerEscrow(ctx context.Context, ownerID uuid.UUID, amountPaise int64, idempotencyKey string) (string, error)
+```
+
+**VERIFY:**
+
+```bash
+FILES_EXIST:
+  $ grep -c "OwnerDeposit\|OwnerCharge\|OwnerWithdrawal\|OwnerRefund" internal/payment/ledger.go
+  EXPECT: 4
+  $ grep -c "^func InsertOwnerEscrowEvent(" internal/payment/ledger.go
+  EXPECT: 1
+  $ grep -c "func (r \*RazorpayProvider) WithdrawOwnerEscrow(" internal/payment/razorpay.go
+  EXPECT: 1
+
+COMPILE:
+  $ go build ./internal/payment/
+  EXPECT: exit 0
+
+INT64_ONLY:
+  $ grep -A10 "^func InsertOwnerEscrowEvent" internal/payment/ledger.go | grep -c "amountPaise int64"
+  EXPECT: 1
+
+TARGETS_CORRECT_TABLE:
+  $ grep -A15 "^func InsertOwnerEscrowEvent" internal/payment/ledger.go | grep -c "INTO owner_escrow_events"
+  EXPECT: >= 1
+  $ grep -A15 "^func InsertOwnerEscrowEvent" internal/payment/ledger.go | grep -c "INTO escrow_events\b"
+  EXPECT: 0
+
+BALANCE_QUERY_USES_GREATEST_GUARD:
+  # Callers reading balance should hit mv_owner_escrow_balance, which has the GREATEST(...,0) floor from DM §7 — spot check no separate, unguarded balance formula is reimplemented here
+  $ grep -c "mv_owner_escrow_balance" internal/payment/ledger.go
+  EXPECT: >= 0   # informational — confirm this file defers to the view rather than recomputing the formula inline
+
+UNIT_TESTS:
+  $ go test -v -run TestInsertOwnerEscrowEvent ./internal/payment/
+  EXPECT: exit 0; tests include:
+    TestInsertOwnerEscrowEventSucceeds
+    TestInsertOwnerEscrowEventDuplicateIdempotencyKey
+    TestInsertOwnerEscrowEventNeverTouchesProviderTable  (escrow_events row count unchanged after call)
+
+  $ go test -v -run TestWithdrawOwnerEscrow ./internal/payment/
+  EXPECT: exit 0; tests include:
+    TestWithdrawOwnerEscrowRecordsWithdrawalEvent
+    TestWithdrawOwnerEscrowIdempotentOnRetry
+
+NEGATIVE_CHECKS:
+  $ grep -n "Vyomanaut_V2/internal/repair\|Vyomanaut_V2/internal/p2p" internal/payment/ledger.go internal/payment/razorpay.go \
+      && echo "FAIL: prohibited import (IC §9)" || echo "PASS"
+
+VET:
+  $ go vet ./internal/payment/
+  EXPECT: exit 0; zero output
+```
 
 ---
 

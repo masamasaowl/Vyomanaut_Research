@@ -2069,6 +2069,8 @@ var (
 
 The following import directions are **prohibited**. A PR that introduces any prohibited import must be rejected at review regardless of the stated justification. These constraints exist because the packages involved are either security-critical (no business-logic dependency allowed) or architecturally separated (payment must not depend on repair to avoid cycles through the departure handler).
 
+>**NOTE:** internal/config is universally importable by all packages
+
 | Package | Must NOT import |
 | --- | --- |
 | `internal/crypto` | Any other `internal/` package. This package is purely functional — no shared state, no I/O, no dependency on the data layer. Any utility needed here (e.g. byte comparison) uses the standard library only. |
@@ -2081,7 +2083,7 @@ The following import directions are **prohibited**. A PR that introduces any pro
 
 The permitted dependency graph flows in one direction: `cmd/*` → `internal/client/*` → (`internal/crypto`, `internal/erasure`, `internal/p2p`) → no further `internal/` imports. The microservice entrypoint wires `internal/audit`, `internal/scoring`, `internal/repair`, and `internal/payment` together; none of these four packages imports any of the others directly.
 
-**Enforcement.** `go build ./...` catches circular imports. `go vet ./...` with the import-graph analyser catches prohibited non-circular imports. Both are CI required checks. A PR that disables or modifies the import-graph check must be rejected.
+**Enforcement.** `go build ./...` and `go vet ./...` catches circular imports.
 
 ---
 

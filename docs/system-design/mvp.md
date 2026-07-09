@@ -782,7 +782,7 @@ This section is the authoritative reference for the repository structure, packag
 │   ├── workflows/             # ci.yml, release.yml
 │   └── CODEOWNERS
 │
-├── go.mod                     # module github.com/masamasaowl/vyomanaut
+├── go.mod                     # module github.com/masamasaowl/Vyomanaut_V2
 └── go.sum
 ```
 
