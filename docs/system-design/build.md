@@ -1674,28 +1674,45 @@ package (IC §5.1 post-condition for `AONTEncodeSegment`).
 
 **ALGORITHM (from architecture.md §10 Stage 1):**
 
-```go
+``` go
   1. K = make([]byte, 32); io.ReadFull(rand.Reader, K) — fresh per call (IC §11)
   2. numWords = len(segment) / 16
-  3. output = make([]byte, (numWords+2)*16)  // +1 canary, +1 key-block
-  4. Cipher selection:
+  3. plaintext = segment ‖ aontCanary   // append canary to the PLAINTEXT before
+     encryption (ARCH §10 Stage 1 step 1) — this ordering is security-critical,
+     see the warning below
+     output = make([]byte, (numWords+2)*16)  // (numWords+1) encrypted words + key-block
+     ciphertext = output[:(numWords+1)*16]
+  4. Cipher selection — encrypts the data words AND the canary word together:
      if aesNIAvailable {
        // AES-256-CTR path; counter starts at i+1 per architecture.md §10 Stage 1
-       for i := 0; i < numWords; i++ {
+       for i := 0; i < numWords+1; i++ {
          block_i = AES256ECB(K, uint128(i+1))
-         copy(output[i*16:], xor16(segment[i*16:], block_i))
+         copy(ciphertext[i*16:], xor16(plaintext[i*16:], block_i))
        }
      } else {
        // ChaCha20-256 path
        stream = chacha20.NewUnauthenticatedCipher(K, nonce_zero_12bytes)
-       stream.XORKeyStream(output[:numWords*16], segment)
+       stream.XORKeyStream(ciphertext, plaintext)
      }
-  5. copy(output[numWords*16:], aontCanary[:])   // second-to-last word
-  6. h = sha256.Sum256(output[:numWords*16])      // hash of ciphertext words only
-  7. output[(numWords+1)*16 : (numWords+2)*16] = xor32(K, h[:])  // key-block
+  5. h = sha256.Sum256(ciphertext)   // hash covers ALL ciphertext words, INCLUDING
+     the encrypted canary — also security-critical, see below
+  6. output[(numWords+1)*16 : (numWords+2)*16] = xor32(K, h[:])  // key-block
 
   Return output, nil
 ```
+**⚠️ SECURITY-CRITICAL ORDERING (corrected — M2 review corrections):** the canary
+must be appended to the plaintext *before* encryption (step 3) and the commitment
+hash (step 5) must cover the encrypted canary word along with the data words. An
+earlier version of this text encrypted only the data words, appended `aontCanary`
+in the clear afterward, and hashed only the data-word ciphertext. Under that
+construction the canary check degenerates into a bare comparison against the public
+`aontCanary` constant — completely decoupled from whether K or the ciphertext was
+correctly recovered — which defeats FR-018 and the entire all-or-nothing property.
+The shipped `internal/crypto/aont.go` has always implemented the correct
+construction shown above; only this pseudocode block was wrong. Session 2.4.3's
+decode text ("Recover K from the last word XOR SHA-256(all preceding words)") does
+not need a separate correction — it was already describing the correct, wider hash
+scope; it only *looked* inconsistent relative to this block's previous, narrower one.
 
 **HELPER:** `xor16(a, b []byte) [16]byte — XOR two 16-byte slices`
 **HELPER:** `xor32(a, b []byte) [32]byte — XOR two 32-byte slices (for K ⊕ h)`
@@ -5697,7 +5714,10 @@ NEGATIVE_CHECKS:
 
 1. Create `internal/p2p/identity.go` implementing Ed25519 key pair generation, encrypted persistence, and load-on-restart.
 2. Derive the keystore encryption key using `crypto.DeriveKeystoreEncKey(masterSecret, ownerID)`. The correct function name is **`DeriveKeystoreEncKey`** — not `DeriveDKSKeystoreEncKey` (IC §3.2, IC §5.1).
-3. Encrypt the private key with `AEAD_CHACHA20_POLY1305` via `crypto.EncryptPointerFile` and persist to `<dataDir>/identity.key`. On first launch, generate via `crypto/rand`. On subsequent launches, load and decrypt.
+3. Encrypt the private key with `AEAD_CHACHA20_POLY1305` via `crypto.EncryptAEAD`
+(the general-purpose AEAD primitive — not `EncryptPointerFile`, which is
+reserved for the pointer-file artifact specifically; see M2 review §3) and
+persist to `<dataDir>/identity.key`. On first launch, generate via `crypto/rand`. On subsequent launches, load and decrypt.
 4. The libp2p Peer ID is `multihash(ed25519_public_key)` (ARCH §13, IC §3.2).
 
 **FILE:** `internal/p2p/identity.go`
@@ -6719,7 +6739,7 @@ A PR that breaks any row here must be rejected.
 | `internal/crypto/aont.go` | 2.4.2 | 2.4.3 |
 | `internal/crypto/aont_test.go` | 2.4.4 | — |
 | `internal/crypto/chacha20poly1305.go` | 2.5.1 | — |
-| `internal/crypto/errors.go` | 2.5.1 | — |
+| `internal/crypto/errors.go` | 2.4.x (no later than 2.4.4 — see that session's VERIFY block; Session 2.5.1's own text notes "this file has already been created as part of Phase 2.4") | 2.6.3 (adds ErrInvalidMnemonic) |
 | `internal/crypto/wordlist_en.txt` | 2.6.1 | — |
 | `internal/crypto/bip39.go` | 2.6.2 | 2.6.3, 2.6.4 |
 | `internal/crypto/ed25519.go` | 2.7.1 | — |

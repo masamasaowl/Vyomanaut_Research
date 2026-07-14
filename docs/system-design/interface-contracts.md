@@ -753,7 +753,7 @@ always bugs in the caller, not in the callee.
 
 ---
 
-### IC 5.1 `internal/crypto`
+### 5.1 `internal/crypto`
 
 Provides all key derivation and cipher primitives. All functions are **pure** (no shared
 mutable state) and **goroutine-safe** by design — they take all inputs as arguments and
@@ -878,7 +878,9 @@ func AONTEncodeSegment(segment []byte, aesNIAvailable bool) ([]byte, error)
 // Also verifies the canary word after decryption. (FR-018, ADR-022)
 //
 // Pre-conditions:
-//   - len(aontPackage) >= 32   (must have at least one data word, canary word, key-block)
+//   - len(aontPackage) >= 64   (at least 1 data word + 1 canary word + a
+//     32-byte key block: 2×16 + 32 = 64. 32 bytes alone is just the key
+//     block with zero ciphertext words, which can never be valid.)
 //   - len(aontPackage) is a multiple of 16
 //   - aesNIAvailable must be the value returned by DetectAESNI() at startup
 // Post-conditions (on nil error):

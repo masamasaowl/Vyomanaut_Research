@@ -629,6 +629,61 @@ VET:
   EXPECT: exit 0; zero output
 ```
 
+**Three real findings from live-RLS testing:**
+
+1. DM §6 defines no SELECT policy for vyomanaut_app on audit_receipts (only
+INSERT and two UPDATE policies). Confirmed live: vyomanaut_app cannot
+SELECT a row back via plain SELECT, even one it just inserted itself —
+RLS returns zero rows silently. Production functions are correctly
+designed around this (neither ever needs to SELECT), but the tests
+needed a second, privileged connection (openVerifyDB) purely to assert
+results, since the actor connection can't read anything back.
+2. Independently, and more seriously: PostgreSQL's RLS requires an
+applicable SELECT policy for UPDATE to even locate candidate rows — an
+UPDATE-only policy's own USING clause is NOT sufficient by itself. This
+means WriteReceiptPhase2, run as a correctly-restricted vyomanaut_app
+against DM §6 exactly as specified, affects ZERO rows on every call,
+for every result — the entire Phase 2 write path is non-functional as
+currently specified. I verified this with an isolated raw-SQL
+reproduction outside any Go code before tracing it back here. This is a
+migrations/-owned fix (needs a SELECT policy added, which needs the
+3-reviewer CODEOWNERS process) — I patched it locally, sandbox-only, to
+finish verifying the rest of the logic, and did not touch migrations/.
+receipt_test.go will correctly FAIL (not skip) against an unpatched
+live database — that failure is the intended signal.
+3. A third, separate gap, found only after #2 was locally patched enough
+to test further: audit_receipts_response_consistency requires
+response_hash/provider_sig for PASS/FAIL, and neither
+WriteReceiptPhase1 nor WriteReceiptPhase2's given signatures have a
+parameter for either. Only AuditTimeout is reachable through these two
+functions as specified. Documented in receipt.go; tests rewritten to
+assert this as intended behavior (TestWriteReceiptPhase2PromotesToTerminal
+now has explicit "PASS/FAIL fails the check constraint" subtests) rather
+than silently avoiding AuditPass in the other three tests (which I
+switched to AuditTimeout).
+4. Added github.com/lib/pq (not requested by name, only google/uuid was) —
+without any driver, the live-DB tests could only ever skip, never
+actually run, which felt like it would undercut the whole point of the
+four named INTEGRATION_TEST_AGAINST_LIVE_RSP tests. Flagging this as a
+deliberate scope addition, same as internal/crypto's depguard entry last
+session.
+
+TODOs deferred (all pre-existing gaps surfaced, none newly introduced):
+
+- DM §6: add a SELECT policy for vyomanaut_app (and vyomanaut_gc) on
+audit_receipts — migrations/ change, needs 3 CODEOWNERS reviewers.
+- WriteReceiptPhase2's signature likely needs responseHash [32]byte and
+providerSig [64]byte parameters (same pattern as Session 7.2.1's
+ValidateResponse fix) before PASS/FAIL can ever be written.
+- ci.yml's postgres service uses POSTGRES_USER: vyomanaut_app, which the
+official image bootstraps as a superuser; migrations/generator.go's role
+creation is CREATE ROLE ... IF NOT EXISTS, so it never downgrades that
+superuser bit. Net effect: RLS on audit_receipts is not actually
+exercised in CI today, regardless of #1 above. Out of scope here; noted
+in receipt_test.go and flagging it loudly since it's a real gap.
+- interface-contracts.md still doesn't define ReceiptFields — carried over
+from this session's own precondition note.
+
 ---
 
 ### Phase 7.4 — Cluster Secret Cache

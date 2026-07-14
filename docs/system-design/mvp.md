@@ -253,9 +253,8 @@ exist anywhere except the two places that construct these profiles at startup.
 
 // NetworkProfile is the single authoritative container for all parameters that
 // differ between DEMO and PROD mode. It is constructed once at startup and passed
-// via dependency injection to every subsystem. Package-level reads of this struct
-// are prohibited — callers receive it as a constructor argument.
-//
+// via dependency injection to every subsystem.
+// Callers typically receive it as a constructor argument via SelectProfile; the package-level vars themselves are exported for the (currently rare) cases that need the canonical profile directly, e.g. cross-package tests and the migration generator
 // INVARIANT: Every field that affects wire format, cryptographic output, or database
 // schema (ShardSize, challenge nonce length, amount_paise type) must be identical in
 // both profiles. Only performance thresholds, time windows, and infrastructure scale
