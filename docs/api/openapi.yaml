@@ -2773,35 +2773,6 @@ paths:
         "403":
           $ref: '#/components/responses/403Forbidden'
 
-  /api/v1/provider/downtime:
-    get:
-      tags: [Providers]
-      summary: Get active promised downtime window (if any)
-      operationId: getActiveDowntime
-      responses:
-        "200":
-          description: Active downtime window or null if none active.
-          content:
-            application/json:
-              schema:
-                type: object
-                required: [active]
-                properties:
-                  active:
-                    type: boolean
-                  promised_return_at:
-                    type: string
-                    format: date-time
-                    nullable: true
-                  penalty_fires_at:
-                    type: string
-                    format: date-time
-                    nullable: true
-        "401":
-          $ref: '#/components/responses/401Unauthorized'
-        "403":
-          $ref: '#/components/responses/403Forbidden'
-
   # ────────────────────────────
   # Upload and Files
   # ────────────────────────────
