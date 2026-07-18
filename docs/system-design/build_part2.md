@@ -135,18 +135,18 @@ M0 (Setup)
      ├─ M4 (Database Schema)
      └─ M5 (Storage Engine)
          └─ M6 (P2P Network Layer)
-             ├─ M7 (Provider Daemon Core)
-             ├─ M8 (Audit System)
-             │   ├─ M9 (Scoring)
-             │   └─ M10 (Repair)
-             ├─ M11 (Payment)
-             └─ M12 (REST API Layer)
+             ├─ M7 (Audit System)
+             ├─ M8 (Scoring System)
+             │   ├─ M9 (Repair System)
+             │   └─ M10 (Payment System)
+             ├─ M11 (REST API Layer)
+             └─ M12 (Coordination Microservice)
                  ├─ M-OBS (Observability & Metrics)
-                 └─ M13 (Coordination Microservice)
+                 └─ M13 (Provider Daemon Core)
                      └─ M14 (Vetting & Synthetic Chunks)
                          └─ M15 (Client SDK)
                              └─ M16 (Demo Mode Validation)
-                                 ├─ M17 (Production Hardening) 
+                                 ├─ M17 (Production Hardening)
                                     └─ M18 (Launch Readiness)
 ```
 
@@ -3021,110 +3021,276 @@ VET:
 
 ## Milestone 11 — REST API Layer
 
-**Reference:** OAS (all sections) IC §3 (all REST contracts), IC §3.3 (error envelope), IC §3.4 (readiness
-gate), IC §7 (webhook contracts implemented in M10)
+**Reference:** `docs/api/openapi.yaml` (OAS — authoritative for all request/response schemas, status codes, and error bodies; see IC §3's own precedence statement), IC §3 (REST contract cross-references only — do not treat IC §3.3/§3.4's inline JSON sketches as authoritative where they conflict with OAS; see the two flagged corrections in Phases 11.1 and 11.2), IC §3.3 (error envelope — partial list, reconciled with OAS below), IC §3.4 (readiness gate — condition *logic* is still authoritative here; the response *body shape* is not, see Phase 11.2), IC §7 (webhook contracts implemented in Milestone 10)
+
+**Package:** `internal/api` (new package for HTTP-layer concerns; not previously created). No `internal/` import restrictions apply beyond the general rule that `internal/api` is the one place permitted to call into `internal/audit`, `internal/scoring`, `internal/repair`, and `internal/payment` on the microservice's behalf — actual wiring of those calls happens in Milestone 12, not here; Milestone 11's own deliverable is the routing tree and stub handlers (Session 11.3.1).
 
 ---
 
 ### Phase 11.1 — Error Envelope
 
-**Reference:** OAS `components/schemas/Error.properties`, IC §3.3 (standard error body, HTTP status code table)
+**Reference:** OAS `components/schemas/Error`, IC §3.3 (error envelope — partial, see the flagged correction below)
+
+> **Flagged and corrected — IC §3.3's error-code table is neither exhaustive nor fully consistent with OAS.** Scanning every `error_code:` value that actually appears in `openapi.yaml`'s path definitions and examples turns up more than a dozen codes IC §3.3 never lists (`INVALID_PHONE_NUMBER`, `INVALID_AMOUNT`, `INVALID_CHALLENGE_NONCE`, `WRONG_ROLE`, `INVALID_BODY_SIGNATURE`, `NOT_FOUND`, `DUPLICATE_CHALLENGE_NONCE`, `PHONE_ALREADY_REGISTERED`, `OTP_RATE_LIMITED`, `INVALID_OTP`, `TOKEN_REFRESH_RATE_LIMITED`, `DOWNTIME_ALREADY_ACTIVE`, `FILE_ALREADY_DELETED`), plus two direct naming conflicts on codes both documents share (`UNAUTHENTICATED` vs. OAS's `UNAUTHORIZED`; `INSUFFICIENT_ESCROW` vs. OAS's `INSUFFICIENT_ESCROW_BALANCE`). Since IC §3 states OAS is the exclusive source for REST contracts, OAS's strings win both conflicts. The full reconciled list is given below; "implement all error codes from the IC §3.3 table" (the original instruction) would leave the implementation missing constants that later sessions in this same milestone reference by name.
 
 #### Session 11.1.1 — Implement standard error response
 
-**Task:** Create `internal/api/errors.go` (new package `internal/api` for HTTP-layer
-concerns). Implement a `WriteError(w http.ResponseWriter, statusCode int, errorCode string,
-message string, retryAfter *int)` function that writes the exact JSON body from IC §3.3:
+**PRECONDITIONS:**
 
-```json
-{
-  "error_code": "...",
-  "message": "...",
-  "request_id": "...",
-  "retry_after": null
-}
+- `internal/api` package directory exists (create if not; no prior session in this build plan creates it)
+
+**TASK:**
+
+1. Create `internal/api/errors.go`. Implement:
+
+```go
+// WriteError writes the standard Vyomanaut error envelope (OAS components/schemas/Error).
+//   {"error_code": "...", "message": "...", "request_id": "...", "retry_after": null}
+// request_id is a UUIDv7, matching the X-Request-ID response header (OAS, IC §3.3).
+// field and details are optional (OAS Error.properties.field/details) — pass "" / nil
+// when not applicable. availableASNs is optional (non-nil only for
+// INSUFFICIENT_ASN_DIVERSITY, OAS Error.properties.available_asns) — see note below.
+func WriteError(w http.ResponseWriter, statusCode int, errorCode ErrorCode, message string, retryAfter *int, field string, availableASNs *int)
 ```
 
-The OAS confirms `retry_after` is `integer` (seconds), `nullable: true`, and is non-null for HTTP 429 and HTTP 503 responses with a known backoff (OAS `components/schemas/Error.properties.retry_after`). Add `field` (string, for validation errors) and `details` (object) as additional optional fields on the error struct per OAS
+1. Declare `ErrorCode` as a typed string constant for **every** code found by scanning `openapi.yaml`'s path definitions and component examples — not just IC §3.3's table:
 
-The `request_id` must be a UUIDv7 matching the `X-Request-ID` response header (IC §3.3).
-Implement all error codes from the IC §3.3 table as typed constants.
+```go
+type ErrorCode string
 
-**`INSUFFICIENT_ASN_DIVERSITY` special case (IC §3.3):** the `available_asns` field is a sibling of `error_code` inside the standard Error schema, not a wrapper type. Implement as an optional field on the shared error struct, populated only when `error_code == INSUFFICIENT_ASN_DIVERSITY`. (Resolved by OAS `components/schemas/Error.properties.available_asns`)
+const (
+ // From IC §3.3, unchanged from OAS:
+ ErrInvalidRequest             ErrorCode = "INVALID_REQUEST"
+ ErrProviderDeparted           ErrorCode = "PROVIDER_DEPARTED"
+ ErrEscrowFrozen               ErrorCode = "ESCROW_FROZEN"
+ ErrNetworkNotReady            ErrorCode = "NETWORK_NOT_READY"
+ ErrInsufficientASNDiversity   ErrorCode = "INSUFFICIENT_ASN_DIVERSITY"
+ ErrRazorpayUnavailable        ErrorCode = "RAZORPAY_UNAVAILABLE"
+ ErrInternal                   ErrorCode = "INTERNAL_ERROR"
+ ErrVettingCapExceeded         ErrorCode = "VETTING_CAP_EXCEEDED"
+ ErrRealShardOnVettingProvider ErrorCode = "REAL_SHARD_ON_VETTING_PROVIDER"
+ ErrDemoModeRealPayment        ErrorCode = "DEMO_MODE_REAL_PAYMENT"
+ ErrProdModeEnvSecret          ErrorCode = "PROD_MODE_ENV_SECRET"
+
+ // Corrected from IC §3.3 to match OAS's actual strings (IC §3.3 disagreed with OAS):
+ ErrUnauthorized         ErrorCode = "UNAUTHORIZED"          // IC §3.3 wrongly said UNAUTHENTICATED
+ ErrInsufficientEscrow   ErrorCode = "INSUFFICIENT_ESCROW_BALANCE" // IC §3.3 wrongly said INSUFFICIENT_ESCROW
+
+ // Present in OAS path/example bodies but absent from IC §3.3's table entirely:
+ ErrInvalidPhoneNumber      ErrorCode = "INVALID_PHONE_NUMBER"
+ ErrInvalidAmount           ErrorCode = "INVALID_AMOUNT"
+ ErrInvalidChallengeNonce   ErrorCode = "INVALID_CHALLENGE_NONCE"
+ ErrWrongRole               ErrorCode = "WRONG_ROLE"
+ ErrInvalidBodySignature    ErrorCode = "INVALID_BODY_SIGNATURE"
+ ErrNotFound                ErrorCode = "NOT_FOUND"
+ ErrDuplicateChallengeNonce ErrorCode = "DUPLICATE_CHALLENGE_NONCE"
+ ErrPhoneAlreadyRegistered  ErrorCode = "PHONE_ALREADY_REGISTERED"
+ ErrOTPRateLimited          ErrorCode = "OTP_RATE_LIMITED"
+ ErrInvalidOTP              ErrorCode = "INVALID_OTP"
+ ErrTokenRefreshRateLimited ErrorCode = "TOKEN_REFRESH_RATE_LIMITED"
+ ErrDowntimeAlreadyActive   ErrorCode = "DOWNTIME_ALREADY_ACTIVE"
+ ErrFileAlreadyDeleted      ErrorCode = "FILE_ALREADY_DELETED"
+
+ // New — corrects a wrong-code reuse in Session 11.7.2 (see Phase 11.7 flag):
+ ErrFileAlreadyRegistered ErrorCode = "FILE_ALREADY_REGISTERED"
+
+ // Referenced in Session 11.11.1 but not yet present in openapi.yaml — flag for
+ // an OAS addition before this ships; implement the constant now so the Go code
+ // compiles and is ready the moment OAS catches up:
+ ErrInsufficientProviderCapacity ErrorCode = "INSUFFICIENT_PROVIDER_CAPACITY"
+)
+```
+
+1. **`INSUFFICIENT_ASN_DIVERSITY` special case:** `available_asns` is a field on the same `Error` struct (OAS defines it directly on `components/schemas/Error`, and *separately* re-adds it via `allOf` composition on the specific `/api/v1/upload/assign` 503 response — the second one is redundant since the base schema already has it). Implement as a single optional `AvailableASNs *int` field on the one shared Go `Error` struct; do not create a second wrapper type to mirror OAS's redundant `allOf`.
+
+**VERIFY:**
+
+```bash
+FILES_EXIST:
+  $ test -f internal/api/errors.go && echo PASS || echo FAIL
+
+COMPILE:
+  $ go build ./internal/api/
+  EXPECT: exit 0
+
+FUNCTION_SIGNATURE:
+  $ grep -c "^func WriteError(" internal/api/errors.go
+  EXPECT: 1
+
+ALL_OAS_ERROR_CODES_PRESENT:
+  # Spot-check the codes IC §3.3 never listed at all
+  $ grep -c "ErrInvalidPhoneNumber\|ErrWrongRole\|ErrInvalidBodySignature\|ErrNotFound\|ErrDuplicateChallengeNonce\|ErrPhoneAlreadyRegistered\|ErrOTPRateLimited\|ErrInvalidOTP\|ErrTokenRefreshRateLimited\|ErrDowntimeAlreadyActive\|ErrFileAlreadyDeleted" \
+      internal/api/errors.go
+  EXPECT: 11
+
+CORRECTED_CODES_MATCH_OAS_NOT_IC:
+  # The two naming conflicts — OAS strings must win
+  $ grep -c '"UNAUTHORIZED"' internal/api/errors.go
+  EXPECT: 1
+  $ grep -n '"UNAUTHENTICATED"' internal/api/errors.go \
+      && echo "FAIL: IC §3.3's string is stale; OAS's actual 401 example says UNAUTHORIZED" \
+      || echo "PASS"
+  $ grep -c '"INSUFFICIENT_ESCROW_BALANCE"' internal/api/errors.go
+  EXPECT: 1
+  $ grep -n '"INSUFFICIENT_ESCROW"$' internal/api/errors.go \
+      && echo "FAIL: IC §3.3's string is stale; OAS's actual 409 example says INSUFFICIENT_ESCROW_BALANCE" \
+      || echo "PASS"
+
+FILE_ALREADY_REGISTERED_IS_DISTINCT_FROM_DELETED:
+  $ grep -c "ErrFileAlreadyRegistered\|ErrFileAlreadyDeleted" internal/api/errors.go
+  EXPECT: 2
+
+AVAILABLE_ASNS_SINGLE_FIELD_NOT_WRAPPER:
+  $ grep -c "AvailableASNs \*int" internal/api/errors.go
+  EXPECT: 1
+
+UNIT_TESTS:
+  $ go test -v -run TestWriteError ./internal/api/
+  EXPECT: exit 0; tests include:
+    TestWriteErrorBodyShape           (JSON body has exactly error_code, message, request_id, retry_after, plus optional fields)
+    TestWriteErrorRequestIDIsUUIDv7
+    TestWriteErrorSetsXRequestIDHeader (X-Request-ID header equals body's request_id)
+    TestWriteErrorAvailableASNsOnlyWhenSet (nil for any code other than INSUFFICIENT_ASN_DIVERSITY)
+
+VET:
+  $ go vet ./internal/api/
+  EXPECT: exit 0; zero output
+```
 
 ---
 
 ### Phase 11.2 — Readiness Gate Endpoint
 
-**Reference:** OAS `components/schemas/ReadinessResponse`, IC §3.4 (readiness gate contract, exact response body)
+**Reference:** OAS `components/schemas/ReadinessResponse`, `components/schemas/ReadinessCondition` (authoritative response shape), IC §3.4 (authoritative for *condition-evaluation logic and data sources* — see the flagged correction on the response body), FR-053, FR-054, ADR-029
+
+> **Flagged and corrected — response body shape.** IC §3.4 sketches `{"ready": bool, "conditions": {"active_providers": {"value", "threshold", "met"}, ...}, "evaluated_at": "..."}`. OAS's actual `ReadinessResponse` requires `all_conditions_met`, `evaluated_at`, `mode`, and `conditions` keyed by `active_vetted_providers`, `distinct_asns`, `distinct_metro_regions`, `microservice_quorum`, `razorpay_accounts_ready`, `relay_nodes_deployed`, `cluster_audit_secret_loaded` — each a `ReadinessCondition` object with `name`, `satisfied`, `current_value`, `required_value`, and nullable `demo_value`. These are two different, non-overlapping JSON shapes. Per IC §3's own rule, OAS wins. IC §3.4's condition *table* (data source + threshold per condition) is unaffected and remains the right reference for the evaluation logic itself.
+>
+> **Flagged and corrected — copy-paste error in the quorum condition.** The original task text said: *"The `readiness_condition.threshold` field in the response must read from `NetworkProfile.MinActiveProviders` (not hardcoded 3) per IC §3.4"* — in the middle of describing the **quorum** condition. `NetworkProfile.MinActiveProviders` is the *active-providers* condition's field (bullet 1); it has nothing to do with quorum. There is no dedicated integer profile field for the quorum replica count — OAS's own description confirms this: *"Threshold from NetworkProfile.RequireQuorum. Production: 3 healthy replicas... Demo: 1 instance."* The quorum threshold is **derived** from the boolean `RequireQuorum` (3 if true, 1 if false), not read from any named integer field.
 
 #### Session 11.2.1 — Implement `GET /api/v1/admin/readiness`
 
-**Task:** In `internal/api/readiness.go`, implement the readiness gate evaluator and
-HTTP handler per IC §3.4. All seven conditions must be evaluated simultaneously:
+**PRECONDITIONS:**
 
-1. Active vetted providers: `COUNT(*) WHERE status IN ('VETTING','ACTIVE') >= profile.MinActiveProviders`
-2. Distinct ASNs: `COUNT(DISTINCT asn) >= profile.MinDistinctASNs`
-3. Distinct metro regions: `COUNT(DISTINCT region) >= profile.MinMetroRegions`
-4. Microservice quorum: when `profile.RequireQuorum == true` (production), query the gossip cluster's in-memory membership view: `clusterMembership.HealthyCount() >= 3`. When `profile.RequireQuorum == false` (demo mode), always return `satisfied: true, current_value: 1, required_value: 1`. The gossip membership object is injected at startup by M17 Phase 17.2.1; stub with a `MockClusterMembership` that always returns healthy=3 until M17 completes. The `readiness_condition.threshold` field in the response must read from `NetworkProfile.MinActiveProviders` (not hardcoded 3) per IC §3.4.
-5. Razorpay cooled accounts: **LIVE QUERY** every 60-second cycle — must NOT cache
-   (IC §3.4: "MUST NOT cache this value")
-6. Relay nodes: `COUNT(relay heartbeat entries) >= profile.MinRelayNodes`
-7. Cluster audit secret: `clusterSecretCache.IsLoaded()`
+- `internal/api/errors.go` exists (Session 11.1.1)
+- `internal/audit`'s `ClusterSecretCache` exists (Milestone 7, Phase 7.4) — this session requires one additional method not in the original Phase 7.4 write-up (see note below)
+- A `ClusterMembership` interface (or equivalent) is available, even as a stub — see the demo-mode branch below
 
-Response body must match IC §3.4 exactly. The `"threshold"` field is populated from
-`NetworkProfile.Min*` fields, not hardcoded constants (IC §3.4: "must not assume the
-value is always 56").
+> **Retroactive addition needed in Milestone 7, Phase 7.4:** this session calls `clusterSecretCache.IsLoaded() bool` — a trivial accessor reporting whether `Load()` has completed successfully at least once. This method was not included in the Milestones 7–8 revision's `ClusterSecretCache` proposal. Add it there: `func (c *ClusterSecretCache) IsLoaded() bool`.
 
-**ReadinessResponse field set from OAS `components/schemas/ReadinessResponse`:**
+**TASK:**
 
-- `all_conditions_met` (bool)
-- `evaluated_at` (date-time)
-- `mode` (`"demo"` | `"prod"`) — must reflect active `NetworkProfile`
-- `conditions` object with exactly these seven keys, each a `ReadinessCondition`:
-  - `active_vetted_providers` — threshold = `NetworkProfile.MinActiveProviders`
-  - `distinct_asns` — threshold = `NetworkProfile.MinDistinctASNs`
-  - `distinct_metro_regions` — threshold = `NetworkProfile.MinMetroRegions`
-  - `microservice_quorum` — threshold: prod=3, demo=1 (`RequireQuorum=false`)
-  - `razorpay_accounts_ready` — threshold = `NetworkProfile.MinCooledAccounts`; **LIVE QUERY always** (OAS description: "MUST NOT cache this value")
-  - `relay_nodes_deployed` — threshold = `NetworkProfile.MinRelayNodes`
-  - `cluster_audit_secret_loaded` — bool from `ClusterSecretCache.IsLoaded()`
+In `internal/api/readiness.go`, implement the readiness evaluator and HTTP handler. All seven conditions are evaluated on every call (re-computed at most every 60 seconds by a background goroutine — Milestone 12, Session 12.1.1 — with the handler reading the cached last-evaluated result):
 
-Each `ReadinessCondition` carries: `name` (string), `satisfied` (bool), `current_value` (int), `required_value` (int), and `demo_value` (int, nullable — non-null only in demo mode) (OAS `components/schemas/ReadinessCondition`).
+| # | `conditions` key (OAS) | Data source | `required_value` |
+|---|---|---|---|
+| 1 | `active_vetted_providers` | `COUNT(*) FROM providers WHERE status IN ('VETTING','ACTIVE')` | `profile.MinActiveProviders` |
+| 2 | `distinct_asns` | `COUNT(DISTINCT asn) FROM providers WHERE status IN ('VETTING','ACTIVE')` | `profile.MinDistinctASNs` |
+| 3 | `distinct_metro_regions` | `COUNT(DISTINCT region) FROM providers WHERE status IN ('VETTING','ACTIVE')` | `profile.MinMetroRegions` |
+| 4 | `microservice_quorum` | `clusterMembership.HealthyCount()` when `profile.RequireQuorum`; else always satisfied | **derived**: `3` if `profile.RequireQuorum` else `1` — never `profile.MinActiveProviders` |
+| 5 | `razorpay_accounts_ready` | `COUNT(*) FROM providers WHERE razorpay_cooling_until < NOW()` — **live query, never cached, re-run every evaluation cycle** (ADR-029) | `profile.MinCooledAccounts` |
+| 6 | `relay_nodes_deployed` | Relay heartbeat table row count | `profile.MinRelayNodes` |
+| 7 | `cluster_audit_secret_loaded` | `clusterSecretCache.IsLoaded()` | boolean; no numeric threshold |
+
+Response fields: `all_conditions_met` (AND of all seven `satisfied` flags), `evaluated_at`, `mode` (`profile.Mode`), and `conditions` (the seven `ReadinessCondition` objects above, each with `name`, `satisfied`, `current_value`, `required_value`, and `demo_value` — non-null only when `profile.Mode == "demo"`, mirroring the current `required_value`).
+
+Condition 4's demo-mode branch: when `profile.RequireQuorum == false`, always return `satisfied: true, current_value: 1, required_value: 1, demo_value: 1` without querying `clusterMembership` at all (matches OAS's `DemoReady` example exactly). Until Milestone 17 Phase 17.2.1 delivers the real gossip cluster, use a `MockClusterMembership` stub (Milestone 12 constructs and injects it) that reports `healthy = 3`.
+
+**VERIFY:**
+
+```bash
+FILES_EXIST:
+  $ test -f internal/api/readiness.go && echo PASS || echo FAIL
+
+COMPILE:
+  $ go build ./internal/api/
+  EXPECT: exit 0
+
+RESPONSE_MATCHES_OAS_NOT_STALE_IC_SKETCH:
+  # The core fix: field names must be OAS's, never IC §3.4's older sketch
+  $ grep -c "all_conditions_met\|evaluated_at\|active_vetted_providers\|distinct_asns\|distinct_metro_regions\|microservice_quorum\|razorpay_accounts_ready\|relay_nodes_deployed\|cluster_audit_secret_loaded" \
+      internal/api/readiness.go
+  EXPECT: >= 9
+  $ grep -n '"ready"' internal/api/readiness.go \
+      && echo "FAIL: 'ready' is IC §3.4's stale field name; OAS calls it all_conditions_met" || echo "PASS"
+
+SEVEN_CONDITIONS_PRESENT:
+  $ grep -c "ReadinessCondition{" internal/api/readiness.go
+  EXPECT: >= 7
+
+QUORUM_THRESHOLD_IS_DERIVED_NOT_MISATTRIBUTED:
+  # The copy-paste bug fix: quorum's required_value must never reference MinActiveProviders
+  $ grep -B3 -A3 "microservice_quorum\|RequireQuorum" internal/api/readiness.go | grep -c "MinActiveProviders" \
+      && echo "FAIL: quorum threshold copy-pasted the active-providers field" || echo "PASS"
+  $ grep -c "RequireQuorum.*3\|3.*RequireQuorum\|if profile.RequireQuorum" internal/api/readiness.go
+  EXPECT: >= 1
+
+RAZORPAY_NEVER_CACHED:
+  $ grep -c "live query\|never cach\|LIVE QUERY" internal/api/readiness.go
+  EXPECT: >= 1
+
+DEMO_QUORUM_SHORT_CIRCUITS:
+  $ grep -A5 "RequireQuorum == false\|!profile.RequireQuorum" internal/api/readiness.go | grep -c "current_value.*1\|:= 1"
+  EXPECT: >= 1
+
+CLUSTERSECRETCACHE_ISLOADED_USED:
+  $ grep -c "clusterSecretCache.IsLoaded()\|\.IsLoaded()" internal/api/readiness.go
+  EXPECT: >= 1
+
+UNIT_TESTS:
+  $ go test -v -run TestReadinessHandler ./internal/api/
+  EXPECT: exit 0; tests include:
+    TestReadinessAllSevenConditionsEvaluated
+    TestReadinessAllConditionsMetWhenAllSatisfied
+    TestReadinessDemoQuorumAlwaysSatisfiedWithoutQuery  (RequireQuorum=false -> HealthyCount never called)
+    TestReadinessRazorpayIsLiveQueryNotCached           (two calls in the same cycle re-query rather than reuse a cached count)
+    TestReadinessModeFieldReflectsProfile               (config.DemoProfile -> mode="demo"; config.ProductionProfile -> mode="prod")
+    TestReadinessMatchesOASDemoReadyExample             (fixture built from the OAS DemoReady example -> struct round-trips correctly)
+
+NEGATIVE_CHECKS:
+  $ grep -n '"threshold"\|"value"\|"met"' internal/api/readiness.go \
+      && echo "FAIL: these are IC §3.4's stale field names, not OAS's" || echo "PASS"
+
+VET:
+  $ go vet ./internal/api/
+  EXPECT: exit 0; zero output
+```
 
 ---
 
 ### Phase 11.3 — Endpoint Routing Stubs
 
-**Reference:** IC §2 (component communication map — lists all permitted endpoints),
-IC §3 (REST contract cross-references)
+**Reference:** OAS `paths` (every operation listed below is verified against its exact `operationId` in `openapi.yaml`), IC §2 (component communication map — cross-check only, OAS is authoritative for the exact path/method/operationId)
+
+> **Flagged — an endpoint in this table does not exist in OAS.** `GET /api/v1/provider/downtime` / `getActiveDowntime` appears below (carried over from the original plan) and is described in Session 11.6.5, but `openapi.yaml` defines only `POST /api/v1/provider/downtime` (`announceDowntime`) — there is no `GET` sibling path, schema, or operationId anywhere in the spec. This is a genuine prerequisite gap: **add the `GET` path to `openapi.yaml` before implementing this row** (the response shape Session 11.6.5 already describes — `{active, promised_return_at, penalty_fires_at}` — is a reasonable schema to add). Until that's done, treat this row as blocked, not as an OAS-backed contract.
 
 #### Session 11.3.1 — Establish HTTP routing tree with stubs
 
-**Task:** Create `internal/api/router.go` defining the full routing tree. For each
-endpoint referenced in IC §2 and IC §3 cross-reference table, create a stub handler
-returning `501 Not Implemented` with error_code `INTERNAL_ERROR`. The purpose is to
-establish the URL structure so that `openapi.yaml` can be validated against it once
-available.
+**PRECONDITIONS:**
 
-| Method | Path | OAS operationId | Auth |
+- `internal/api/errors.go` exists (Session 11.1.1)
+
+**TASK:**
+
+Create `internal/api/router.go`. For each row below, register a stub handler returning `501 Not Implemented` with `error_code: INTERNAL_ERROR` (Session 11.1.1's `ErrInternal`). Every `operationId` was individually verified against `openapi.yaml`; this table supersedes any other listing.
+
+| Method | Path | OAS `operationId` | Auth |
 | --- | --- | --- | --- |
 | GET | `/.well-known/jwks.json` | `getJwks` | public |
 | POST | `/api/v1/auth/otp/send` | `sendOtp` | public |
 | POST | `/api/v1/auth/otp/verify` | `verifyOtp` | public |
-| POST | `/api/v1/owner/register` | `registerOwner` | BearerAuth |
+| POST | `/api/v1/owner/register` | `registerOwner` | BearerAuth (short-lived registration token from `otp/verify`) |
 | POST | `/api/v1/owner/deposit` | `initiateDeposit` | BearerAuth |
 | GET | `/api/v1/owner/{owner_id}/balance` | `getOwnerBalance` | BearerAuth |
 | GET | `/api/v1/owner/{owner_id}/files` | `listOwnerFiles` | BearerAuth |
 | GET | `/api/v1/owner/{owner_id}/escrow` | `getOwnerEscrowHistory` | BearerAuth |
 | POST | `/api/v1/owner/withdraw` | `withdrawOwnerEscrow` | BearerAuth |
-| POST | `/api/v1/provider/register` | `registerProvider` | BearerAuth |
+| POST | `/api/v1/provider/register` | `registerProvider` | BearerAuth (short-lived registration token from `otp/verify`) |
 | POST | `/api/v1/provider/heartbeat` | `providerHeartbeat` | BearerAuth |
-| POST | `/api/v1/provider/token/refresh` | `refreshProviderToken` | BearerAuth (grace) |
+| POST | `/api/v1/provider/token/refresh` | `refreshProviderToken` | BearerAuth (grace: valid or expired ≤1h) |
 | GET | `/api/v1/provider/{provider_id}/status` | `getProviderStatus` | BearerAuth |
 | GET | `/api/v1/provider/receipts` | `listProviderReceipts` | BearerAuth |
 | POST | `/api/v1/provider/downtime` | `announceDowntime` | BearerAuth |
-| GET | `/api/v1/provider/downtime` | `getActiveDowntime` | BearerAuth |
+| GET | `/api/v1/provider/downtime` | `getActiveDowntime` | BearerAuth — **⚠ not yet in `openapi.yaml`; see flagged gap above** |
 | POST | `/api/v1/provider/depart` | `announceDeparture` | BearerAuth |
 | POST | `/api/v1/upload/assign` | `assignUpload` | BearerAuth |
 | POST | `/api/v1/file/register` | `registerFile` | BearerAuth |
@@ -3140,303 +3306,1388 @@ available.
 | GET | `/api/v1/admin/audit/stats` | `getAuditStats` | AdminApiKey |
 | GET | `/api/v1/admin/vetting/status` | `getVettingStatus` | AdminApiKey |
 | POST | `/api/v1/admin/vetting/gc/retry` | `retryVettingGC` | AdminApiKey |
-| POST | `/webhooks/razorpay` | *(IC §7, no OAS path)* | signature |
+| POST | `/webhooks/razorpay` | *(IC §7 only — confirmed absent from OAS by design; OAS's own intro scopes the spec to the client-facing surface, not server-to-server webhooks)* | signature |
 
-**AdminApiKey middleware note (OAS `components/securitySchemes/AdminApiKey`):** `X-Admin-API-Key` header; must be ≥ 32 random bytes hex-encoded. Add a middleware that verifies this header on all `/api/v1/admin/*` and `/api/v1/audit/challenge` routes.
+**AdminApiKey middleware** (OAS `components/securitySchemes/AdminApiKey`): `X-Admin-API-Key` header, ≥32 random bytes hex-encoded, rotated quarterly, and — per OAS's own description — must **never** appear in client-facing code or provider daemon builds. Apply to all `/api/v1/admin/*` routes and `/api/v1/audit/challenge`.
+
+**VERIFY:**
+
+```bash
+FILES_EXIST:
+  $ test -f internal/api/router.go && echo PASS || echo FAIL
+
+COMPILE:
+  $ go build ./internal/api/
+  EXPECT: exit 0
+
+ALL_31_OAS_PATHS_REGISTERED:
+  # 30 OAS-defined operations + the one flagged-as-missing-from-OAS row = 31
+  $ grep -c "HandleFunc\|Handle(" internal/api/router.go
+  EXPECT: >= 31
+
+GET_DOWNTIME_MARKED_AS_GAP:
+  # Must not be silently presented as OAS-backed
+  $ grep -c "not yet in openapi.yaml\|flagged gap\|getActiveDowntime" internal/api/router.go
+  EXPECT: >= 1
+
+ADMIN_MIDDLEWARE_ON_ALL_ADMIN_ROUTES:
+  $ grep -c "X-Admin-API-Key" internal/api/router.go
+  EXPECT: >= 1
+  $ grep -c "AdminApiKey\|adminAuthMiddleware" internal/api/router.go
+  EXPECT: >= 9   # 8 admin/* routes + audit/challenge
+
+PUBLIC_ROUTES_HAVE_NO_AUTH_MIDDLEWARE:
+  $ grep -B2 "jwks.json\|otp/send\|otp/verify\|pricing/estimate\|pricing/provider-estimate" internal/api/router.go | grep -c "BearerAuth\|AdminApiKey" \
+      && echo "FAIL: public routes must not require auth" || echo "PASS"
+
+STUB_HANDLERS_RETURN_501:
+  $ grep -c "501\|StatusNotImplemented" internal/api/router.go
+  EXPECT: >= 1
+  $ grep -c "ErrInternal\|INTERNAL_ERROR" internal/api/router.go
+  EXPECT: >= 1
+
+UNIT_TESTS:
+  $ go test -v -run TestRouterStubs ./internal/api/
+  EXPECT: exit 0; tests include:
+    TestAllRoutesReturn501Initially
+    TestAdminRoutesRejectMissingAPIKey       (no X-Admin-API-Key header -> 401/403, not 501)
+    TestAdminRoutesRejectShortAPIKey         (< 32 bytes -> rejected)
+    TestPublicRoutesAccessibleWithoutAuth
+
+VET:
+  $ go vet ./internal/api/
+  EXPECT: exit 0; zero output
+```
 
 ---
 
 ### Phase 11.4 — Authentication Endpoints
 
+**Reference:** OAS `paths./api/v1/auth/otp/send`, `paths./api/v1/auth/otp/verify`, `paths./api/v1/provider/token/refresh`, `components/schemas/OtpSendRequest`, `OtpSendResponse`, `OtpVerifyRequest`, `OtpVerifyResponse`, FR-001, FR-024
+
 #### Session 11.4.1 — OTP Send (`POST /api/v1/auth/otp/send`)
 
-**Reference:** OAS `paths./api/v1/auth/otp/send`, `OtpSendRequest`, `OtpSendResponse`
+**PRECONDITIONS:** Session 11.3.1 complete (route registered as a stub)
 
-Implement rate limiting: 3 OTP attempts per phone number per 10 minutes. On breach return HTTP 429 with `Retry-After: 600` and `error_code: OTP_RATE_LIMITED`. Response body: `expires_at` (OTP TTL, typically 10 minutes from issuance). Authentication: public endpoint — no JWT required.
+**TASK:** Implement per OAS `OtpSendRequest`/`OtpSendResponse`. Required request field `purpose` (enum `OWNER_REGISTER | PROVIDER_REGISTER | LOGIN`) is not optional — it "determines which registration flow the OTP gates," and the subsequent register call must be validated against it (OAS description). Rate limit: 3 attempts per phone number per 10 minutes; on breach, `429` with `Retry-After: 600` and `error_code: OTP_RATE_LIMITED`. Response: `expires_at` (~10 minutes from issuance). Public endpoint.
+
+**VERIFY:**
+
+```bash
+COMPILE:
+  $ go build ./internal/api/
+  EXPECT: exit 0
+
+REQUEST_VALIDATES_PURPOSE_ENUM:
+  $ grep -c "OWNER_REGISTER\|PROVIDER_REGISTER\|LOGIN" internal/api/*.go
+  EXPECT: >= 3
+
+RATE_LIMIT_CONSTANTS:
+  $ grep -c "3.*10.*[Mm]inute\|600" internal/api/*.go
+  EXPECT: >= 1
+
+UNIT_TESTS:
+  $ go test -v -run TestOtpSend ./internal/api/
+  EXPECT: exit 0; tests include:
+    TestOtpSendSucceedsUnderRateLimit
+    TestOtpSendReturns429AfterThreeAttempts   (Retry-After: 600, error_code=OTP_RATE_LIMITED)
+    TestOtpSendRejectsInvalidPurpose
+    TestOtpSendIsPublicNoAuthRequired
+
+VET:
+  $ go vet ./internal/api/
+  EXPECT: exit 0; zero output
+```
 
 #### Session 11.4.2 — OTP Verify (`POST /api/v1/auth/otp/verify`)
 
-**Reference:** OAS `paths./api/v1/auth/otp/verify`, `OtpVerifyRequest`, `OtpVerifyResponse`
+**PRECONDITIONS:** Session 11.4.1 complete
 
-On success: issue Ed25519-signed JWT. If phone not previously registered (`is_new_entity: true`): issue 1-hour registration token; `role` field in response is `null`. If already registered (`is_new_entity: false`): issue 24-hour (owner) or 7-day (provider) JWT; populate `entity_id` and `role`.
+**TASK:** Per OAS `OtpVerifyResponse`: on success, issue an Ed25519-signed JWT. `is_new_entity: true` → 1-hour registration token, `role: null`. `is_new_entity: false` → 24h (owner) / 7d (provider) JWT with `entity_id` and `role` populated. `401 INVALID_OTP` on incorrect/expired code.
+
+**VERIFY:**
+
+```bash
+COMPILE:
+  $ go build ./internal/api/
+  EXPECT: exit 0
+
+JWT_TTL_BRANCHING:
+  $ grep -c "1.*[Hh]our\|24.*[Hh]our\|7.*day" internal/api/*.go
+  EXPECT: >= 3
+
+ROLE_NULL_FOR_NEW_ENTITY:
+  $ grep -c "is_new_entity\|IsNewEntity" internal/api/*.go
+  EXPECT: >= 1
+
+UNIT_TESTS:
+  $ go test -v -run TestOtpVerify ./internal/api/
+  EXPECT: exit 0; tests include:
+    TestOtpVerifyNewEntityGetsRegistrationToken   (1h TTL, role=null)
+    TestOtpVerifyExistingOwnerGets24HourToken
+    TestOtpVerifyExistingProviderGets7DayToken
+    TestOtpVerifyRejectsWrongCode                  (401 INVALID_OTP)
+
+VET:
+  $ go vet ./internal/api/
+  EXPECT: exit 0; zero output
+```
 
 #### Session 11.4.3 — Provider Token Refresh (`POST /api/v1/provider/token/refresh`)
 
-**Reference:** OAS `paths./api/v1/provider/token/refresh`, operationId `refreshProviderToken`
+**PRECONDITIONS:** Session 11.4.2 complete
 
-Two-factor auth: (1) current JWT accepted if valid **or** expired within the last 1 hour (grace window); (2) Ed25519 body signature over `SHA-256(provider_id ‖ timestamp_string)`. Rate limit: one successful refresh per 30 minutes per `provider_id` (HTTP 429 with `Retry-After` on breach, `error_code: TOKEN_REFRESH_RATE_LIMITED`). On success: issue new 7-day JWT; return `token` and `expires_at`.
+**TASK:** Two-factor: (1) current JWT valid OR expired ≤1h ago; (2) Ed25519 signature over `SHA-256(provider_id ‖ timestamp_string)` (exact ISO 8601 string as submitted, no normalisation — OAS description). Rate limit: one successful refresh per 30 minutes per `provider_id`; breach → `429 TOKEN_REFRESH_RATE_LIMITED`. Success → new 7-day JWT.
 
-This session also requires for **Session 6.3.1** (heartbeat goroutine) to call this endpoint when `tokenExpiresIn() < 24*time.Hour`, using the daemon's registered Ed25519 key to produce the body signature.
+This endpoint is also called by Milestone 6 Session 6.3.1's heartbeat goroutine whenever `tokenExpiresIn() < 24*time.Hour` — that cross-reference is already correctly bidirectional (6.3.1 names this session; this session names 6.3.1) and needs no fix.
+
+**VERIFY:**
+
+```bash
+COMPILE:
+  $ go build ./internal/api/
+  EXPECT: exit 0
+
+GRACE_WINDOW_IS_ONE_HOUR:
+  $ grep -c "1.*[Hh]our\|time.Hour" internal/api/*.go
+  EXPECT: >= 1
+
+SIGNING_INPUT_IS_RAW_TIMESTAMP_STRING:
+  # Must not re-serialise/normalise the timestamp before hashing
+  $ grep -c "provider_id.*timestamp\|SHA-256(provider_id" internal/api/*.go
+  EXPECT: >= 1
+
+RATE_LIMIT_THIRTY_MINUTES:
+  $ grep -c "30.*[Mm]inute" internal/api/*.go
+  EXPECT: >= 1
+
+UNIT_TESTS:
+  $ go test -v -run TestProviderTokenRefresh ./internal/api/
+  EXPECT: exit 0; tests include:
+    TestRefreshAcceptsValidJWT
+    TestRefreshAcceptsExpiredWithinGraceWindow    (expired 30 min ago -> succeeds)
+    TestRefreshRejectsExpiredBeyondGraceWindow    (expired 2h ago -> 401)
+    TestRefreshRejectsBadEd25519Signature          (403 INVALID_BODY_SIGNATURE)
+    TestRefreshRateLimitedWithinThirtyMinutes      (second successful call before 30 min -> 429 TOKEN_REFRESH_RATE_LIMITED)
+
+VET:
+  $ go vet ./internal/api/
+  EXPECT: exit 0; zero output
+```
 
 ---
 
 ### Phase 11.5 — Owner Endpoints
 
+**Reference:** OAS `paths./api/v1/owner/*`, `components/schemas/OwnerRegisterRequest/Response`, `DepositInitiateRequest/Response`, `OwnerBalance`, `FileListItem`, `OwnerEscrowTransaction`, `WithdrawRequest/Response`, FR-001, FR-006, FR-014, FR-019, FR-021, FR-059, DM §4.9 (`owner_escrow_events` — see the flagged corrections below)
+
 #### Session 11.5.1 — Owner Register (`POST /api/v1/owner/register`)
 
-**Reference:** OAS `paths./api/v1/owner/register`, `OwnerRegisterRequest`, `OwnerRegisterResponse`
+**PRECONDITIONS:** Session 11.4.2 complete (registration token issued by OTP verify)
 
-Verify `owner_sig`: Ed25519 over `{"ed25519_public_key": "<value>"}` (sorted keys, no trailing whitespace). Store `ed25519_public_key` against `owner_id`. Return 201 with new 24-hour JWT (`role=owner`, `sub=owner_id`). Return 409 `PHONE_ALREADY_REGISTERED` if phone already has an owner account.
+**TASK:** Verify `owner_sig`: Ed25519 over `{"ed25519_public_key": "<value>"}` (sorted keys, no trailing whitespace, per IC §3.2's canonical procedure). Store `ed25519_public_key` against a new `owner_id`. `201` with a fresh 24-hour JWT (`role=owner`, `sub=owner_id`). `409 PHONE_ALREADY_REGISTERED` if the phone already has an owner account.
+
+**VERIFY:**
+
+```bash
+COMPILE:
+  $ go build ./internal/api/
+  EXPECT: exit 0
+
+SIGNATURE_VERIFIED_BEFORE_INSERT:
+  $ grep -c "owner_sig\|OwnerSig" internal/api/*.go
+  EXPECT: >= 1
+
+UNIT_TESTS:
+  $ go test -v -run TestOwnerRegister ./internal/api/
+  EXPECT: exit 0; tests include:
+    TestOwnerRegisterSucceedsWithValidSig
+    TestOwnerRegisterRejectsBadSig
+    TestOwnerRegisterRejectsDuplicatePhone   (409 PHONE_ALREADY_REGISTERED)
+    TestOwnerRegisterReturns24HourJWT
+
+VET:
+  $ go vet ./internal/api/
+  EXPECT: exit 0; zero output
+```
 
 #### Session 11.5.2 — Deposit Initiate (`POST /api/v1/owner/deposit`)
 
-**Reference:** OAS `paths./api/v1/owner/deposit`, `DepositInitiateRequest`, `DepositInitiateResponse`
+**PRECONDITIONS:** Session 11.5.1 complete
 
-Triggers Razorpay Smart Collect 2.0 VPA creation. Returns `vpa`, `qr_code_url`, `expires_at`. No `escrow_events` row is written here — the row is written only on receipt of the `virtual_account.payment.captured` webhook (M10 Phase 10.3.1). UPI Collect MUST NOT be used (OAS description, NFR-029).
+> **Flagged and corrected — repeats the M9–M10 table confusion.** The original task said *"No `escrow_events` row is written here — the row is written only on receipt of the `virtual_account.payment.captured` webhook."* `escrow_events` is the **provider**-scoped ledger (`provider_id NOT NULL REFERENCES providers`); an owner deposit belongs in `owner_escrow_events` (DM §4.9), which is exactly what the Milestones 9–10 revision corrected Milestone 10 Session 10.3.1 to target. Fixed below.
+
+**TASK:** Triggers Razorpay Smart Collect 2.0 VPA creation. Returns `vpa`, `qr_code_url`, `expires_at`. **No `owner_escrow_events` row is written here** — the row is written only on receipt of the `virtual_account.payment.captured` webhook (Milestone 10 Phase 10.3.1, as corrected — targets `owner_escrow_events`, not `escrow_events`). UPI Collect must not be used (NFR-029).
+
+**VERIFY:**
+
+```bash
+COMPILE:
+  $ go build ./internal/api/
+  EXPECT: exit 0
+
+NO_LEDGER_WRITE_AT_INITIATE_TIME:
+  $ grep -A15 "func.*[Ii]nitiateDeposit\|func.*DepositInitiate" internal/api/*.go | grep -c "InsertOwnerEscrowEvent\|InsertEscrowEvent" \
+      && echo "FAIL: deposit is credited only on webhook receipt, not at initiate time" || echo "PASS"
+
+CORRECT_TABLE_REFERENCED_IN_COMMENTS:
+  $ grep -c "owner_escrow_events" internal/api/*.go
+  EXPECT: >= 1
+  $ grep -n "escrow_events\b" internal/api/*.go | grep -v "owner_escrow_events" \
+      && echo "WARN: verify this is not the stale provider-table reference" || echo "PASS"
+
+NO_UPI_COLLECT:
+  $ grep -in "upi/collect\|collect/request" internal/api/*.go \
+      && echo "FAIL: UPI Collect prohibited (NFR-029)" || echo "PASS"
+
+UNIT_TESTS:
+  $ go test -v -run TestDepositInitiate ./internal/api/
+  EXPECT: exit 0; tests include:
+    TestDepositInitiateReturnsVPAAndQR
+    TestDepositInitiateWritesNoLedgerRow
+
+VET:
+  $ go vet ./internal/api/
+  EXPECT: exit 0; zero output
+```
 
 #### Session 11.5.3 — Owner Balance (`GET /api/v1/owner/{owner_id}/balance`)
 
-**Reference:** OAS `paths./api/v1/owner/{owner_id}/balance`, `OwnerBalance`
+**PRECONDITIONS:** Session 11.5.2 complete
 
-Read from `mv_owner_escrow_balance` (up to 60s stale). Return `balance_paise`, `reserved_next_30d_paise`, `available_paise` (= balance − reserved). All values `int64`, minimum 0.
+**TASK:** Read from `mv_owner_escrow_balance` (≤60s stale). Return `balance_paise`, `reserved_next_30d_paise`, `available_paise = balance − reserved`. All `int64`, minimum 0 (the view already applies `GREATEST(...,0)` — DM §7).
+
+**VERIFY:**
+
+```bash
+COMPILE:
+  $ go build ./internal/api/
+  EXPECT: exit 0
+
+READS_CORRECT_VIEW:
+  $ grep -c "mv_owner_escrow_balance" internal/api/*.go
+  EXPECT: >= 1
+
+UNIT_TESTS:
+  $ go test -v -run TestOwnerBalance ./internal/api/
+  EXPECT: exit 0; tests include:
+    TestOwnerBalanceComputesAvailableCorrectly   (available = balance - reserved)
+    TestOwnerBalanceNeverNegative
+
+VET:
+  $ go vet ./internal/api/
+  EXPECT: exit 0; zero output
+```
 
 #### Session 11.5.4 — Owner File List (`GET /api/v1/owner/{owner_id}/files`)
 
-**Reference:** OAS `paths./api/v1/owner/{owner_id}/files`, `FileListItem`
+**PRECONDITIONS:** Session 11.5.3 complete
 
-Query params: `status` (default `ACTIVE`), `limit` (1–100, default 50), `cursor`. Availability field derived from `mv_segment_shard_counts`: `OK` ≥ 24 shards, `DEGRADED` < 24, `CRITICAL` < 16 (OAS `FileListItem.properties.availability`). Return `display_name_ciphertext/nonce/tag` when present (FR-019).
+> **Flagged and corrected — hardcoded production shard thresholds.** OAS's own `FileListItem.availability` description is written with fixed numbers ("OK — available_shard_count ≥ s+r0 = 24... CRITICAL — available_shard_count < s = 16"). These are production-only (`DataShards=16, LazyRepairR0=8`); demo mode uses `DataShards=3, LazyRepairR0=1` (thresholds 4 and 3). The implementation must read `profile.DataShards + profile.LazyRepairR0` and `profile.DataShards`, never the literals 24/16.
+
+**TASK:** Query params: `status` (default `ACTIVE`), `limit` (1–100, default 50), `cursor`. `availability` derived from `mv_segment_shard_counts`: `OK` if `available_shard_count >= profile.DataShards + profile.LazyRepairR0`; `DEGRADED` if below that but `>= profile.DataShards`; `CRITICAL` if `< profile.DataShards`. Return `display_name_ciphertext/nonce/tag` when present (FR-019).
+
+**VERIFY:**
+
+```bash
+COMPILE:
+  $ go build ./internal/api/
+  EXPECT: exit 0
+
+AVAILABILITY_IS_PROFILE_DRIVEN_NOT_HARDCODED:
+  $ grep -c "profile.DataShards" internal/api/*.go
+  EXPECT: >= 1
+  $ grep -c "profile.LazyRepairR0" internal/api/*.go
+  EXPECT: >= 1
+  $ grep -n ">= 24\|< 16\b" internal/api/*.go | grep -v "_test.go" \
+      && echo "FAIL: availability thresholds must be profile-driven for demo-mode correctness" \
+      || echo "PASS"
+
+UNIT_TESTS:
+  $ go test -v -run TestOwnerFileList ./internal/api/
+  EXPECT: exit 0; tests include:
+    TestOwnerFileListAvailabilityProdThresholds   (config.ProductionProfile -> OK at 24, CRITICAL below 16)
+    TestOwnerFileListAvailabilityDemoThresholds    (config.DemoProfile -> OK at 4, CRITICAL below 3)
+    TestOwnerFileListReturnsDisplayNameWhenPresent
+
+VET:
+  $ go vet ./internal/api/
+  EXPECT: exit 0; zero output
+```
 
 #### Session 11.5.5 — Owner Escrow History (`GET /api/v1/owner/{owner_id}/escrow`)
 
-**Reference:** OAS `paths./api/v1/owner/{owner_id}/escrow`, `OwnerEscrowTransaction`
+**PRECONDITIONS:** Session 11.5.4 complete
 
-Paginated `owner_escrow_events` log. Response envelope includes balance summary fields (`balance_paise`, `reserved_next_30d_paise`, `available_paise`) alongside the `events` array and `next_cursor`.
+**TASK:** Paginated `owner_escrow_events` log with a balance-summary envelope (`balance_paise`, `reserved_next_30d_paise`, `available_paise`) alongside `events[]` and `next_cursor`.
+
+**VERIFY:**
+
+```bash
+COMPILE:
+  $ go build ./internal/api/
+  EXPECT: exit 0
+
+QUERIES_CORRECT_TABLE:
+  $ grep -c "owner_escrow_events" internal/api/*.go
+  EXPECT: >= 1
+
+UNIT_TESTS:
+  $ go test -v -run TestOwnerEscrowHistory ./internal/api/
+  EXPECT: exit 0; tests include:
+    TestOwnerEscrowHistoryPaginates
+    TestOwnerEscrowHistoryIncludesBalanceSummary
+
+VET:
+  $ go vet ./internal/api/
+  EXPECT: exit 0; zero output
+```
 
 #### Session 11.5.6 — Owner Withdraw (`POST /api/v1/owner/withdraw`)
 
-**Reference:** OAS `paths./api/v1/owner/withdraw`, `WithdrawRequest`, `WithdrawResponse`
+**PRECONDITIONS:** Session 11.5.5 complete; Milestone 10 Phase 10.5 complete (`PaymentProvider.WithdrawOwnerEscrow`)
 
-`idempotency_key` format: `SHA-256(owner_id ‖ withdrawal_request_id)`, hex-encoded (OAS `WithdrawRequest.properties.idempotency_key`). Block withdrawal while any file upload is in-flight (FR-059). On success: return Razorpay `payout_id` and initial status (`QUEUED`). Final `REVERSED` status arrives via the `payout.reversed` webhook (M10 Phase 10.3.1).
+> **Flagged — the reversal path for owner withdrawals has no clean home.** This session says "final `REVERSED` status arrives via the `payout.reversed` webhook (Milestone 10 Phase 10.3.1)" — but that webhook, as specified (including in the Milestones 9–10 revision), only handles **provider** payout reversals (writing a `REVERSAL` row to `escrow_events`). An owner's withdrawal can equally be reversed by the receiving bank, and `owner_escrow_event_type` (DM §4.9: `DEPOSIT, CHARGE, WITHDRAWAL, REFUND`) has no value representing "a withdrawal came back." Proposed minimal fix (no schema change required): Milestone 10's `payout.reversed` handler branches on whether the reversed payout's reference corresponds to a `RELEASE` (provider) or `WITHDRAWAL` (owner) event; for the owner case, it inserts an `owner_escrow_events` row using the existing `DEPOSIT` type (money is being credited back — that is exactly what `DEPOSIT` represents) with idempotency key `SHA-256("withdrawal-reversal" || original_idempotency_key)`. This is a follow-up to Milestone 10 Session 10.3.1, not a new session here — flagging it at the point where the gap becomes visible (this session's own "final status" claim).
+
+**TASK:** `idempotency_key = SHA-256(owner_id ‖ withdrawal_request_id)`, hex-encoded (OAS). Block while any file upload is in-flight for this owner (FR-059). On success: Razorpay `payout_id`, status `QUEUED`. Calls `payment.WithdrawOwnerEscrow` (Milestone 10 Phase 10.5).
+
+**VERIFY:**
+
+```bash
+COMPILE:
+  $ go build ./internal/api/
+  EXPECT: exit 0
+
+CALLS_CORRECT_PAYMENT_FUNCTION:
+  $ grep -c "WithdrawOwnerEscrow" internal/api/*.go
+  EXPECT: >= 1
+
+IN_FLIGHT_UPLOAD_BLOCK_PRESENT:
+  $ grep -c "in-flight\|InFlight\|upload.*in.progress" internal/api/*.go
+  EXPECT: >= 1
+
+IDEMPOTENCY_KEY_FORMAT:
+  $ grep -c "owner_id.*withdrawal_request_id\|ownerID.*withdrawalRequestID" internal/api/*.go
+  EXPECT: >= 1
+
+REVERSAL_GAP_DOCUMENTED:
+  $ grep -c "withdrawal-reversal\|reversal path\|Phase 10.5" internal/api/*.go
+  EXPECT: >= 1
+
+UNIT_TESTS:
+  $ go test -v -run TestOwnerWithdraw ./internal/api/
+  EXPECT: exit 0; tests include:
+    TestOwnerWithdrawSucceedsWhenNoUploadInFlight
+    TestOwnerWithdrawBlockedDuringUpload
+    TestOwnerWithdrawRejectsAmountAboveAvailable
+    TestOwnerWithdrawIdempotentOnRetry
+
+VET:
+  $ go vet ./internal/api/
+  EXPECT: exit 0; zero output
+```
 
 ---
 
 ### Phase 11.6 — Provider REST Endpoints
 
+**Reference:** OAS `paths./api/v1/provider/*`, `components/schemas/ProviderRegisterRequest/Response`, `HeartbeatRequest/Response`, `ProviderStatusResponse`, `AuditReceiptListItem`, `ProviderDowntimeRequest/Response`, `ProviderDepartRequest/Response`, FR-024–FR-036, FR-058, ADR-005, ADR-007, ADR-030
+
 #### Session 11.6.1 — Provider Register (`POST /api/v1/provider/register`)
 
-**Reference:** OAS `paths./api/v1/provider/register`, `ProviderRegisterRequest`, `ProviderRegisterResponse`
+**PRECONDITIONS:** Session 11.4.2 complete
 
-Verify `provider_sig` over canonical JSON of all other fields (sorted keys, `provider_sig` omitted). Store `ed25519_public_key`, `declared_storage_gb`, `city`, `region`, `asn`, `initial_multiaddrs`. In demo mode: accept `demo_asn` field (pattern `^SIM-AS\d+$`); if omitted, auto-assign next available from pool (OAS description, FR-068). In production: silently ignore `demo_asn`. Set `razorpay_cooling_until = NOW() + profile.RazorpayCoolingPeriod`. Return status `PENDING_ONBOARDING` and 7-day JWT.
+**TASK:** Verify `provider_sig` over canonical JSON of all other fields (sorted keys, `provider_sig` omitted — IC §3.2). Store `ed25519_public_key`, `declared_storage_gb`, `city`, `region`, `asn`, `initial_multiaddrs`. Demo mode: accept `demo_asn` (`^SIM-AS\d+$`); auto-assign next available if omitted (FR-068). Production: silently ignore `demo_asn`. `razorpay_cooling_until = NOW() + profile.RazorpayCoolingPeriod` (never hardcoded 24h — MVP §5.4). Return `PENDING_ONBOARDING` and a 7-day JWT.
+
+**VERIFY:**
+
+```bash
+COMPILE:
+  $ go build ./internal/api/
+  EXPECT: exit 0
+
+COOLING_PERIOD_PROFILE_DRIVEN:
+  $ grep -c "profile.RazorpayCoolingPeriod" internal/api/*.go
+  EXPECT: >= 1
+
+DEMO_ASN_PATTERN_AND_AUTO_ASSIGN:
+  $ grep -c "SIM-AS\|demo_asn" internal/api/*.go
+  EXPECT: >= 1
+
+UNIT_TESTS:
+  $ go test -v -run TestProviderRegister ./internal/api/
+  EXPECT: exit 0; tests include:
+    TestProviderRegisterDemoModeAutoAssignsASN     (demo_asn omitted -> next available SIM-AS{N})
+    TestProviderRegisterProdModeIgnoresDemoAsn
+    TestProviderRegisterSetsProfileDrivenCooling   (demo -> instant; prod -> +24h)
+    TestProviderRegisterReturnsPendingOnboarding
+
+VET:
+  $ go vet ./internal/api/
+  EXPECT: exit 0; zero output
+```
 
 #### Session 11.6.2 — Provider Heartbeat (`POST /api/v1/provider/heartbeat`)
 
-**Reference:** OAS `paths./api/v1/provider/heartbeat`, `HeartbeatRequest`, `HeartbeatResponse`
+**PRECONDITIONS:** Session 11.6.1 complete
 
-Verify `provider_sig` over canonical JSON body (sorted keys, `provider_sig` omitted). Reject timestamps with skew > ±5 minutes. Update `providers.current_multiaddrs` and `last_heartbeat_ts`. Return `received_at` and `microservice_sig` (Ed25519 countersignature over `{"received_at":"<value>","provider_id":"<value>"}` sorted keys). Daemon stores `microservice_sig` as proof of acknowledgement.
+**TASK:** Verify `provider_sig` over canonical JSON (sorted keys, omitted). Reject timestamp skew > ±5 minutes. Update `providers.last_known_multiaddrs`, `last_heartbeat_ts`, clear `multiaddr_stale`. Return `received_at` and `microservice_sig` (Ed25519 over `{"received_at","provider_id"}` sorted).
+
+**VERIFY:**
+
+```bash
+COMPILE:
+  $ go build ./internal/api/
+  EXPECT: exit 0
+
+SKEW_CHECK_FIVE_MINUTES:
+  $ grep -c "5.*[Mm]inute" internal/api/*.go
+  EXPECT: >= 1
+
+UNIT_TESTS:
+  $ go test -v -run TestProviderHeartbeat ./internal/api/
+  EXPECT: exit 0; tests include:
+    TestHeartbeatUpdatesMultiaddrsAndTimestamp
+    TestHeartbeatClearsMultiaddrStale
+    TestHeartbeatRejectsSkewBeyondFiveMinutes
+    TestHeartbeatReturnsMicroserviceCountersignature
+
+VET:
+  $ go vet ./internal/api/
+  EXPECT: exit 0; zero output
+```
 
 #### Session 11.6.3 — Provider Status (`GET /api/v1/provider/{provider_id}/status`)
 
-**Reference:** OAS `paths./api/v1/provider/{provider_id}/status`, `ProviderStatusResponse`
+**PRECONDITIONS:** Session 11.6.2 complete; Milestone 8 complete (`mv_provider_scores`)
 
-Join `providers` table with `mv_provider_scores` (up to 60s stale). Include vetting fields when `status = 'VETTING'`: `vetting_chunks_assigned`, `vetting_chunk_cap` (= `floor(declared_storage_gb × 400)`), `vetting_eligible_at` (= `first_chunk_assignment_at + 120 days`), `vetting_gc_pending`. Include `network_mode` field (`"demo"` | `"prod"`) from active profile (OAS `ProviderStatusResponse.properties.network_mode`).
+**TASK:** Join `providers` with `mv_provider_scores` (≤60s stale). Include vetting fields only when `status='VETTING'`: `vetting_chunks_assigned`, `vetting_chunk_cap = floor(declared_storage_gb × 400)`, `vetting_eligible_at = first_chunk_assignment_at + profile.VettingMinDuration` (not hardcoded 120 days — mirrors the Milestone 8 fix), `vetting_gc_pending`. Include `network_mode` from `profile.Mode`.
+
+**VERIFY:**
+
+```bash
+COMPILE:
+  $ go build ./internal/api/
+  EXPECT: exit 0
+
+VETTING_ELIGIBLE_AT_IS_PROFILE_DRIVEN:
+  $ grep -c "profile.VettingMinDuration" internal/api/*.go
+  EXPECT: >= 1
+  $ grep -n "120.*day\|120 \* 24" internal/api/*.go | grep -v "_test.go\|comment" \
+      && echo "WARN: verify this is documentation, not a hardcoded duration" || echo "PASS"
+
+VETTING_FIELDS_NULL_OUTSIDE_VETTING:
+  $ grep -c "status.*VETTING\|== .VETTING." internal/api/*.go
+  EXPECT: >= 1
+
+UNIT_TESTS:
+  $ go test -v -run TestProviderStatus ./internal/api/
+  EXPECT: exit 0; tests include:
+    TestProviderStatusIncludesVettingFieldsWhenVetting
+    TestProviderStatusOmitsVettingFieldsWhenActive
+    TestProviderStatusNetworkModeReflectsProfile
+
+VET:
+  $ go vet ./internal/api/
+  EXPECT: exit 0; zero output
+```
 
 #### Session 11.6.4 — Provider Audit Receipts (`GET /api/v1/provider/receipts`)
 
-**Reference:** OAS `paths./api/v1/provider/receipts`, `AuditReceiptListItem`
+**PRECONDITIONS:** Session 11.6.3 complete
 
-Filter params: `chunk_id`, `from`, `to`, `result` (PASS/FAIL/TIMEOUT), `limit` (1–200, default 100), `cursor`. Available even when `status = 'DEPARTED'` (FR-058). Response includes both `provider_sig` and `service_sig` per receipt. `file_id` is nullable on receipts for vetting chunks.
+**TASK:** Filters: `chunk_id`, `from`, `to`, `result`, `limit` (1–200, default 100), `cursor`. Must remain available when `status='DEPARTED'` (FR-058 — dispute evidence). Include both `provider_sig` and `service_sig`. `file_id` nullable for vetting-chunk receipts.
 
-#### Session 11.6.5 — Provider Downtime (`POST /api/v1/provider/downtime` and `GET /api/v1/provider/downtime`)
+**VERIFY:**
 
-**Reference:** OAS `paths./api/v1/provider/downtime`, `ProviderDowntimeRequest`, `ProviderDowntimeResponse`
+```bash
+COMPILE:
+  $ go build ./internal/api/
+  EXPECT: exit 0
 
-POST: `promised_return_at` must be between 0 and 72 hours from now; past timestamps rejected HTTP 400. Verify `provider_sig`. Return 409 `DOWNTIME_ALREADY_ACTIVE` if a window is already open. Return 409 `PROVIDER_DEPARTED` if status is DEPARTED. `penalty_fires_at` = `promised_return_at`.
+AVAILABLE_AFTER_DEPARTURE:
+  $ grep -c "DEPARTED" internal/api/*.go
+  EXPECT: >= 1
 
-GET: Returns `{active: bool, promised_return_at: date-time|null, penalty_fires_at: date-time|null}`.
+UNIT_TESTS:
+  $ go test -v -run TestProviderReceipts ./internal/api/
+  EXPECT: exit 0; tests include:
+    TestProviderReceiptsAccessibleWhenDeparted   (status=DEPARTED -> still 200, not 403)
+    TestProviderReceiptsFiltersByChunkAndResult
+    TestProviderReceiptsFileIDNullableForVettingChunks
+
+VET:
+  $ go vet ./internal/api/
+  EXPECT: exit 0; zero output
+```
+
+#### Session 11.6.5 — Provider Downtime (`POST /api/v1/provider/downtime`; `GET` — blocked, see flagged gap)
+
+**PRECONDITIONS:** Session 11.6.4 complete
+
+**TASK:** `POST`: `promised_return_at` in `[0h, 72h]` from now; past timestamps → `400`. Verify `provider_sig`. `409 DOWNTIME_ALREADY_ACTIVE` if a window is open. `409 PROVIDER_DEPARTED` if departed. `penalty_fires_at = promised_return_at`.
+
+`GET`: **blocked on the flagged OAS gap in Phase 11.3** — implement the handler logic (`{active, promised_return_at, penalty_fires_at}`, matching what this session already specifies) but do not wire it into the router until the path exists in `openapi.yaml`.
+
+**VERIFY:**
+
+```bash
+COMPILE:
+  $ go build ./internal/api/
+  EXPECT: exit 0
+
+WINDOW_BOUNDS_ENFORCED:
+  $ grep -c "72.*[Hh]our\|0.*72" internal/api/*.go
+  EXPECT: >= 1
+
+UNIT_TESTS:
+  $ go test -v -run TestProviderDowntime ./internal/api/
+  EXPECT: exit 0; tests include:
+    TestDowntimePostAccepts0To72Hours
+    TestDowntimePostRejectsPastTimestamp           (400)
+    TestDowntimePostRejectsSecondWindow            (409 DOWNTIME_ALREADY_ACTIVE)
+    TestDowntimePostRejectsDepartedProvider         (409 PROVIDER_DEPARTED)
+    TestDowntimeGetLogicNotYetRoutedPendingOAS      (handler exists and is unit-testable directly; not reachable via HTTP until OAS is updated)
+
+VET:
+  $ go vet ./internal/api/
+  EXPECT: exit 0; zero output
+```
 
 #### Session 11.6.6 — Provider Depart (`POST /api/v1/provider/depart`)
 
-**Reference:** OAS `paths./api/v1/provider/depart`, `ProviderDepartRequest`, `ProviderDepartResponse`
+**PRECONDITIONS:** Session 11.6.5 complete; Milestone 9 Phase 9.1 complete (`repair.EnqueueJob`); Milestone 10 Phase 10.2 complete (`payment.ReleaseEscrow`)
 
-Verify `provider_sig`. Accept optional `depart_at` (if omitted or in past: immediate). Return `repair_jobs_queued` and `escrow_release_paise` (proportional to fraction of 30-day window completed). This endpoint wires M9 `repair.EnqueueJob()` and M10 `payment.ReleaseEscrow()` in the microservice entrypoint — consistent with the import constraint that prevents `repair` importing `payment` (IC §9).
+> **Flagged — idempotency key for the prorated release.** `ReleaseEscrow`'s standard idempotency key is `SHA-256(providerID || auditPeriodID)` (Milestone 10), which assumes a completed monthly audit period. An announced departure fires mid-period, with no "current" `audit_period_id` in the usual sense. Use `SHA-256(providerID || "announced-departure" || departureTimestamp)` for this call site specifically — same `ReleaseEscrow` function, different idempotency-key derivation, since the underlying `INSERT INTO escrow_events (... 'RELEASE' ...)` operation is identical regardless of why the release fired.
+
+**TASK:** Verify `provider_sig`. Optional `depart_at` (omitted/past → immediate). Queues repair for all real chunks (`repair.EnqueueJob`, `TriggerAnnouncedDeparture`). Releases held escrow proportional to the fraction of the current 30-day window completed (`payment.ReleaseEscrow` with the departure-specific idempotency key above). Sets `status='DEPARTED'`. Wired at the microservice entrypoint (Milestone 12) since `internal/api` — not `internal/repair` — is the layer permitted to call both packages.
+
+**VERIFY:**
+
+```bash
+COMPILE:
+  $ go build ./internal/api/
+  EXPECT: exit 0
+
+DEPARTURE_IDEMPOTENCY_KEY_IS_DISTINCT:
+  $ grep -c "announced-departure" internal/api/*.go
+  EXPECT: >= 1
+  $ grep -n "providerID.*auditPeriodID" internal/api/*.go \
+      && echo "WARN: verify this is not misapplied to the departure call site" || echo "PASS"
+
+WIRES_REPAIR_AND_PAYMENT:
+  $ grep -c "EnqueueJob\|TriggerAnnouncedDeparture" internal/api/*.go
+  EXPECT: >= 1
+  $ grep -c "ReleaseEscrow" internal/api/*.go
+  EXPECT: >= 1
+
+UNIT_TESTS:
+  $ go test -v -run TestProviderDepart ./internal/api/
+  EXPECT: exit 0; tests include:
+    TestProviderDepartImmediateWhenDepartAtOmitted
+    TestProviderDepartQueuesRepairForAllRealChunks
+    TestProviderDepartReleasesProratedEscrow
+    TestProviderDepartUsesDistinctIdempotencyKey
+
+VET:
+  $ go vet ./internal/api/
+  EXPECT: exit 0; zero output
+```
 
 ---
 
 ### Phase 11.7 — Upload and File Endpoints
 
+**Reference:** OAS `paths./api/v1/upload/assign`, `paths./api/v1/file/*`, `components/schemas/UploadAssignRequest/Response`, `SegmentAssignment`, `ShardAssignment`, `FileRegisterRequest/Response`, `PointerFileResponse`, FR-007–FR-020, ADR-014, ADR-022
+
+> **Flagged — three hardcoded production shard numbers.** OAS's schema descriptions for this phase are written in fixed production terms: the ASN cap ("no single ASN > 20% of 56 shards"), the shard-index split ("0–15 data, 16–55 parity" on `ShardAssignment.shard_index`), and `SegmentAssignment.providers`'s `minItems/maxItems: 56`. All three must be computed from `NetworkProfile` (`profile.TotalShards`, `profile.DataShards`, `profile.ASNCapFraction`) for demo-mode correctness (5 total shards, 3 data, 1-shard ASN cap) — the same pattern already fixed repeatedly in Milestones 7–10.
+
 #### Session 11.7.1 — Upload Assign (`POST /api/v1/upload/assign`)
 
-**Reference:** OAS `paths./api/v1/upload/assign`, `UploadAssignRequest`, `UploadAssignResponse`, `SegmentAssignment`, `ShardAssignment`
+**PRECONDITIONS:** Milestone 8 complete (readiness gate feeds off provider/ASN/region counts, Session 11.2.1); Milestone 10 Phase 10.1 complete (escrow balance check)
 
-Checks (in order):
+**TASK:** Checks, in order: (1) readiness gate → `503 NETWORK_NOT_READY`, `retry_after: 60`; (2) escrow balance ≥ 30-day cost → `409 INSUFFICIENT_ESCROW_BALANCE` (corrected code, Phase 11.1); (3) ASN cap — no single ASN holds more than `floor(profile.TotalShards * profile.ASNCapFraction)` shards for the segment (11 in production, 1 in demo — never hardcode "56"/"20% of 56") → `503 INSUFFICIENT_ASN_DIVERSITY`, `available_asns`, `retry_after: 300`. Response includes `monthly_cost_paise`, `required_escrow_paise`, per-shard `capability_token` (72 bytes / 144 hex chars). `shard_index` `0` to `profile.DataShards-1` = data, `profile.DataShards` to `profile.TotalShards-1` = parity (0–15/16–55 in production only). Idempotent on `file_id`.
 
-1. Readiness gate — HTTP 503 `NETWORK_NOT_READY` with `retry_after: 60` and `readiness_url` field if not satisfied.
-2. Escrow balance ≥ `cost_for_30_days(original_size_bytes)` — HTTP 409 `INSUFFICIENT_ESCROW_BALANCE` if not.
-3. ASN cap: no single ASN > 20% of 56 shards per segment — HTTP 503 `INSUFFICIENT_ASN_DIVERSITY` with `available_asns` field and `retry_after: 300` if unsatisfiable (OAS `paths./api/v1/upload/assign.post.responses.503`).
+**VERIFY:**
 
-Response includes `monthly_cost_paise`, `required_escrow_paise`, and per-shard `capability_token` (72-byte hex, 144 chars) in each `ShardAssignment`. Idempotent on `file_id`. `shard_index` 0–15 = data shards, 16–55 = parity shards (OAS `ShardAssignment.properties.shard_index`).
+```bash
+COMPILE:
+  $ go build ./internal/api/
+  EXPECT: exit 0
+
+ASN_CAP_IS_PROFILE_DRIVEN:
+  $ grep -c "profile.TotalShards.*profile.ASNCapFraction\|ASNCapFraction" internal/api/*.go
+  EXPECT: >= 1
+  $ grep -n "20% of 56\|> 11\b" internal/api/*.go | grep -v "_test.go\|comment" \
+      && echo "FAIL: ASN cap must be computed, not hardcoded to the production figure" \
+      || echo "PASS"
+
+SHARD_INDEX_SPLIT_IS_PROFILE_DRIVEN:
+  $ grep -c "profile.DataShards" internal/api/*.go
+  EXPECT: >= 1
+
+CHECKS_IN_CORRECT_ORDER:
+  # Readiness -> escrow -> ASN cap; verify by line-number ordering of the three markers
+  $ grep -n "NETWORK_NOT_READY\|INSUFFICIENT_ESCROW_BALANCE\|INSUFFICIENT_ASN_DIVERSITY" internal/api/*.go
+  # Manual check: NETWORK_NOT_READY line < INSUFFICIENT_ESCROW_BALANCE line < INSUFFICIENT_ASN_DIVERSITY line
+
+CAPABILITY_TOKEN_SIZE:
+  $ grep -c "144\|72.*byte" internal/api/*.go
+  EXPECT: >= 1
+
+UNIT_TESTS:
+  $ go test -v -run TestUploadAssign ./internal/api/
+  EXPECT: exit 0; tests include:
+    TestUploadAssignRejectsWhenNetworkNotReady        (503, retry_after=60)
+    TestUploadAssignRejectsInsufficientEscrow          (409 INSUFFICIENT_ESCROW_BALANCE)
+    TestUploadAssignRejectsASNDiversityDemo             (config.DemoProfile: cap=1 shard/ASN)
+    TestUploadAssignRejectsASNDiversityProd             (config.ProductionProfile: cap=11 shards/ASN)
+    TestUploadAssignIdempotentOnFileID
+    TestUploadAssignShardIndexRangeDemo                 (0-2 data, 3-4 parity for DemoProfile)
+
+VET:
+  $ go vet ./internal/api/
+  EXPECT: exit 0; zero output
+```
 
 #### Session 11.7.2 — File Register (`POST /api/v1/file/register`)
 
-**Reference:** OAS `paths./api/v1/file/register`, `FileRegisterRequest`, `FileRegisterResponse`
+**PRECONDITIONS:** Session 11.7.1 complete
 
-Verify `owner_sig` over canonical JSON of all other fields. Store `pointer_ciphertext`, `pointer_nonce`, `pointer_tag`, `original_size_bytes`, `schema_version` (must be 1). Optionally store `display_name_ciphertext/nonce/tag` (FR-019). Return 404 if `file_id` was not created by a prior assign call. Return 409 `FILE_ALREADY_DELETED` if file exists in ACTIVE status (re-registration not permitted).
+> **Flagged and corrected — wrong error code reused.** The original task returns `409 FILE_ALREADY_DELETED` for "file exists in ACTIVE status" — the opposite of what that code name means (it's correctly used for the actual delete-conflict case in Session 11.7.4). Fixed to a new, accurately-named code.
+
+**TASK:** Verify `owner_sig` over canonical JSON. Store `pointer_ciphertext`, `pointer_nonce`, `pointer_tag`, `original_size_bytes`, `schema_version` (must be `1`). Optionally store `display_name_*` (FR-019). `404` if `file_id` wasn't created by a prior `upload/assign` call. **`409 FILE_ALREADY_REGISTERED`** if the file already exists in `ACTIVE` status (re-registration of a completed upload is not permitted — use `DELETE /api/v1/file/{file_id}` first).
+
+**VERIFY:**
+
+```bash
+COMPILE:
+  $ go build ./internal/api/
+  EXPECT: exit 0
+
+CORRECT_ERROR_CODE_USED:
+  # The core fix: must use the new, accurately-named code, never FILE_ALREADY_DELETED here
+  $ grep -c "FILE_ALREADY_REGISTERED" internal/api/*.go
+  EXPECT: >= 1
+  $ grep -B5 -A5 "already.*ACTIVE\|status.*ACTIVE" internal/api/*.go | grep -c "FILE_ALREADY_DELETED" \
+      && echo "FAIL: an ACTIVE file is not a deleted file — wrong code" || echo "PASS"
+
+SCHEMA_VERSION_MUST_BE_ONE:
+  $ grep -c "schema_version.*1\|SchemaVersion.*1" internal/api/*.go
+  EXPECT: >= 1
+
+UNIT_TESTS:
+  $ go test -v -run TestFileRegister ./internal/api/
+  EXPECT: exit 0; tests include:
+    TestFileRegisterSucceeds
+    TestFileRegisterRejectsUnknownFileID           (404)
+    TestFileRegisterRejectsReRegistrationOfActive  (409 FILE_ALREADY_REGISTERED, not FILE_ALREADY_DELETED)
+    TestFileRegisterStoresDisplayNameWhenPresent
+
+VET:
+  $ go vet ./internal/api/
+  EXPECT: exit 0; zero output
+```
 
 #### Session 11.7.3 — Pointer File Retrieval (`GET /api/v1/file/{file_id}/pointer`)
 
-**Reference:** OAS `paths./api/v1/file/{file_id}/pointer`, `PointerFileResponse`
+**PRECONDITIONS:** Session 11.7.2 complete
 
-Return `pointer_ciphertext`, `pointer_nonce`, `pointer_tag`, `schema_version`, `original_size_bytes`, and optional `display_name_*` fields. Client decrypts locally; microservice never decrypts.
+**TASK:** Return `pointer_ciphertext`, `pointer_nonce`, `pointer_tag`, `schema_version`, `original_size_bytes`, optional `display_name_*`. Client decrypts locally; the microservice never decrypts (ADR-020, NFR-014).
+
+**VERIFY:**
+
+```bash
+COMPILE:
+  $ go build ./internal/api/
+  EXPECT: exit 0
+
+NEVER_DECRYPTS:
+  $ grep -in "decrypt" internal/api/*.go | grep -v "_test.go\|comment\|never" \
+      && echo "FAIL: the microservice must never attempt decryption (NFR-014)" || echo "PASS"
+
+UNIT_TESTS:
+  $ go test -v -run TestPointerFileRetrieval ./internal/api/
+  EXPECT: exit 0; tests include:
+    TestPointerFileReturnsCiphertextFieldsVerbatim
+    TestPointerFileRejectsUnknownFileID  (404)
+
+VET:
+  $ go vet ./internal/api/
+  EXPECT: exit 0; zero output
+```
 
 #### Session 11.7.4 — File Delete (`DELETE /api/v1/file/{file_id}`)
 
-**Reference:** OAS `paths./api/v1/file/{file_id}.delete`
+**PRECONDITIONS:** Session 11.7.3 complete
 
-Mark all `chunk_assignments` as `PENDING_DELETION`. Notify reachable providers immediately. Return `assignments_marked`, `providers_notified`, `providers_pending`, `status: "DELETED"`. Return 409 `FILE_ALREADY_DELETED` if already deleted (OAS `paths./api/v1/file/{file_id}.delete.responses.409`).
+**TASK:** Mark all `chunk_assignments` `PENDING_DELETION`. Notify reachable providers immediately (unreachable ones retried on next heartbeat, FR-020). Return `assignments_marked`, `providers_notified`, `providers_pending`, `status: "DELETED"`. `409 FILE_ALREADY_DELETED` if already deleted (this is the **correct** use of this code — contrast with the fix in Session 11.7.2).
+
+**VERIFY:**
+
+```bash
+COMPILE:
+  $ go build ./internal/api/
+  EXPECT: exit 0
+
+MARKS_PENDING_DELETION_NOT_HARD_DELETE:
+  $ grep -c "PENDING_DELETION" internal/api/*.go
+  EXPECT: >= 1
+  $ grep -n "DELETE FROM chunk_assignments\|DELETE FROM files" internal/api/*.go \
+      && echo "FAIL: soft-delete only, chunk_assignments/files are never physically deleted here" \
+      || echo "PASS"
+
+CORRECT_USE_OF_ALREADY_DELETED_CODE:
+  $ grep -c "FILE_ALREADY_DELETED" internal/api/*.go
+  EXPECT: >= 1
+
+UNIT_TESTS:
+  $ go test -v -run TestFileDelete ./internal/api/
+  EXPECT: exit 0; tests include:
+    TestFileDeleteMarksAllAssignmentsPendingDeletion
+    TestFileDeleteRejectsAlreadyDeleted   (409 FILE_ALREADY_DELETED)
+    TestFileDeleteReportsUnreachableProvidersAsPending
+
+VET:
+  $ go vet ./internal/api/
+  EXPECT: exit 0; zero output
+```
 
 ---
 
 ### Phase 11.8 — Pricing Endpoints
 
+**Reference:** OAS `paths./api/v1/pricing/*`, `components/schemas/PricingEstimateResponse`, FR-013, FR-057, ADR-024, FR-051
+
 #### Session 11.8.1 — Storage Pricing Estimate (`GET /api/v1/pricing/estimate`)
 
-**Reference:** OAS `paths./api/v1/pricing/estimate`, `PricingEstimateResponse`
+**PRECONDITIONS:** None beyond Session 11.3.1
 
-Public endpoint (no auth). Optional `file_size_bytes` query param; default to 1 GB if omitted. Return `storage_rate_paise_per_gb_per_month`, `monthly_cost_paise`, `annual_cost_paise` (= monthly × 12), `min_escrow_balance_paise` (= 30 days cost). All values `int64` paise.
+**TASK:** Public. Optional `file_size_bytes` (default 1 GB). Return `storage_rate_paise_per_gb_per_month`, `monthly_cost_paise`, `annual_cost_paise = monthly × 12`, `min_escrow_balance_paise = 30 days cost`. All `int64` paise.
+
+**VERIFY:**
+
+```bash
+COMPILE:
+  $ go build ./internal/api/
+  EXPECT: exit 0
+
+UNIT_TESTS:
+  $ go test -v -run TestPricingEstimate ./internal/api/
+  EXPECT: exit 0; tests include:
+    TestPricingEstimateDefaultsToOneGB
+    TestPricingEstimateAnnualIsTwelveXMonthly
+    TestPricingEstimateAllValuesAreIntegerPaise
+
+VET:
+  $ go vet ./internal/api/
+  EXPECT: exit 0; zero output
+```
 
 #### Session 11.8.2 — Provider Earnings Estimate (`GET /api/v1/pricing/provider-estimate`)
 
-**Reference:** OAS `paths./api/v1/pricing/provider-estimate`
+**PRECONDITIONS:** Session 11.8.1 complete
 
-Public endpoint. Required params: `storage_gb` (int, 10–100000) and `uptime_target_pct` (float, 0–100). Return `gross_monthly_paise` (= `storage_gb × rate × uptime_pct/100`), `estimated_escrow_hold_vetting_paise` (30% hold during vetting, ADR-024), `estimated_net_paise_vetting` (= gross × 0.50 release cap, FR-051), `estimated_net_paise_post_vetting` (= gross × release_multiplier at ≥0.95 score).
+> **Flagged and corrected — OAS disagrees with two agreeing sources on the vetting hold percentage.** OAS's `estimated_escrow_hold_vetting_paise` description says "30% hold during vetting." FR-051 ("the release cap must be 50%") and architecture.md's Payment System section ("the hold window is 60 days and the release cap is 50%... at most 50% of any month's earnings") both independently state 50%. Two agreeing, detailed sources beat one outlier description string; use 50%, and flag the OAS text for correction.
+
+**TASK:** Public. Required: `storage_gb` (10–100000), `uptime_target_pct` (0–100). Return `gross_monthly_paise = storage_gb × rate × uptime_pct/100`; `estimated_escrow_hold_vetting_paise = gross × 0.50` (corrected from OAS's "30%"; FR-051, ARCH Payment System); `estimated_net_paise_vetting = gross × 0.50` (the 50% release cap, FR-051); `estimated_net_paise_post_vetting = gross × release_multiplier` at the assumed ≥0.95 score tier (ADR-024).
+
+**VERIFY:**
+
+```bash
+COMPILE:
+  $ go build ./internal/api/
+  EXPECT: exit 0
+
+VETTING_HOLD_USES_FIFTY_PERCENT:
+  # The core fix: OAS's 30% figure disagrees with FR-051 and ARCH; use 50%
+  $ grep -c "0\.50\|50%\|\* 0\.5\b" internal/api/*.go
+  EXPECT: >= 2   # both the hold and the release-cap computation
+  $ grep -n "0\.30\|30%" internal/api/*.go | grep -v "_test.go\|comment" \
+      && echo "FAIL: 30% contradicts FR-051 and architecture.md's Payment System section (both say 50%)" \
+      || echo "PASS"
+
+UNIT_TESTS:
+  $ go test -v -run TestProviderEarningsEstimate ./internal/api/
+  EXPECT: exit 0; tests include:
+    TestProviderEarningsGrossMonthlyFormula
+    TestProviderEarningsVettingHoldIsFiftyPercent    (matches FR-051, not OAS's stale 30%)
+    TestProviderEarningsPostVettingUsesFullMultiplierAtHighScore
+
+VET:
+  $ go vet ./internal/api/
+  EXPECT: exit 0; zero output
+```
 
 ---
 
 ### Phase 11.9 — Audit Admin Endpoints
 
+**Reference:** OAS `paths./api/v1/audit/challenge`, `components/schemas/AuditChallengeDispatchRequest/Response`, FR-037, ADR-002, ADR-006, ADR-014
+
 #### Session 11.9.1 — Manual Audit Challenge (`POST /api/v1/audit/challenge`)
 
-**Reference:** OAS `paths./api/v1/audit/challenge`, `AuditChallengeDispatchRequest`, `AuditChallengeDispatchResponse`
+**PRECONDITIONS:** Milestone 7 complete (`audit.ChallengeNonce`)
 
-AdminApiKey auth. Dispatches an immediate out-of-cycle challenge to `(provider_id, chunk_id)`. Does not bypass the 24-hour deduplication window. Returns HTTP 202 with `challenge_nonce` (33-byte / 66 hex chars), `server_challenge_ts`, and `deadline_ms` (= `ceil((256 / p95_throughput_kbps) × 1500)`). Returns 403 if provider is `DEPARTED`.
+**TASK:** AdminApiKey. Dispatches an immediate out-of-cycle challenge to `(provider_id, chunk_id)` — does **not** bypass the 24-hour (or `profile.PollingInterval` in demo) deduplication window. `202` with `challenge_nonce` (66 hex chars), `server_challenge_ts`, `deadline_ms = ceil((256 / p95_throughput_kbps) × 1500)`. `403` if provider is `DEPARTED`.
+
+**VERIFY:**
+
+```bash
+COMPILE:
+  $ go build ./internal/api/
+  EXPECT: exit 0
+
+USES_MILESTONE_7_CHALLENGENONCE:
+  $ grep -c "audit.ChallengeNonce\|ChallengeNonce(" internal/api/*.go
+  EXPECT: >= 1
+
+DEADLINE_FORMULA:
+  $ grep -c "1500\|× 1.5\|\* 1.5" internal/api/*.go
+  EXPECT: >= 1
+
+UNIT_TESTS:
+  $ go test -v -run TestManualAuditChallenge ./internal/api/
+  EXPECT: exit 0; tests include:
+    TestManualChallengeDoesNotBypassDedup
+    TestManualChallengeRejectsDepartedProvider   (403)
+    TestManualChallengeReturnsCorrectDeadlineMs
+
+VET:
+  $ go vet ./internal/api/
+  EXPECT: exit 0; zero output
+```
 
 ---
 
 ### Phase 11.10 — Admin Endpoints
 
+**Reference:** OAS `paths./api/v1/admin/*`, `components/schemas/AdminProvidersResponse`, `RepairQueueResponse`, `RepairJobItem`, `AuditStatsResponse`, `VettingStatusSummary`, NFR-027, FR-044, ADR-004, ADR-030
+
 #### Session 11.10.1 — Admin Providers List (`GET /api/v1/admin/providers`)
 
-**Reference:** OAS `paths./api/v1/admin/providers`, `AdminProvidersResponse`, `AdminProviderItem`
+**PRECONDITIONS:** Session 11.3.1 complete
 
-Filter params: `status`, `asn`, `region`, `multiaddr_stale` (bool), `accelerated_reaudit` (bool), `vetting_gc_pending` (bool — filter to ACTIVE providers with incomplete GC, ADR-030), `limit` (1–200, default 100), `cursor`. Include `vetting_chunks_assigned`, `vetting_chunk_cap`, `vetting_gc_pending` fields for VETTING providers (OAS `AdminProviderItem`).
+**TASK:** Filters: `status`, `asn`, `region`, `multiaddr_stale`, `accelerated_reaudit`, `vetting_gc_pending`, `limit` (1–200, default 100), `cursor`. Include `vetting_chunks_assigned`, `vetting_chunk_cap`, `vetting_gc_pending` for VETTING providers.
+
+**VERIFY:**
+
+```bash
+COMPILE:
+  $ go build ./internal/api/
+  EXPECT: exit 0
+
+UNIT_TESTS:
+  $ go test -v -run TestAdminProvidersList ./internal/api/
+  EXPECT: exit 0; tests include:
+    TestAdminProvidersFiltersByStatus
+    TestAdminProvidersFiltersByVettingGCPending
+    TestAdminProvidersRequiresAdminAPIKey
+
+VET:
+  $ go vet ./internal/api/
+  EXPECT: exit 0; zero output
+```
 
 #### Session 11.10.2 — Repair Queue (`GET /api/v1/admin/repair/queue`)
 
-**Reference:** OAS `paths./api/v1/admin/repair/queue`, `RepairQueueResponse`, `RepairJobItem`
+**PRECONDITIONS:** Milestone 9 complete (`repair_jobs` queue populated)
 
-Filter params: `status` (default QUEUED), `priority`, `limit` (1–100, default 50), `cursor`. Return counts split by priority: `emergency_queued`, `permanent_departure_queued`, `pre_warning_queued`, `total_queued`. Alert threshold: `total_queued > 1000`; `emergency_queued > 0` fires immediately (OAS `RepairQueueResponse.properties.emergency_queued` description, NFR-027).
+> **Flagged and corrected — wrong NFR citation.** The original task attributes "`emergency_queued > 0` fires immediately" to NFR-027. NFR-027 lists four alert thresholds and none of them is per-priority-tier queue depth — it covers `total_queued > 1,000` only. OAS's own `emergency_queued` field description cites FR-044/ADR-004 instead ("these represent files that may be unrecoverable if one more provider fails"). Fixed.
+
+**TASK:** Filters: `status` (default `QUEUED`), `priority`, `limit` (1–100, default 50), `cursor`. Counts by priority: `emergency_queued`, `permanent_departure_queued`, `pre_warning_queued`, `total_queued`. Alerts: `total_queued > 1000` (NFR-027); `emergency_queued > 0` fires immediately (FR-044, ADR-004 — corrected citation).
+
+**VERIFY:**
+
+```bash
+COMPILE:
+  $ go build ./internal/api/
+  EXPECT: exit 0
+
+CORRECT_CITATION_FOR_EMERGENCY_ALERT:
+  $ grep -c "FR-044\|ADR-004" internal/api/*.go
+  EXPECT: >= 1
+
+PRIORITY_COUNTS_PRESENT:
+  $ grep -c "emergency_queued\|permanent_departure_queued\|pre_warning_queued\|total_queued" internal/api/*.go
+  EXPECT: >= 4
+
+UNIT_TESTS:
+  $ go test -v -run TestRepairQueueAdmin ./internal/api/
+  EXPECT: exit 0; tests include:
+    TestRepairQueueCountsByPriority
+    TestRepairQueueFiltersByStatus
+
+VET:
+  $ go vet ./internal/api/
+  EXPECT: exit 0; zero output
+```
 
 #### Session 11.10.3 — Manual Repair Trigger (`POST /api/v1/admin/repair/trigger`)
 
-**Reference:** OAS `paths./api/v1/admin/repair/trigger`
+**PRECONDITIONS:** Milestone 9 Phase 9.1 complete (`repair.EnqueueJob`)
 
-Required body fields: `chunk_id`, `segment_id`, `trigger_type`. Optional: `provider_id` (nullable for threshold-triggered repairs). Return 202 with the created `RepairJobItem`. Wires directly to M9 `repair.EnqueueJob()`.
+**TASK:** Required: `chunk_id`, `segment_id`, `trigger_type`. Optional: `provider_id` (nullable for threshold-triggered repairs). `202` with the created `RepairJobItem`. Calls `repair.EnqueueJob` directly (with the profile parameter added in the Milestones 9–10 revision).
+
+**VERIFY:**
+
+```bash
+COMPILE:
+  $ go build ./internal/api/
+  EXPECT: exit 0
+
+WIRES_ENQUEUEJOB_WITH_PROFILE_PARAM:
+  $ grep -c "repair.EnqueueJob(" internal/api/*.go
+  EXPECT: >= 1
+  $ grep -A3 "repair.EnqueueJob(" internal/api/*.go | grep -c "profile"
+  EXPECT: >= 1
+
+UNIT_TESTS:
+  $ go test -v -run TestManualRepairTrigger ./internal/api/
+  EXPECT: exit 0; tests include:
+    TestManualRepairTriggerCreatesJob
+    TestManualRepairTriggerAllowsNullProviderID
+
+VET:
+  $ go vet ./internal/api/
+  EXPECT: exit 0; zero output
+```
 
 #### Session 11.10.4 — Audit Statistics (`GET /api/v1/admin/audit/stats`)
 
-**Reference:** OAS `paths./api/v1/admin/audit/stats`, `AuditStatsResponse`
+**PRECONDITIONS:** Milestone 7 complete (`audit_receipts`)
 
-Query params: `from` (default NOW()-1h), `to` (default NOW()), `provider_id` (optional). Backed by `audit_receipts WHERE abandoned_at IS NULL`. Return `challenges_issued`, breakdown `{pass, fail, timeout, pending}`, `pass_rate` (= pass/(pass+fail+timeout)), `timeout_rate`, `content_hash_failures` (0x02 status codes), `jit_flags_raised`. Alert: `timeout_rate > 0.05` (NFR-027).
+**TASK:** `from`/`to` (default last 1h), optional `provider_id`. Backed by `audit_receipts WHERE abandoned_at IS NULL`. Return `challenges_issued`, `{pass, fail, timeout, pending}`, `pass_rate = pass/(pass+fail+timeout)`, `timeout_rate`, `content_hash_failures`, `jit_flags_raised`. Alert: `timeout_rate > 0.05` (NFR-027 — correctly cited here).
+
+**VERIFY:**
+
+```bash
+COMPILE:
+  $ go build ./internal/api/
+  EXPECT: exit 0
+
+EXCLUDES_ABANDONED_ROWS:
+  $ grep -c "abandoned_at IS NULL" internal/api/*.go
+  EXPECT: >= 1
+
+UNIT_TESTS:
+  $ go test -v -run TestAuditStats ./internal/api/
+  EXPECT: exit 0; tests include:
+    TestAuditStatsDefaultsToLastHour
+    TestAuditStatsExcludesAbandonedRows
+    TestAuditStatsPassRateFormula
+
+VET:
+  $ go vet ./internal/api/
+  EXPECT: exit 0; zero output
+```
 
 #### Session 11.10.5 — Vetting Status (`GET /api/v1/admin/vetting/status`)
 
-**Reference:** OAS `paths./api/v1/admin/vetting/status`, `VettingStatusSummary`
+**PRECONDITIONS:** Milestone 9 Phase 9.1 complete (`IsVettingChunk`)
 
-Query param: `include_gc_pending_only` (bool, default false). Return `total_vetting_providers`, `total_synthetic_chunks_active`, `total_synthetic_chunks_pending_gc`, and per-provider `vetting_summary` (OAS `VettingStatusSummary`: `chunks_assigned`, `chunk_cap`, `cap_utilisation_pct`, `chunks_pending_gc`).
+**TASK:** `include_gc_pending_only` (default false). Return `total_vetting_providers`, `total_synthetic_chunks_active`, `total_synthetic_chunks_pending_gc`, per-provider `vetting_summary` (`chunks_assigned`, `chunk_cap`, `cap_utilisation_pct`, `chunks_pending_gc`).
+
+**VERIFY:**
+
+```bash
+COMPILE:
+  $ go build ./internal/api/
+  EXPECT: exit 0
+
+UNIT_TESTS:
+  $ go test -v -run TestVettingStatus ./internal/api/
+  EXPECT: exit 0; tests include:
+    TestVettingStatusAggregatesAcrossProviders
+    TestVettingStatusIncludeGCPendingOnlyFilter
+
+VET:
+  $ go vet ./internal/api/
+  EXPECT: exit 0; zero output
+```
 
 #### Session 11.10.6 — Vetting GC Retry (`POST /api/v1/admin/vetting/gc/retry`)
 
-**Reference:** OAS `paths./api/v1/admin/vetting/gc/retry`
+**PRECONDITIONS:** Milestone 14 stub acceptable at this stage (`vettingchunk.DeliverGCInstruction` may not exist yet — see note)
 
-Required body: `provider_id` (must be ACTIVE with `chunks_pending_gc > 0`). Attempt libp2p connection and GC instruction delivery immediately. Return `delivery_attempted` (false if provider unreachable), `chunks_pending_gc_before`, `chunks_pending_gc_after`. If provider offline: return 200 with `delivery_attempted: false`; background retry continues. Wires to M14 `vettingchunk.DeliverGCInstruction()`.
+**TASK:** Required: `provider_id` (must be `ACTIVE` with `chunks_pending_gc > 0`). Attempts immediate delivery. Returns `delivery_attempted`, `chunks_pending_gc_before`, `chunks_pending_gc_after`. `200` with `delivery_attempted: false` if unreachable (background retry continues). Wires to `vettingchunk.DeliverGCInstruction()` (Milestone 14 — built after this milestone in the dependency graph; stub the call here and revisit once Milestone 14 lands).
+
+**VERIFY:**
+
+```bash
+COMPILE:
+  $ go build ./internal/api/
+  EXPECT: exit 0
+
+REJECTS_NON_ACTIVE_OR_NO_PENDING_GC:
+  $ grep -c "chunks_pending_gc > 0\|ChunksPendingGC > 0" internal/api/*.go
+  EXPECT: >= 1
+
+UNIT_TESTS:
+  $ go test -v -run TestVettingGCRetry ./internal/api/
+  EXPECT: exit 0; tests include:
+    TestVettingGCRetryRejectsNonActiveProvider     (400)
+    TestVettingGCRetryReturns200WhenUnreachable    (delivery_attempted: false, not an error)
+
+VET:
+  $ go vet ./internal/api/
+  EXPECT: exit 0; zero output
+```
 
 ---
 
 ### Phase 11.11 — Per-Provider Chunk Count Ceiling
 
-#### Session 11.11.1 — Enforce chunk ceiling in assignment service**
+**Reference:** NFR-044, architecture.md §27.3 (`Per-provider storage ceiling at 100 Kbps budget` table — two reference points: 180d→~70GB, 300d→~130GB)
 
-**Reference:** NFR-044 (requirements.md §5.5), architecture.md §27.3
+> **Flagged and corrected — the given formula doesn't reproduce its own reference points.** The original task computes `storage_advisory_gb = ceil(mttf_days / 300 * 130)`. At `mttf_days=300` this correctly gives 130 GB, but at `mttf_days=180` it gives `ceil(0.6 × 130) = 78` GB — not the ~70 GB architecture.md §27.3 documents. The relationship between MTTF and the bandwidth-driven storage ceiling is not linear (Giroire's formula scales BWavg with `D/N` in a way that doesn't reduce to simple proportionality in MTTF alone), so a naive straight-line formula between the two points silently produces a wrong number for any MTTF that isn't exactly 300 days. Fixed to use the two documented reference points as a lookup, rather than interpolating past a formula that already fails at one of its own two anchors.
 
-In `POST /api/v1/upload/assign` (Session 11.7.1), before generating shard assignments, the assignment service must verify that each candidate provider's current chunk count will not push their steady-state repair bandwidth above 100 Kbps. The ceiling is derived from the provider's observed MTTF tier and the Giroire Formula 1: at MTTF=180 days approximately 70 GB; at MTTF=300 days approximately 130 GB. Providers whose current allocation would exceed their ceiling must be excluded from the candidate pool for that assignment. If the pool drops below 56 eligible providers after applying the ceiling, return HTTP 503 `INSUFFICIENT_PROVIDER_CAPACITY` with a `retry_after: 3600`. Add this check to the readiness gate evaluator as an informational field (not a hard gate condition) surfacing `providers_near_ceiling_count`. NFR-044 requires this ceiling be surfaced in the provider onboarding UI as a declared storage limit advisory — add a `storage_advisory_gb` field to `ProviderRegisterResponse` and `ProviderStatusResponse` populated from `ceil(mttf_days / 300 * 130)` GB.
+#### Session 11.11.1 — Enforce chunk ceiling in assignment service
+
+**PRECONDITIONS:** Session 11.7.1 complete (`POST /api/v1/upload/assign`)
+
+**TASK:** Before generating shard assignments, exclude candidate providers whose current chunk allocation would push steady-state repair bandwidth above 100 Kbps (NFR-044). Ceiling by MTTF tier, from architecture.md §27.3's actual reference table — **do not linearly interpolate between them without deriving the true Giroire-formula relationship first**:
+
+| MTTF tier | Storage ceiling |
+|---|---|
+| 180 days (desktop minimum) | ~70 GB |
+| 300 days (planning target) | ~130 GB |
+
+If the pool drops below `profile.MinActiveProviders` eligible candidates after applying the ceiling, return `503 INSUFFICIENT_PROVIDER_CAPACITY` (Session 11.1.1's `ErrInsufficientProviderCapacity` — flag for an `openapi.yaml` addition, this code doesn't exist in OAS yet either), `retry_after: 3600`. Surface `providers_near_ceiling_count` as an informational (non-gating) field on the readiness response. Add `storage_advisory_gb` to `ProviderRegisterResponse` and `ProviderStatusResponse`, populated from the two-point table above (nearest tier, or flagged for a proper interpolation formula once the underlying Giroire relationship is derived — do not ship a formula that contradicts architecture.md's own documented values).
+
+**VERIFY:**
+
+```bash
+FILES_EXIST:
+  $ test -f internal/api/router.go && echo PASS || echo FAIL
+
+COMPILE:
+  $ go build ./internal/api/
+  EXPECT: exit 0
+
+CEILING_MATCHES_DOCUMENTED_REFERENCE_POINTS:
+  # The core fix: 180-day tier must resolve to ~70GB, not the formula's 78GB
+  $ grep -c "70.*GB\|70 GB" internal/api/*.go
+  EXPECT: >= 1
+  $ grep -n "mttf_days / 300 \* 130\|mttfDays / 300 \* 130" internal/api/*.go \
+      && echo "FAIL: this formula gives 78GB at 180 days, not the documented ~70GB" \
+      || echo "PASS"
+
+CAPACITY_ERROR_CODE_PRESENT:
+  $ grep -c "InsufficientProviderCapacity\|INSUFFICIENT_PROVIDER_CAPACITY" internal/api/*.go
+  EXPECT: >= 1
+
+STORAGE_ADVISORY_ON_BOTH_RESPONSES:
+  $ grep -c "storage_advisory_gb" internal/api/*.go
+  EXPECT: >= 2   # ProviderRegisterResponse and ProviderStatusResponse
+
+UNIT_TESTS:
+  $ go test -v -run TestChunkCeiling ./internal/api/
+  EXPECT: exit 0; tests include:
+    TestChunkCeilingAt180DaysMatchesArchitectureDoc  (returns ~70GB, not 78GB)
+    TestChunkCeilingAt300DaysMatchesArchitectureDoc  (returns ~130GB)
+    TestChunkCeilingExcludesProvidersOverLimit
+    TestChunkCeilingReturns503WhenPoolTooSmall        (INSUFFICIENT_PROVIDER_CAPACITY, retry_after=3600)
+
+VET:
+  $ go vet ./internal/api/
+  EXPECT: exit 0; zero output
+```
 
 ---
 
 ## Milestone 12 — Coordination Microservice (`cmd/microservice`)
 
-**Deliverable:** Fully wired microservice that starts up, passes guard rails, loads the
-cluster secret, passes the readiness gate (in demo mode), and handles the provider
-heartbeat. Full REST API implementation awaits `openapi.yaml`.
+**Deliverable:** A fully wired microservice that starts up, passes guard rails, loads the cluster secret, passes the readiness gate (in demo mode), dispatches and records audit challenges, and drives repair/release/departure background loops.
 
-**Reference:** MVP §2.3 (startup guard rails), IC §8 (secrets manager contract),
-IC §3.4 (readiness gate), IC §9 (import graph: microservice entrypoint wires audit,
-scoring, repair, payment), IC §2 (component communication map)
+**Reference:** MVP §2.3 (startup guard rails), MVP §5.3 (profile selection), MVP §5.5 (application-layer `mv_provider_scores` regeneration at startup), IC §8 (secrets manager, fail-closed startup), IC §3.4 (readiness gate), IC §4.2 (audit challenge wire format), IC §9 (import graph — this is the one place `internal/audit`, `internal/scoring`, `internal/repair`, and `internal/payment` are all wired together), IC §2 (component communication map), ARCH §18 (gossip cluster, client-driven routing, background throttling), NFR-028
 
 ---
 
 ### Phase 12.1 — Microservice Startup
 
-**Reference:** MVP §5.3 (profile selection), IC §8 (startup fail-closed on secret),
-MVP §2.3 (guard rails), OAS `components/securitySchemes, ARCH §18, REQ NFR-028
+**Reference:** MVP §5.3, MVP §5.5, IC §8, IC §3.4, ARCH §18, NFR-028
+
+> **Corrected formatting.** The original reference line had an unclosed markdown code span: `` OAS `components/securitySchemes, ARCH §18, REQ NFR-028 `` (missing backtick after `securitySchemes`). Fixed above.
+
+> **Flagged — this session is the single place every deferred cross-package wire-up from Milestones 7–10 was pointed at; the original task text never made most of them explicit.** Rewritten below as one fully-ordered sequence rather than a numbered list followed by disconnected prose asides, so every ordering dependency (gossip ack before the readiness loop starts; stubs for pieces M17 hasn't built yet) is visible in one place.
 
 #### Session 12.1.1 — Wire microservice `main()`
 
-**Task:** Replace the stub in `cmd/microservice/main.go` with full startup wiring:
+**PRECONDITIONS:**
 
-1. Call `config.SelectProfile()` — print startup banner
-2. Call `config.ValidateStartupGuards(profile)` — halt on violation
-3. Initialise `ClusterSecretCache` — fail-closed if `RequireSecretsManager == true` and secrets manager is unreachable (IC §8)
-4. Initialise database connection pool (PostgreSQL)
-5. Drop and recreate `mv_provider_scores` view using `profile.ScoreWindow*` values (DM §7, MVP §5.5 — this is an application-layer step at startup, not a migration)
-6. Start the readiness gate evaluator goroutine (60-second cycle per IC §3.4)
-7. Start the HTTP server with the routing tree from Phase 11.3
-8. Start the audit challenge scheduler goroutine (interval: `profile.PollingInterval`)
-9. Start the departure detector goroutine
-10. Start the release computation goroutine (ticker or calendar per profile)
+- Milestones 1–10 complete (config, crypto, erasure, storage, p2p, audit, scoring, repair, payment) and Milestone 11 Phase 11.1–11.3 complete (error envelope, readiness handler, router)
+- `internal/cluster/mock_cluster.go`'s `MockClusterMembership` is usable as a startup-time stub even though its permanent home is Milestone 17 Phase 17.2.1 — same for `internal/cluster/router.go`'s `ResponsibleReplica`
 
-**Note:** We faced an import constraint violation in departure detector (Session 9.3.1). Step 3 of the departure handler lists Call `payment.Penalise()`. So please implement it in this session.  
+**TASK:**
 
-**The authoritative JWT claim set from OAS `components/securitySchemes/BearerAuth`:**
+Replace the stub in `cmd/microservice/main.go` with the following fully-ordered sequence — each step's prerequisites are the steps above it; do not reorder without re-checking the ordering notes inline:
 
-- `sub` = entity UUID
-- `role` = `"owner"` | `"provider"`
-- `iss` = `"vyomanaut-microservice-v1"`
-- `exp` = Unix timestamp
+```
+ 1. profile := config.SelectProfile()                          — print startup banner (MVP §5.3)
+ 2. err := config.ValidateStartupGuards(profile); halt on error
+ 3. secretsClient := <real Vault/AWS-SSM/GCP adapter (Milestone 17 Session 17.1.1)
+      if profile.RequireSecretsManager, else an env-var adapter reading
+      VYOMANAUT_CLUSTER_MASTER_SEED (IC §8; guarded against prod misuse by
+      M1 Session 1.3.2's PROD_MODE_ENV_SECRET check, not re-checked here)>
+    cache := audit.NewClusterSecretCache(secretsClient)
+    if err := cache.Load(ctx); err != nil { fail-closed: do not start (IC §8) }
+ 4. db := <PostgreSQL connection pool>
+ 5. Drop and recreate mv_provider_scores using profile.ScoreWindow{Short,Medium,Long}
+    (DM §7, MVP §5.5 — application-layer step, not a migration)
+ 6. IF profile.RequireQuorum:
+      a. Read VYOMANAUT_SEED_NODE_1 / VYOMANAUT_SEED_NODE_2 (fail-fast if absent in prod)
+      b. gossipCluster := cluster.NewGossipCluster(seeds)  — 1-second reconciliation ticker
+         (until Milestone 17 Phase 17.2.1 lands, this is internal/cluster's
+         MockClusterMembership returning healthy=3 — same stub-until-M17
+         pattern as step 3's env-var secrets fallback)
+      c. BLOCK until >= 2 peers ack membership (prevents split-brain false-ready
+         on cold start) — this wait MUST complete before step 7
+    ELSE:
+      clusterMembership := a stub reporting healthy=1 always (demo mode)
+ 7. Start the readiness gate evaluator goroutine (Milestone 11 Session 11.2.1),
+    60-second cycle (IC §3.4) — safe to start now that step 6 has resolved
+ 8. Start the HTTP server using the router from Milestone 11 Session 11.3.1
+ 9. router := cluster.NewRouter(clusterMembership)  — ResponsibleReplica(opType)
+    for audit-dispatch/chunk-assignment hot paths (ARCH §18). Until Milestone 17
+    Phase 17.2.1 provides the real gossip-aware implementation, THIS MUST BE A
+    STUB that always returns the load balancer's address (i.e., the latency
+    optimisation is a no-op until M17) — do not attempt the real
+    membership-aware routing logic here.
+10. p2pHost := <construct the real p2p.Host, Milestone 6>
+11. repairTransport := p2pHost   — satisfies repair.RepairTransport (Milestone 9
+    Session 9.2.1) structurally; internal/repair never imports internal/p2p
+12. paymentProvider := <RazorpayProvider or MockProvider per profile.PaymentMode>
+13. departureDetector := repair.NewDepartureDetector(db, profile, paymentProvider.Penalise)
+    — this is the exact site Milestone 9 Session 9.3.1 deferred payment.Penalise
+    to, and Milestone 9's own text explicitly names this session as the fix location
+    go departureDetector.Run(ctx)
+14. go func() { ticker := time.NewTicker(profile.PollingInterval); for range ticker.C {
+       repair.PromoteStalePreWarningJobs(ctx, db, profile) } }()
+    — nothing else in the build plan drives this; Milestone 9 Session 9.2.2 only
+    defined the function, assuming a caller would exist here
+15. go func() {  // repair executor loop — nothing else in the build plan
+       for { job, err := repair.DequeueNextJob(ctx, db); ... ;
+             run the download/reconstruct/upload pipeline (Milestone 9 Session 9.2.1,
+             using repairTransport and a replacement chosen by
+             repair.SelectReplacementProvider, Session 9.4.1) } }()
+16. Start the audit challenge dispatch loop (Session 12.1.2 below),
+    interval profile.PollingInterval
+17. Start the release computation goroutine:
+    IF profile.ReleaseComputationInterval == 0 (production): schedule for the
+      23rd of each calendar month
+    ELSE (demo): ticker at profile.ReleaseComputationInterval
+    calls payment.ComputeMonthlyRelease(ctx, db, primaryDB, profile)
+18. backgroundThrottle goroutine: samples db_read_p99_latency_ms every 60s
+    (NFR-028); reduces backgroundSemaphore concurrency as it approaches 50ms,
+    restores at < 30ms
+```
 
-TTL: 24 hours for owners, 7 days for provider daemons (OAS `OtpVerifyResponse.properties.token` description).
+**The authoritative JWT claim set** (OAS `components/securitySchemes/BearerAuth`): `sub` (entity UUID), `role` (`"owner"|"provider"`), `iss` (`"vyomanaut-microservice-v1"`), `exp` (Unix timestamp). TTL: 24h owners / 7d providers; registration token 1h, single-use, valid only for the matching register call.
 
-Registration token TTL (short-lived, single-use): 1 hour, valid only for the matching register call (OAS `OtpVerifyResponse.properties.token` description, `is_new_entity = true` case).
+**VERIFY:**
 
-**Gossip cluster initialisation** (architecture.md §18). When `profile.RequireQuorum == true`, initialise the gossip cluster by:
+```bash
+FILES_EXIST:
+  $ test -f cmd/microservice/main.go && echo PASS || echo FAIL
 
-1. Reading two seed node addresses from environment variables `VYOMANAUT_SEED_NODE_1` and `VYOMANAUT_SEED_NODE_2` (pre-configured stable addresses per architecture.md §18; fail-fast at startup if absent in production mode).
-2. Initialising `internal/cluster/gossip.GossipCluster` with a per-second reconciliation ticker: each tick selects one randomly chosen peer from the membership view and exchanges membership histories.
-3. Waiting for at least 2 peers to ack membership before the readiness gate evaluator loop starts (prevents split-brain false-ready on cold start).
+COMPILE:
+  $ go build ./cmd/microservice/
+  EXPECT: exit 0
 
-**Note:** Use `MockClusterMembership` (from `internal/cluster/mock_cluster.go`) until M17 Phase 17.2.1 is complete.
+STARTUP_ORDER_IS_A_SINGLE_SEQUENCE:
+  # Every ordering dependency should now live in one place, not scattered prose
+  $ grep -c "^// Step [0-9]\|^\t[0-9]\+\." cmd/microservice/main.go
+  EXPECT: >= 15
 
-**Client-driven routing** (architecture.md §18). For latency-sensitive hot paths — audit challenge dispatch and chunk assignment decisions — the microservice must bypass the load balancer and route directly to the responsible replica. Implement `internal/cluster/router.ResponsibleReplica(opType string) *url.URL` which reads the in-memory cluster membership view and returns the direct address of the replica owning the operation shard. This reduces p99 latency by 30+ ms (architecture.md §18).
+FAIL_CLOSED_ON_SECRET:
+  $ grep -c "cache.Load(ctx)\|ClusterSecretCache" cmd/microservice/main.go
+  EXPECT: >= 1
+  $ grep -A5 "cache.Load(ctx)" cmd/microservice/main.go | grep -c "os.Exit\|log.Fatal\|return err"
+  EXPECT: >= 1
 
-**Background task throttling** (architecture.md §18, NFR-028). Start a `backgroundThrottle` goroutine that samples `db_read_p99_latency_ms` every 60 seconds. If the metric approaches 50 ms, reduce background task concurrency (view refresh, repair queuing, Merkle log compaction) by calling `backgroundSemaphore.Reduce()`. Restore full concurrency when p99 drops below 30 ms.
+GOSSIP_ACK_BEFORE_READINESS_LOOP:
+  # The core restructuring fix: the wait must appear before the readiness evaluator starts
+  $ grep -n "2.*peer.*ack\|gossipCluster\|WaitForQuorum" cmd/microservice/main.go | head -1
+  $ grep -n "readiness.*[Ee]valuator\|StartReadinessLoop" cmd/microservice/main.go | head -1
+  # Manual check: gossip-ack line number < readiness-evaluator-start line number
+
+DEPARTURE_DETECTOR_WIRES_PENALISE:
+  # Closes the M9 Session 9.3.1 forward reference
+  $ grep -c "NewDepartureDetector(db, profile, paymentProvider.Penalise)\|NewDepartureDetector.*Penalise" \
+      cmd/microservice/main.go
+  EXPECT: >= 1
+
+REPAIR_TRANSPORT_IS_REAL_HOST_NOT_IMPORTED_DIRECTLY:
+  # Closes the M9 Phase 9.2 forward reference — p2p.Host satisfies RepairTransport structurally
+  $ grep -c "p2pHost\|repairTransport" cmd/microservice/main.go
+  EXPECT: >= 1
+
+PROMOTION_TICKER_PRESENT:
+  # Closes the M9 Session 9.2.2 forward reference — nothing else calls this function
+  $ grep -c "PromoteStalePreWarningJobs" cmd/microservice/main.go
+  EXPECT: >= 1
+
+REPAIR_EXECUTOR_LOOP_PRESENT:
+  # Closes a gap: nothing else in the build plan consumes the repair queue
+  $ grep -c "DequeueNextJob" cmd/microservice/main.go
+  EXPECT: >= 1
+
+RELEASE_COMPUTATION_WIRED:
+  $ grep -c "ComputeMonthlyRelease" cmd/microservice/main.go
+  EXPECT: >= 1
+
+CLIENT_DRIVEN_ROUTING_IS_STUBBED_NOT_FULLY_BUILT:
+  # Must not attempt the real gossip-aware router before M17 exists
+  $ grep -c "stub.*load balancer\|no-op until M17\|until Milestone 17" cmd/microservice/main.go
+  EXPECT: >= 1
+
+BACKGROUND_THROTTLE_THRESHOLDS:
+  $ grep -c "50.*ms\|50\*time.Millisecond" cmd/microservice/main.go
+  EXPECT: >= 1
+  $ grep -c "30.*ms\|30\*time.Millisecond" cmd/microservice/main.go
+  EXPECT: >= 1
+
+UNIT_TESTS:
+  $ go test -v -run TestMicroserviceStartup ./cmd/microservice/
+  EXPECT: exit 0; tests include:
+    TestStartupFailsClosedOnUnreachableSecretsManager   (RequireSecretsManager=true, client errors -> process does not start)
+    TestStartupDemoModeSkipsGossipWait                  (RequireQuorum=false -> no blocking wait, healthy=1 stub used)
+    TestStartupProdModeBlocksUntilTwoPeerAck
+    TestStartupWiresDepartureDetectorPenaliseCallback
+    TestStartupRejectsProdModeWithEnvSecretPresent       (PROD_MODE_ENV_SECRET guard from M1 still fires)
+
+NEGATIVE_CHECKS:
+  $ grep -n "VYOMANAUT_CLUSTER_MASTER_SEED" cmd/microservice/main.go | grep -v "profile.RequireSecretsManager\|comment" \
+      && echo "WARN: verify this read is gated on RequireSecretsManager==false, matching M1's guard" \
+      || echo "PASS"
+
+VET:
+  $ go vet ./cmd/microservice/
+  EXPECT: exit 0; zero output
+```
 
 #### Session 12.1.2 — Audit challenge dispatch loop
 
-**Task:** In `cmd/microservice/`, implement the audit challenge dispatch logic.
+**PRECONDITIONS:**
+
+- Session 12.1.1 complete (`ClusterSecretCache` loaded, DB pool available)
+- Milestone 7 revision complete — specifically the corrected `ValidateResponse` signature (6 parameters, including `serverChallengeTsMs` and `providerID`) and `ClusterSecretCache.IsVersionValid`
+- Milestone 8 revision complete — specifically `IncrementConsecutivePasses`'s added `profile` parameter and `UpdateRTO`
+
+> **Flagged — this is the caller Milestone 7's `ValidateResponse` revision explicitly deferred the secret-version check to, and it was never made explicit here.** The original step 7 ("On response: call `audit.ValidateResponse()`, then `audit.WriteReceiptPhase2()`") is missing the `cache.IsVersionValid(nonce[0])` check that Milestone 7 Phase 7.2 requires the caller to perform — without it, item 2 of `ValidateResponse`'s own documented contract is never actually checked by anyone. Added below.
+
+**TASK:**
+
 For each active chunk in `active_chunk_assignments`:
 
-1. Generate nonce via `audit.ChallengeNonce()`
-2. Determine provider multiaddrs (heartbeat record primary, DHT fallback if `multiaddr_stale = true`)
-3. Open libp2p stream to provider via `/vyomanaut/audit-challenge/1.0.0`
-4. Send `ChallengeRequest` frame per IC §4.2 field table (73-byte payload)
-5. Apply per-provider RTO timeout (IC §4.2)
-6. Call `audit.WriteReceiptPhase1()` before dispatching
-7. On response: call `audit.ValidateResponse()`, then `audit.WriteReceiptPhase2()`
-8. Call `scoring.IncrementConsecutivePasses()` or `scoring.ResetConsecutivePasses()`
-   depending on result, with the `address_was_stale` check
-9. Update EWMA metrics via `scoring.UpdateRTO()`
+```
+1. Determine provider multiaddrs: providers.last_known_multiaddrs (primary);
+   DHT fallback if multiaddr_stale = true
+2. versionByte, serverSecret, _ := cache.CurrentSecret()   // Milestone 7 Phase 7.4
+   nonce := audit.ChallengeNonce(serverSecret, versionByte, chunkID, serverTsMs)
+3. Build fields := audit.ReceiptFields{ChunkID: chunkID, FileID: fileID (nil for
+   vetting chunks), ProviderID: providerID, ChallengeNonce: nonce,
+   ServerChallengeTs: now, AddressWasStale: multiaddrStale}
+   receiptID, err := audit.WriteReceiptPhase1(ctx, db, fields)   // before dispatch
+4. Open libp2p stream to the provider via /vyomanaut/audit-challenge/1.0.0
+   (repairTransport-equivalent for audit — the real p2p.Host from Session 12.1.1)
+5. Send ChallengeRequest frame (IC §4.2: chunk_id(32) || challenge_nonce(33) ||
+   server_challenge_ts_ms(8) = 73 bytes)
+6. Apply the per-provider RTO timeout: scoring.PoolMedianRTO(ctx, db) if
+   rto_sample_count < 5, else avg_rtt_ms + 4*var_rtt_ms (IC §4.2, Milestone 8)
+7. On response:
+   a. IF NOT cache.IsVersionValid(nonce[0]): treat as invalid — do not proceed
+      to a PASS/FAIL write (Milestone 7 Phase 7.2's item 2, deferred to here)
+   b. err := audit.ValidateResponse(nonce, responseHash, serverChallengeTsMs,
+      providerID, providerSig, providerPubKey)   // corrected 6-param signature
+   c. audit.WriteReceiptPhase2(ctx, db, receiptID, result, serviceSig, serviceTS)
+8. IF result == AuditPass:
+     scoring.IncrementConsecutivePasses(ctx, db, providerID, profile)  // profile param added in M8 revision
+   ELSE IF NOT (result == AuditTimeout AND fields.AddressWasStale):
+     scoring.ResetConsecutivePasses(ctx, db, providerID)
+   // else: a stale-address TIMEOUT — do nothing, per DM §4.7 (Milestone 8 Phase 8.2)
+9. IF result != AuditTimeout:
+     scoring.UpdateRTO(ctx, db, providerID, responseLatencyMs, throughputKbps)
+     // never called for TIMEOUT — no response_latency_ms to sample (Milestone 8 Phase 8.3)
+```
 
-**Concurrency (IC §4.2):** The microservice may open multiple concurrent challenge streams
-to a single provider. Use a goroutine per chunk assignment, bounded by a semaphore.
+**Concurrency** (IC §4.2): the microservice may open multiple concurrent challenge streams to a single provider — one goroutine per chunk assignment, bounded by a semaphore.
+
+**VERIFY:**
+
+```bash
+FILES_EXIST:
+  $ test -f cmd/microservice/audit_dispatch.go && echo PASS || echo FAIL
+
+COMPILE:
+  $ go build ./cmd/microservice/
+  EXPECT: exit 0
+
+VERSION_VALIDITY_CHECK_PRESENT:
+  # The core fix: closes the gap Milestone 7's ValidateResponse revision deferred here
+  $ grep -c "IsVersionValid" cmd/microservice/audit_dispatch.go
+  EXPECT: >= 1
+
+VALIDATERESPONSE_USES_CORRECTED_SIGNATURE:
+  $ grep -c "ValidateResponse(nonce, responseHash, serverChallengeTsMs, providerID, providerSig, providerPubKey)\|ValidateResponse(.*serverChallengeTsMs.*providerID" \
+      cmd/microservice/audit_dispatch.go
+  EXPECT: >= 1
+
+INCREMENTCONSECUTIVEPASSES_HAS_PROFILE_PARAM:
+  $ grep -A2 "IncrementConsecutivePasses(" cmd/microservice/audit_dispatch.go | grep -c "profile"
+  EXPECT: >= 1
+
+STALE_ADDRESS_TIMEOUT_DOES_NOT_RESET:
+  $ grep -c "AddressWasStale" cmd/microservice/audit_dispatch.go
+  EXPECT: >= 1
+
+UPDATERTO_NEVER_CALLED_FOR_TIMEOUT:
+  $ grep -B3 "scoring.UpdateRTO(" cmd/microservice/audit_dispatch.go | grep -c "!= AuditTimeout\|result == AuditPass\|result == AuditFail"
+  EXPECT: >= 1
+
+PHASE1_BEFORE_DISPATCH:
+  $ grep -n "WriteReceiptPhase1" cmd/microservice/audit_dispatch.go | head -1
+  $ grep -n "NewStream\|audit-challenge/1.0.0" cmd/microservice/audit_dispatch.go | head -1
+  # Manual check: WriteReceiptPhase1 line number < stream-open line number
+
+FRAME_SIZE_IS_73_BYTES:
+  $ grep -c "73" cmd/microservice/audit_dispatch.go
+  EXPECT: >= 1
+
+UNIT_TESTS:
+  $ go test -v -run TestAuditDispatchLoop ./cmd/microservice/
+  EXPECT: exit 0; tests include:
+    TestDispatchRejectsResponseWithInvalidSecretVersion   (IsVersionValid=false -> no PASS/FAIL written)
+    TestDispatchCallsValidateResponseWithFullSigningInput  (serverChallengeTsMs and providerID both passed)
+    TestDispatchIncrementsPassesOnPass
+    TestDispatchDoesNotResetOnStaleAddressTimeout
+    TestDispatchResetsOnGenuineTimeout                     (fresh address, no response -> counter resets)
+    TestDispatchSkipsUpdateRTOForTimeout
+    TestDispatchUsesPoolMedianRTOForNewProviders           (rto_sample_count < 5)
+
+NEGATIVE_CHECKS:
+  $ grep -n "Vyomanaut_V2/internal/repair\|Vyomanaut_V2/internal/payment" cmd/microservice/audit_dispatch.go \
+      && echo "WARN: confirm this file is the microservice entrypoint, where such imports ARE permitted (IC §9)" \
+      || echo "PASS (no such imports needed in this specific file)"
+
+VET:
+  $ go vet ./cmd/microservice/
+  EXPECT: exit 0; zero output
+```
+
+---
+
+### Appendix — Cross-milestone follow-ups surfaced by this revision
+
+These are not new sessions in Milestones 11–12 — they're one-line retroactive additions to earlier, already-revised milestones, surfaced only because this pass wired everything together end-to-end:
+
+| Follow-up | Where it belongs | What to add |
+|---|---|---|
+| `ClusterSecretCache.IsLoaded() bool` | Milestones 7–8 revision, Phase 7.4 | Trivial accessor; Session 11.2.1 (readiness condition 7) and Session 12.1.1 (startup) both need it |
+| `GET /api/v1/provider/downtime` path + `getActiveDowntime` schema | `docs/api/openapi.yaml` (not a build_part2.md session) | Response shape already specified in Session 11.6.5: `{active, promised_return_at, penalty_fires_at}` |
+| `INSUFFICIENT_PROVIDER_CAPACITY` error code | `docs/api/openapi.yaml` | Used by Session 11.11.1; not yet in the OAS `Error` schema examples |
+| Owner-withdrawal reversal path | Milestone 10 Phase 10.3 (Session 10.3.1's `payout.reversed` handler) | Branch on RELEASE-vs-WITHDRAWAL reference; insert `owner_escrow_events` `DEPOSIT` row for the owner case (proposed in Phase 11.5, Session 11.5.6) |
 
 ---
 
