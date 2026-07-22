@@ -1802,7 +1802,6 @@ the database layer; the contracts here document the intent for application-layer
 | UPDATE `first_chunk_assignment_at` | `vyomanaut_app` | Set once, by the assignment service, on first chunk assignment. Must not be overwritten. |
 | DELETE (physical) | **Prohibited for all roles** | Soft-delete via `status = 'DEPARTED'` only. Invariant 3. |
 
-
 ### `files`
 
 | Operation | Permitted by | Condition |

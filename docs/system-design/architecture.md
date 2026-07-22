@@ -1713,4 +1713,4 @@ must be enforced in provider onboarding, not discovered operationally.
 | Provider heartbeat (4-hour address update) | [ADR-028](../decisions/ADR-028-provider-heartbeat.md) |
 | Bootstrap minimum viable network (7 conditions) | [ADR-029](../decisions/ADR-029-bootstrap-minimum-viable-network.md) |
 | Synthetic vetting chunks (repair-safe provider assessment) | [ADR-030](../decisions/ADR-030-synthetic-vetting-chunks.md) |
-| Demo / production mode: NetworkProfile, mode flag, demo specifications | ADR-031 |
+| Demo / production mode: NetworkProfile, mode flag, demo specifications | ADR-031 | 
