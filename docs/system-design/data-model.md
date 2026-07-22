@@ -742,6 +742,17 @@ proof event — PASS, FAIL, TIMEOUT, or in-flight PENDING — creates exactly on
 INSERT here. No row is ever updated except during the two-phase PENDING → final
 write (ADR-015). No row is ever deleted (Invariant 1, ADR-015, NFR-021).
 
+> **Updated by [ADR-033](../decisions/ADR-033-audit-receipts-partitioning.md).**
+> `audit_receipts` is now `PARTITION BY RANGE (server_challenge_ts)` (monthly). Two
+> consequences change the DDL shown below: (1) the primary key is the composite
+> `(receipt_id, server_challenge_ts)` and the nonce unique constraint is the local
+> composite `(challenge_nonce, server_challenge_ts)` — Postgres requires the
+> partition key in every unique constraint; (2) **global** nonce uniqueness (the
+> real replay guard, Invariant 5) moves to a dedicated non-partitioned
+> `audit_receipt_nonces` table, into which the microservice writes the nonce in the
+> **same transaction** as the receipt (IC §6). Old months are archived by
+> `DETACH PARTITION` (DDL) — never by `DELETE` (which Invariant 1 forbids).
+
 >**NOTE:**-- No FK to chunk_assignments. chunk_assignments may be soft-deleted on provider departure while audit_receipts must remain permanently (Invariant 1). The logical link is: chunk_assignments.chunk_id = audit_receipts.chunk_id AND chunk_assignments.provider_id = audit_receipts.provider_id. This is enforced at the application layer only.
 
 ```sql
@@ -1307,9 +1318,30 @@ CREATE UNIQUE INDEX idx_repair_jobs_threshold_no_dup
 
 ## 6. Row Security Policies
 
+> **Superseded in part by [ADR-032](../decisions/ADR-032-rls-role-model.md) and
+> [ADR-033](../decisions/ADR-033-audit-receipts-partitioning.md).** The
+> `CREATE POLICY` bodies below are still current, but three things they omitted are
+> now mandatory and enforced by the migration (`migrations/generator.go`):
+>
+> 1. **`FORCE ROW LEVEL SECURITY`** on `audit_receipts`, `escrow_events`,
+>    `chunk_assignments` (and `audit_receipt_nonces`). `ENABLE` alone lets the
+>    table **owner** bypass every policy — so append-only was only "enforced" for a
+>    non-owning role. `FORCE` closes that gap.
+> 2. **`SELECT` policies** for `vyomanaut_app` (and `vyomanaut_gc` on
+>    `audit_receipts`). Without them, under `FORCE` RLS the two-phase `UPDATE`'s
+>    `WHERE` clause matches zero rows and silently returns `UPDATE 0`.
+> 3. **A three-role model** (`vyomanaut_migrator` owns the schema and holds
+>    `BYPASSRLS`; `vyomanaut_app` / `vyomanaut_gc` are `NOSUPERUSER NOBYPASSRLS`),
+>    plus least-privilege `GRANT`s with **no `DELETE`** anywhere. The service roles
+>    must **not** be the schema owner, or `FORCE` is moot.
+>
+> See ADR-032 for the full role model and ADR-033 for the `audit_receipts`
+> partitioning and the `audit_receipt_nonces` global replay guard.
+
 Row security policies enforce Invariants 1 and 2 at the database engine level,
-independent of application code. Enable row-level security on both tables and
-grant the application role `INSERT` only.
+independent of application code. Enable **and force** row-level security on the
+tables and grant the non-owning application role `INSERT` (plus the scoped
+`UPDATE` / `SELECT` below) only — never `DELETE`.
 
 ```sql
 -- ────────────────────────────────────────────────────────────────────────────
@@ -1695,7 +1727,7 @@ prevents a job from being recorded as completed before it was started.
 
 **Cannot use NOT NULL:** A non-null sentinel file_id (e.g. a fixed "vetting" UUID) would pollute the `files` table with a fake record that scores, payment releases, and file list queries would need to explicitly exclude. NULL is the semantically correct value for "no file association." (ADR-030)
 
-**When set to non-null:** On every real shard audit (where `is_vetting_chunk = FALSE`). Non-null is the default path; NULL is the vetting-only exception. 
+**When set to non-null:** On every real shard audit (where `is_vetting_chunk = FALSE`). Non-null is the default path; NULL is the vetting-only exception.
 
 ---
 
@@ -1733,8 +1765,16 @@ Before applying `migrations/001_initial_schema.sql` to any environment, verify:
 
 - [ ] `btree_gist` extension is installed (required for `audit_periods` exclusion constraint).
   `CREATE EXTENSION IF NOT EXISTS btree_gist;`
-- [ ] Postgres roles `vyomanaut_app` and `vyomanaut_gc` exist with appropriate privileges.
-- [ ] Row security policies are enabled on `audit_receipts` and `escrow_events` after `CREATE TABLE`.
+- [ ] **`vyomanaut_migrator`** (schema owner, `BYPASSRLS`) is provisioned by the
+  environment and runs the migration; the migration creates **`vyomanaut_app`** and
+  **`vyomanaut_gc`** as `NOSUPERUSER NOBYPASSRLS` roles with least-privilege grants
+  (no `DELETE`). The service roles are **not** the schema owner. (ADR-032)
+- [ ] Row security is **`ENABLE`d and `FORCE`d** on `audit_receipts`, `escrow_events`,
+  `chunk_assignments`, and `audit_receipt_nonces`; each has a `SELECT` policy for
+  `vyomanaut_app`. (ADR-032)
+- [ ] `audit_receipts` is **`PARTITION BY RANGE (server_challenge_ts)`** with a
+  `DEFAULT` partition; the `audit_receipt_nonces` guard table enforces global nonce
+  uniqueness; `vyomanaut_create_audit_receipts_partition()` exists. (ADR-033)
 - [ ] `challenge_nonce` is `BYTEA(33)`, not `BYTEA(32)`. Verify with `\d audit_receipts`.
   See `requirements.md §9.3` and `ADR-027`.
 - [ ] All `escrow_events.amount_paise` columns are `BIGINT`, not `NUMERIC` or `DECIMAL`.
@@ -1743,7 +1783,7 @@ Before applying `migrations/001_initial_schema.sql` to any environment, verify:
   initial state for the PENDING phase; a default of any string value would break the
   two-phase write protocol).
 - [ ] Monthly partition DDL for `audit_receipts` is applied. At 56 providers storing
-  50 GB each, the table accumulates ~1.8 TB/year. Partitioning by month (`PARTITION BY RANGE (server_challenge_ts)`) and archiving partitions older than 30 days to cold object storage is mandatory from day one. See `capacity.md §4.3`.
+  50 GB each, the table accumulates ~1.8 TB/year at full V3 scale. Partitioning by month (`PARTITION BY RANGE (server_challenge_ts)`) is implemented from day one; archiving old partitions to cold object storage is done by `DETACH PARTITION` (a DDL operation), never by `DELETE` (which Invariant 1 forbids). At V2 scale (architecture.md §26: hundreds of providers) all rows land in the `DEFAULT` partition and monthly partitions are created ahead of demand via `vyomanaut_create_audit_receipts_partition()`. See [ADR-033](../decisions/ADR-033-audit-receipts-partitioning.md) and `Architectural_Probable_Problems/capacity.md`.
 - [ ] Materialised views are created after all base tables.
 - [ ] Unique indexes on materialised views are present (required for `REFRESH MATERIALIZED VIEW CONCURRENTLY`).
 - [ ] Add to mv_provider_scores:
@@ -1770,10 +1810,19 @@ NOW() AS scores_as_of   -- consumers must check age before using for payment dec
 - [ ]  New indexes `idx_chunk_assignments_vetting_provider_active` and `idx_chunk_assignments_vetting_provider` created.
 - [ ]  Nightly data integrity query documented: `SELECT COUNT(*) FROM audit_receipts ar JOIN chunk_assignments ca ON ca.chunk_id = ar.chunk_id AND ca.provider_id = ar.provider_id WHERE ar.file_id IS NULL AND ca.is_vetting_chunk = FALSE` must return 0.
 - [ ]  Invariant 6 added to code review checklist and pre-deployment validation suite.
-- [ ] Schema generated against the correct NetworkProfile: run `migrations/generator.go --profile=prod` for production databases `migrations/generator.go --profile=demo` for demo databases. Never apply a demo schema (shard_index BETWEEN 0 AND 4) to a production database or vice versa. (ADR-031)
-- [ ] mv_provider_scores view regenerated at first startup of the target environment — it is dropped and recreated from NetworkProfile scoring window values, not applied as a migration. Verify by checking `scores_as_of` after first startup.
-- [ ] Both databases (demo_db and prod_db) are completely separate instances with separate connection strings. Demo data must never enter the production database. (ADR-031)
-- [ ] TestProfileShardSizeIsConstant passes in CI, confirming DemoProfile.ShardSize == ProductionProfile.ShardSize == 262144. (ADR-031)
+- [ ] Schema generated against the correct NetworkProfile:
+      run `migrations/generator.go --profile=prod` for production databases,
+      `migrations/generator.go --profile=demo` for demo databases.
+      Never apply a demo schema (shard_index BETWEEN 0 AND 4) to a production database
+      or vice versa. (ADR-031)
+- [ ] mv_provider_scores view regenerated at first startup of the target environment —
+      it is dropped and recreated from NetworkProfile scoring window values, not applied
+      as a migration. Verify by checking `scores_as_of` after first startup.
+- [ ] Both databases (demo_db and prod_db) are completely separate instances with
+      separate connection strings. Demo data must never enter the production database.
+      (ADR-031)
+- [ ] TestProfileShardSizeIsConstant passes in CI, confirming DemoProfile.ShardSize
+      == ProductionProfile.ShardSize == 262144. (ADR-031)
 
 **Migration file naming convention.** Files are named `NNN_short_description.sql` where NNN is zero-padded to three digits and sequential with no gaps. If migration 003 is abandoned, 004 is still named 004. The `short_description` uses underscores, lowercase, no special characters, and describes the change rather than the ticket number. A migration that only adds nullable columns or columns with defaults does not require a rollback file. A migration that changes a column type, removes a column, or alters a constraint requires a corresponding `NNN_short_description.down.sql`.
 
@@ -1785,5 +1834,5 @@ NOW() AS scores_as_of   -- consumers must check age before using for payment dec
 
 ---
 
-*Repository: https://github.com/masamasaowl/Vyomanaut_Research*
+*Repository: <https://github.com/masamasaowl/Vyomanaut_Research>*
 *Authoritative companion documents: `docs/decisions/` (ADRs), `docs/system-design/architecture.md`, `docs/system-design/requirements.md`*
