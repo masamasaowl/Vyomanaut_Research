@@ -130,6 +130,8 @@
 
 ## Build Dependency Graph
 
+## Build Dependency Graph
+
 ```tree
 M0 (Setup)
  └─ M1 (Config / NetworkProfile)
@@ -138,18 +140,18 @@ M0 (Setup)
      ├─ M4 (Database Schema)
      └─ M5 (Storage Engine)
          └─ M6 (P2P Network Layer)
-             ├─ M7 (Provider Daemon Core)
-             ├─ M8 (Audit System)
-             │   ├─ M9 (Scoring)
-             │   └─ M10 (Repair)
-             ├─ M11 (Payment)
-             └─ M12 (REST API Layer)
+             ├─ M7 (Audit System)
+             ├─ M8 (Scoring System)
+             │   ├─ M9 (Repair System)
+             │   └─ M10 (Payment System)
+             ├─ M11 (REST API Layer)
+             └─ M12 (Coordination Microservice)
                  ├─ M-OBS (Observability & Metrics)
-                 └─ M13 (Coordination Microservice)
+                 └─ M13 (Provider Daemon Core)
                      └─ M14 (Vetting & Synthetic Chunks)
                          └─ M15 (Client SDK)
                              └─ M16 (Demo Mode Validation)
-                                 ├─ M17 (Production Hardening) 
+                                 ├─ M17 (Production Hardening)
                                     └─ M18 (Launch Readiness)
 ```
 
