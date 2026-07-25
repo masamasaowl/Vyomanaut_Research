@@ -53,6 +53,11 @@
   - [Phase 11.11 — Per-Provider Chunk Count Ceiling](#phase-1111--per-provider-chunk-count-ceiling)
 - [Milestone 12 — Coordination Microservice (`cmd/microservice`)](#milestone-12--coordination-microservice-cmdmicroservice)
   - [Phase 12.1 — Microservice Startup](#phase-121--microservice-startup)
+- [Milestone M-OBS — Observability & Metrics](#milestone-m-obs--observability--metrics)
+  - [Phase OBS.1 — Microservice Metrics](#phase-obs1--microservice-metrics)
+  - [Phase OBS.2 — Provider Daemon Metrics](#phase-obs2--provider-daemon-metrics)
+  - [Phase OBS.3 — Operational Alerts](#phase-obs3--operational-alerts)
+  - [Phase OBS.4 — Prometheus Metric Naming CI Gate](#phase-obs4--prometheus-metric-naming-ci-gate)
 - [Milestone 13 — Provider Daemon Core (`cmd/provider`)](#milestone-13--provider-daemon-core-cmdprovider)
   - [Phase 13.1 — Provider Startup](#phase-131--provider-startup)
   - [Phase 13.2 — Chunk Upload Stream Handler](#phase-132--chunk-upload-stream-handler)
@@ -63,26 +68,28 @@
 - [Milestone 14 — Vetting & Synthetic Chunks (`internal/vettingchunk`)](#milestone-14--vetting--synthetic-chunks-internalvettingchunk)
   - [Phase 14.1 — Synthetic Chunk Generator](#phase-141--synthetic-chunk-generator)
   - [Phase 14.2 — GC Delivery](#phase-142--gc-delivery)
-- [Milestone 15 — Client SDK (`internal/client`)](#milestone-15--client-sdk-internalclient)
-  - [Phase 15.1 — Account Management](#phase-151--account-management)
-  - [Phase 15.2 — Upload Orchestrator](#phase-152--upload-orchestrator)
-  - [Phase 15.3 — Retrieval Orchestrator](#phase-153--retrieval-orchestrator)
-- [Milestone 16 — Demo Mode Validation](#milestone-16--demo-mode-validation)
-  - [Phase 16.1 — End-to-End Demo Test](#phase-161--end-to-end-demo-test)
-  - [Phase 16.2 — Simulation Mode](#phase-162--simulation-mode)
-- [Milestone 17 — Production Hardening](#milestone-17--production-hardening)
-  - [Phase 17.1 — Secrets Manager Adapters](#phase-171--secrets-manager-adapters)
-  - [Phase 17.2 — HA Microservice & Relay Nodes](#phase-172--ha-microservice--relay-nodes)
-- [Milestone M-OBS — Observability & Metrics](#milestone-m-obs--observability--metrics)
-  - [Phase OBS.1 — Microservice Metrics](#phase-obs1--microservice-metrics)
-  - [Phase OBS.2 — Provider Daemon Metrics](#phase-obs2--provider-daemon-metrics)
-  - [Phase OBS.3 — Operational Alerts](#phase-obs3--operational-alerts)
-  - [Phase OBS.4 — Prometheus Metric Naming CI Gate](#phase-obs4--prometheus-metric-naming-ci-gate)
-- [Milestone 18 — Launch Readiness](#milestone-18--launch-readiness)
-  - [Phase 18.1 — Runbooks](#phase-181--runbooks)
-  - [Phase 18.2 — Benchmark Scripts](#phase-182--benchmark-scripts)
-  - [Phase 18.3 — Security Verification Checklist](#phase-183--security-verification-checklist)
-  - [Phase 18.4 — Final CI Gate](#phase-184--final-ci-gate)
+
+---
+
+### Remaining Milestones covered in Part 2
+
+- [Milestone 15 — Client SDK (`internal/client`)](./build_part3.md#milestone-15--client-sdk-internalclient)
+  - [Phase 15.1 — Account Management](./build_part3.md#phase-151--account-management)
+  - [Phase 15.2 — Upload Orchestrator](./build_part3.md#phase-152--upload-orchestrator)
+  - [Phase 15.3 — Retrieval Orchestrator](./build_part3.md#phase-153--retrieval-orchestrator)
+- [Milestone 16 — Demo Mode Validation](./build_part3.md#milestone-16--demo-mode-validation)
+  - [Phase 16.1 — End-to-End Demo Test](./build_part3.md#phase-161--end-to-end-demo-test)
+  - [Phase 16.2 — Simulation Mode](./build_part3.md#phase-162--simulation-mode)
+- [Milestone 17 — Production Hardening](./build_part3.md#milestone-17--production-hardening)
+  - [Phase 17.1 — Secrets Manager Adapters](./build_part3.md#phase-171--secrets-manager-adapters)
+  - [Phase 17.2 — HA Microservice & Relay Nodes](./build_part3.md#phase-172--ha-microservice--relay-nodes)
+- [Milestone 18 — Launch Readiness](./build_part3.md#milestone-18--launch-readiness)
+  - [Phase 18.1 — Runbooks](./build_part3.md#phase-181--runbooks)
+  - [Phase 18.2 — Benchmark Scripts](./build_part3.md#phase-182--benchmark-scripts)
+  - [Phase 18.3 — Security Verification Checklist](./build_part3.md#phase-183--security-verification-checklist)
+  - [Phase 18.4 — Final CI Gate](./build_part3.md#phase-184--final-ci-gate)
+
+---
 
 ### Previous Milestones
 
