@@ -4693,288 +4693,844 @@ These are not new sessions in Milestones 11–12 — they're one-line retroactiv
 
 ## Milestone M-OBS — Observability & Metrics
 
-**Deliverable:** All Prometheus metrics defined in NFR-025 and NFR-026 are exported with the correct naming convention (NFR-046). Grafana alert rules are defined. The background throttle metric is wired. The `TestNoOrphanMetricName` CI check passes.
-
-**Reference:** architecture.md §23 (metric catalogue, alert thresholds), requirements.md §5.6 (NFR-025, NFR-026, NFR-027, NFR-028, NFR-046)
+**Deliverable:** every NFR-025/NFR-026 metric exported under the NFR-046 naming contract; Grafana alert rules + dashboard defined; the background-throttle **windowed** signal wired (ADR-033); `TestNoOrphanMetricName` passes as CI check 16.
+**Reference:** architecture.md §23, requirements.md §5.6 (NFR-025, 026, 027, 028) and §5.5 (NFR-046). *[Corrected per A5: OBS wires increments into M7/M9/M10 and the M12 throttle under the authoritative numbering.]*
 
 ---
 
-### Phase OBS.1 — Microservice Metrics
+### Phase OBS.1 — Microservice metrics
 
 #### Session OBS.1.1 — Register all microservice Prometheus metrics
 
-**Reference:** NFR-025 (requirements.md §5.6), architecture.md §23, NFR-046
+**Reference:** NFR-025 (requirements.md §5.6), architecture.md §23, NFR-046 (as restated in A6), ADR-033.
 
-Create `internal/metrics/microservice.go`. Register every metric from NFR-025 using the `vyomanaut_{subsystem}_{name}_{unit}` naming pattern from NFR-046, where `{subsystem}` matches the `internal/` package name:
+**PRECONDITIONS**
 
-| Metric name | Type | Labels | Package |
-| --- | --- | --- | --- |
-| `vyomanaut_audit_challenges_issued_total` | Counter | — | audit |
-| `vyomanaut_audit_results_total` | Counter | `result` (PASS/FAIL/TIMEOUT) | audit |
-| `vyomanaut_provider_score` | Histogram | — | scoring |
-| `vyomanaut_repair_queue_depth` | Gauge | — | repair |
-| `vyomanaut_repair_jobs_completed_total` | Counter | — | repair |
-| `vyomanaut_escrow_events_total` | Counter | `type` (DEPOSIT/RELEASE/SEIZURE/REVERSAL) | payment |
-| `vyomanaut_microservice_replica_count` | Gauge | `state` (healthy/degraded) | cluster |
-| `vyomanaut_db_read_latency_seconds` | Histogram | percentile p99 | audit |
+- `internal/metrics/` does not yet exist (net-new package; the observability leaf per A2/Option A).
+- `prometheus/client_golang` is already a module dependency (M0).
 
-The `vyomanaut_db_read_latency_seconds` histogram bucket boundaries must include 0.01, 0.025, 0.05 (the throttle threshold), 0.1 seconds. The background throttle goroutine in M12 Session 12.1.1 reads `vyomanaut_db_read_latency_seconds` p99 from the in-process registry — no external scrape needed for the throttle decision.
+**TASK**
 
-Expose all metrics at `/metrics` on a separate admin port (configurable, default 9090).
+1. Create `internal/metrics/microservice.go`. Register every NFR-025 metric using `vyomanaut_{subsystem}_{name}_{unit}`, `{subsystem}` from the allow-list `{audit, scoring, repair, payment, cluster, db}` (A6). Names are a frozen contract:
+
+   | Metric name | Type | Labels | Emitting site (informational) |
+   |---|---|---|---|
+   | `vyomanaut_audit_challenges_issued_total` | Counter | — | audit |
+   | `vyomanaut_audit_results_total` | Counter | `result`=PASS\|FAIL\|TIMEOUT | audit |
+   | `vyomanaut_scoring_provider_score` | Histogram | — | scoring |
+   | `vyomanaut_repair_queue_depth` | Gauge | — | repair |
+   | `vyomanaut_repair_jobs_completed_total` | Counter | — | repair |
+   | `vyomanaut_payment_escrow_events_total` | Counter | `type`=DEPOSIT\|RELEASE\|SEIZURE\|REVERSAL | payment |
+   | `vyomanaut_cluster_replica_count` | Gauge | `state`=healthy\|degraded | cmd/microservice |
+   | `vyomanaut_db_read_latency_seconds` | Histogram | — *(A11: no percentile label)* | audit/cross-cutting |
+
+   > These names apply A6's allow-list consistently (`scoring`, `payment`, `cluster`) so `{subsystem}` is always a valid package/component. If you prefer to preserve the older `vyomanaut_provider_score` / `vyomanaut_escrow_events_total` / `vyomanaut_microservice_replica_count` spellings, keep them **only if** A6's allow-list explicitly grants `provider`, `escrow`, `microservice` — decide this once, here, because it freezes the contract.
+
+2. `vyomanaut_db_read_latency_seconds` bucket boundaries: `{0.01, 0.025, 0.04, 0.05, 0.1}` (ADR-033 adds `0.04`; `0.05` is the throttle threshold).
+3. **ADR-033 windowed signal:** add a 60-second sliding-window p99 estimator; expose `ForegroundReadLatency.Observe(d)` (updates histogram **and** window) and `ForegroundReadP99Window() time.Duration`. The throttle reads the window, never the cumulative histogram.
+4. Expose all metrics at `/metrics` on a configurable admin port (default `9090`).
+
+**FILES**
+
+- `internal/metrics/microservice.go`
+- `internal/metrics/window.go` *(ADR-033 estimator; keep pure-stdlib so the leaf imports nothing internal)*
+
+**VERIFY**
+
+```bash
+FILES_EXIST:
+  $ test -f internal/metrics/microservice.go && echo PASS || echo FAIL
+  $ test -f internal/metrics/window.go       && echo PASS || echo FAIL
+
+COMPILE:
+  $ go build ./internal/metrics/
+  EXPECT: exit 0
+
+LEAF_HAS_NO_INTERNAL_IMPORTS:
+  $ grep -c "masamasaowl/Vyomanaut_V2/internal/" internal/metrics/*.go
+  EXPECT: 0                      # A2: internal/metrics is a zero-internal-dep leaf
+
+ALL_EIGHT_NFR025_METRICS_REGISTERED:
+  $ grep -oE "vyomanaut_[a-z_]+" internal/metrics/microservice.go | sort -u | wc -l
+  EXPECT: >= 8
+
+METRIC_NAMES_PRESENT:
+  $ for m in audit_challenges_issued_total audit_results_total scoring_provider_score \
+             repair_queue_depth repair_jobs_completed_total payment_escrow_events_total \
+             cluster_replica_count db_read_latency_seconds; do \
+      grep -q "vyomanaut_$m" internal/metrics/microservice.go && echo "PASS $m" || echo "FAIL $m"; done
+  EXPECT: eight PASS lines
+
+THROTTLE_BUCKET_BOUNDARIES:
+  $ grep -c "0.05" internal/metrics/microservice.go
+  EXPECT: >= 1                   # 50 ms throttle threshold present as a bucket
+  $ grep -c "0.04" internal/metrics/microservice.go
+  EXPECT: >= 1                   # ADR-033 early-warning bucket
+
+NO_INVALID_HISTOGRAM_LABEL:
+  $ grep -c "percentile" internal/metrics/microservice.go
+  EXPECT: 0                      # A11: histograms carry no p99 label
+
+WINDOWED_SIGNAL_EXPORTED:
+  $ grep -c "func ForegroundReadP99Window" internal/metrics/window.go
+  EXPECT: 1
+  $ grep -c "func .*Observe" internal/metrics/window.go
+  EXPECT: >= 1
+
+UNIT_TESTS:
+  $ go test -v -run TestMetricsRegistry ./internal/metrics/
+  EXPECT: exit 0; tests include:
+    TestAllNFR025NamesRegistered
+    TestDBReadHistogramHasThrottleBuckets
+    TestForegroundP99WindowReflectsRecentBurstNotLifetime   # ADR-033 core guarantee
+
+VET:
+  $ go vet ./internal/metrics/
+  EXPECT: exit 0; zero output
+```
+
+---
 
 #### Session OBS.1.2 — Wire metric increments at call sites
 
-Add `metrics.AuditResultsTotal.With(prometheus.Labels{"result": result.String()}).Inc()` at the Phase 2 receipt write call site (M7 Session 7.3.2). Add `metrics.RepairQueueDepth.Set(float64(depth))` in the repair enqueue/dequeue call sites (M9 Phase 9.1). Add `metrics.EscrowEventsTotal.With(...).Inc()` in `InsertEscrowEvent` (M10 Phase 10.2.1). These increments must use the exact metric names from Session OBS.1.1 — any rename is a breaking change per NFR-046.
+**Reference:** NFR-025, NFR-046, A2 (import-DAG resolution), ADR-033.
+
+**PRECONDITIONS**
+
+- OBS.1.1 complete. IC §9 / build-skill §4 amended per **A2/Option A** (`internal/metrics` is an importable leaf). If A2/Option B is chosen instead, wire all increments in `cmd/microservice` and adjust the VERIFY paths accordingly.
+
+**TASK**
+
+1. `internal/audit` receipt-write site (**M7** Session 7.3.2): `metrics.AuditResultsTotal.With(prometheus.Labels{"result": result.String()}).Inc()`.
+2. `internal/repair` enqueue/dequeue (**M9** Phase 9.1): `metrics.RepairQueueDepth.Set(float64(depth))`.
+3. `internal/payment.InsertEscrowEvent` (**M10** Phase 10.2.1): `metrics.EscrowEventsTotal.With(...).Inc()`.
+4. Foreground DB reads on the audit hot path call `metrics.ForegroundReadLatency.Observe(elapsed)` (ADR-033).
+   All names must be the exact frozen strings from OBS.1.1 — any rename is a breaking change (NFR-046).
+
+**FILES** *(edits only)*
+
+- `internal/audit/*.go` (receipt write), `internal/repair/*.go` (enqueue/dequeue), `internal/payment/*.go` (`InsertEscrowEvent`)
+
+**VERIFY**
+
+```bash
+IMPORT_LEAF_ALLOWED:      # A2/Option A must be in force, else these imports fail the DAG gate
+  $ grep -rl "internal/metrics" internal/audit internal/repair internal/payment | wc -l
+  EXPECT: >= 3
+
+AUDIT_RESULT_INCREMENT:
+  $ grep -c "AuditResultsTotal" internal/audit/*.go
+  EXPECT: >= 1
+
+REPAIR_DEPTH_SET:
+  $ grep -c "RepairQueueDepth.Set" internal/repair/*.go
+  EXPECT: >= 1
+
+ESCROW_INCREMENT_IN_INSERT:
+  $ grep -c "EscrowEventsTotal" internal/payment/*.go
+  EXPECT: >= 1
+
+THROTTLE_OBSERVE_ON_HOT_PATH:
+  $ grep -c "ForegroundReadLatency.Observe" internal/audit/*.go
+  EXPECT: >= 1
+
+NO_RENAMED_METRICS:
+  $ grep -roE "vyomanaut_[a-z_]+" internal/audit internal/repair internal/payment | sort -u \
+      | while read n; do grep -q "$n" internal/metrics/microservice.go || echo "ORPHAN $n"; done
+  EXPECT: no ORPHAN lines
+
+BUILD_AFFECTED:
+  $ go build ./internal/audit/ ./internal/repair/ ./internal/payment/
+  EXPECT: exit 0
+```
 
 ---
 
-### Phase OBS.2 — Provider Daemon Metrics
+### Phase OBS.2 — Provider daemon metrics
 
-#### Session OBS.2.1 — Register all provider daemon Prometheus metrics
+#### Session OBS.2.1 — Register all provider-daemon metrics
 
-**Reference:** NFR-026, architecture.md §23
+**Reference:** NFR-026, architecture.md §23, NFR-046 (allow-list restated in A6).
 
-Create `internal/metrics/daemon.go`. Register:
+**TASK**
 
-| Metric name | Type |
-| --- | --- |
-| `vyomanaut_chunks_stored_total` | Counter |
-| `vyomanaut_audit_responses_sent_total` | Counter |
-| `vyomanaut_audit_response_latency_milliseconds` | Histogram |
-| `vyomanaut_vlog_append_latency_milliseconds` | Histogram |
-| `vyomanaut_content_hash_failures_total` | Counter |
-| `vyomanaut_heartbeat_sent_total` | Counter |
-| `vyomanaut_daemon_ram_constrained` | Gauge (label: `constrained`) |
+1. Create `internal/metrics/daemon.go`. Register (subsystems from the allow-list; names frozen):
 
-Expose at a local-only HTTP server on `localhost:9091` (not publicly reachable). The provider daemon CLI status interface (FR-029) reads its data from this endpoint rather than maintaining a separate in-memory state.
+   | Metric name | Type |
+   |---|---|
+   | `vyomanaut_daemon_chunks_stored_total` | Counter |
+   | `vyomanaut_daemon_audit_responses_sent_total` | Counter |
+   | `vyomanaut_daemon_audit_response_latency_milliseconds` | Histogram |
+   | `vyomanaut_daemon_vlog_append_latency_milliseconds` | Histogram |
+   | `vyomanaut_daemon_content_hash_failures_total` | Counter |
+   | `vyomanaut_daemon_heartbeat_sent_total` | Counter |
+   | `vyomanaut_daemon_ram_constrained` | Gauge (`constrained`) |
+
+   *(Using the single `daemon` subsystem for all daemon-side metrics keeps NFR-046's allow-list rule satisfiable without renaming across packages — A6.)*
+2. Expose at a **local-only** HTTP server on `localhost:9091` (not publicly reachable). The FR-029 CLI status view reads this endpoint (no separate in-memory state).
+
+**FILES**
+
+- `internal/metrics/daemon.go`
+
+**VERIFY**
+
+```bash
+FILES_EXIST:
+  $ test -f internal/metrics/daemon.go && echo PASS || echo FAIL
+
+COMPILE:
+  $ go build ./internal/metrics/
+  EXPECT: exit 0
+
+SEVEN_DAEMON_METRICS:
+  $ grep -oE "vyomanaut_daemon_[a-z_]+" internal/metrics/daemon.go | sort -u | wc -l
+  EXPECT: 7
+
+RAM_CONSTRAINED_GAUGE_PRESENT:     # consumed by Session 13.6.1 (A1)
+  $ grep -c "vyomanaut_daemon_ram_constrained" internal/metrics/daemon.go
+  EXPECT: >= 1
+
+LOCAL_ONLY_BIND:
+  $ grep -c "localhost:9091\|127.0.0.1:9091" internal/metrics/daemon.go
+  EXPECT: >= 1                    # must NOT bind 0.0.0.0
+
+VET:
+  $ go vet ./internal/metrics/
+  EXPECT: exit 0; zero output
+```
 
 ---
 
-### Phase OBS.3 — Operational Alerts
+### Phase OBS.3 — Operational alerts
 
-#### Session OBS.3.1 — Define Grafana alert rules**
+#### Session OBS.3.1 — Define Grafana alert rules + dashboard
 
-**Reference:** NFR-027 (requirements.md §5.6), architecture.md §23
+**Reference:** NFR-027 (requirements.md §5.6 — architecture ref corrected to **§23** per A8), architecture.md §23.
 
-Create `deployments/grafana/alerts.yaml` with the four mandatory alert rules from NFR-027:
+**TASK**
 
-| Alert name | Condition | Severity |
-| --- | --- | --- |
-| `RepairQueueDepthHigh` | `vyomanaut_repair_queue_depth > 1000` | warning |
-| `AuditTimeoutRateHigh` | `rate(vyomanaut_audit_results_total{result="TIMEOUT"}[1h]) / rate(vyomanaut_audit_results_total[1h]) > 0.05` | critical |
-| `ContentHashFailureDetected` | `increase(vyomanaut_content_hash_failures_total[7d]) > 0` | critical |
-| `MicroserviceReplicasDegraded` | `vyomanaut_microservice_replica_count{state="healthy"} < 3` | critical |
+1. Create `deployments/grafana/alerts.yaml` with the four mandatory NFR-027 rules (names must match the frozen metric strings from OBS.1.1):
 
-`AuditTimeoutRateHigh` at > 5% in a 1-hour window triggers the relay infrastructure runbook. `ContentHashFailureDetected` for any provider in a 7-day window triggers accelerated re-audit of all that provider's chunks (architecture.md §23).
+   | Alert | Condition | Severity |
+   |---|---|---|
+   | `RepairQueueDepthHigh` | `vyomanaut_repair_queue_depth > 1000` | warning |
+   | `AuditTimeoutRateHigh` | `rate(vyomanaut_audit_results_total{result="TIMEOUT"}[1h]) / rate(vyomanaut_audit_results_total[1h]) > 0.05` | critical |
+   | `ContentHashFailureDetected` | `increase(vyomanaut_daemon_content_hash_failures_total[7d]) > 0` | critical |
+   | `MicroserviceReplicasDegraded` | `vyomanaut_cluster_replica_count{state="healthy"} < 3` | critical |
 
-**Add the Grafana dashboard JSON:** to `deployments/grafana/dashboards/vyomanaut.json`. The dashboard JSON must reference metric names by exact string — any metric rename without simultaneous dashboard update is a breaking change (NFR-046). Add a CI check `TestGrafanaMetricNamesMatchRegistry` in `scripts/ci/grep_checks.sh` that greps all metric name strings from the dashboard JSON and verifies they exist in `internal/metrics/*.go`.
+   *(A10: `architecture.md §23`'s fifth "Release multiplier 0.00" alert is intentionally omitted here — it has no NFR-025 backing metric. Resolve via A10 option (a) add-metric-and-alert, or (b) mark it V3-deferred in §23, before this session is considered complete.)*
+2. Add `deployments/grafana/dashboards/vyomanaut.json` referencing metric names by exact string.
+3. Add CI check `TestGrafanaMetricNamesMatchRegistry` to `scripts/ci/grep_checks.sh`: every metric string in the dashboard JSON must exist in `internal/metrics/*.go`.
+
+**FILES**
+
+- `deployments/grafana/alerts.yaml`, `deployments/grafana/dashboards/vyomanaut.json`, `scripts/ci/grep_checks.sh` (edit)
+
+**VERIFY**
+
+```bash
+FILES_EXIST:
+  $ test -f deployments/grafana/alerts.yaml                     && echo PASS || echo FAIL
+  $ test -f deployments/grafana/dashboards/vyomanaut.json       && echo PASS || echo FAIL
+
+FOUR_MANDATORY_ALERTS:
+  $ grep -cE "RepairQueueDepthHigh|AuditTimeoutRateHigh|ContentHashFailureDetected|MicroserviceReplicasDegraded" deployments/grafana/alerts.yaml
+  EXPECT: 4
+
+ALERTS_REFERENCE_LIVE_METRICS_ONLY:
+  $ grep -oE "vyomanaut_[a-z_]+" deployments/grafana/alerts.yaml | sort -u \
+      | while read n; do grep -q "$n" internal/metrics/*.go || echo "ORPHAN $n"; done
+  EXPECT: no ORPHAN lines
+
+TIMEOUT_THRESHOLD_IS_5PCT:
+  $ grep -c "0.05" deployments/grafana/alerts.yaml
+  EXPECT: >= 1
+
+DASHBOARD_NAMES_IN_REGISTRY:
+  $ grep -oE "vyomanaut_[a-z_]+" deployments/grafana/dashboards/vyomanaut.json | sort -u \
+      | while read n; do grep -q "$n" internal/metrics/*.go || echo "ORPHAN $n"; done
+  EXPECT: no ORPHAN lines
+
+CI_CHECK_ADDED:
+  $ grep -c "TestGrafanaMetricNamesMatchRegistry" scripts/ci/grep_checks.sh
+  EXPECT: 1
+```
 
 ---
 
-### Phase OBS.4 — Prometheus Metric Naming CI Gate
+### Phase OBS.4 — Prometheus metric-naming CI gate
 
-#### Session OBS.4.1 — Implement `TestNoOrphanMetricName`
+#### Session OBS.4.1 — Implement `TestNoOrphanMetricName` (CI check 16)
 
-**Reference:** NFR-046 (requirements.md §5.5)
+**Reference:** NFR-046 (requirements.md §5.5, restated in A6).
 
-Add to `scripts/ci/grep_checks.sh` a fifth grep-fail check: extract all metric name strings from `deployments/grafana/dashboards/vyomanaut.json` and `deployments/grafana/alerts.yaml`, then verify each appears in at least one `.go` file under `internal/metrics/`. A metric name present in dashboards/alerts but not in the Go registry (or vice versa) fails the check with the message `"orphan metric name: {name} — update metrics/*.go and dashboards simultaneously"`. This check is CI check 16 (add it to Phase 0.3 Session 0.3.1 step list).
+**TASK**
+Add a grep-fail check to `scripts/ci/grep_checks.sh`: extract every metric-name string from `deployments/grafana/dashboards/vyomanaut.json` **and** `deployments/grafana/alerts.yaml`; verify each appears in ≥1 `.go` file under `internal/metrics/`, and (A6) that each `{subsystem}` is in the allow-list. Any name in dashboards/alerts but absent from the registry (or vice-versa), or any out-of-allow-list subsystem, fails with:
+`"orphan metric name: {name} — update metrics/*.go and dashboards simultaneously"`.
+Register as **CI check 16** (add to Phase 0.3 Session 0.3.1 step list).
+
+**FILES**
+
+- `scripts/ci/grep_checks.sh` (edit)
+
+**VERIFY**
+
+```bash
+CHECK_PRESENT:
+  $ grep -c "TestNoOrphanMetricName" scripts/ci/grep_checks.sh
+  EXPECT: 1
+
+ORPHAN_MESSAGE_EXACT:
+  $ grep -c "orphan metric name:" scripts/ci/grep_checks.sh
+  EXPECT: >= 1
+
+BIDIRECTIONAL_SOURCES:
+  $ grep -c "vyomanaut.json" scripts/ci/grep_checks.sh
+  EXPECT: >= 1
+  $ grep -c "alerts.yaml" scripts/ci/grep_checks.sh
+  EXPECT: >= 1
+
+ALLOWLIST_ENFORCED:       # A6: subsystem must be in {audit,scoring,repair,payment,cluster,storage,daemon,db}
+  $ grep -cE "audit|scoring|repair|payment|cluster|storage|daemon|db" scripts/ci/grep_checks.sh
+  EXPECT: >= 1
+
+GATE_RUNS_GREEN_ON_CURRENT_TREE:
+  $ bash scripts/ci/grep_checks.sh
+  EXPECT: exit 0
+```
 
 ---
 
 ## Milestone 13 — Provider Daemon Core (`cmd/provider`)
 
-**Deliverable:** Provider daemon with stream handlers for all four libp2p protocols,
-startup identity, and heartbeat integration.
-
-**Reference:** IC §4.1 (chunk upload stream), IC §4.2 (audit challenge stream),
-IC §4.4.1 (repair download stream), IC §4.5 (vetting GC stream), IC §3.1 (heartbeat),
-IC §4 (common rules: transport auth, 0-RTT, framing)
+**Deliverable:** provider daemon with stream handlers for all four libp2p protocols, startup identity, heartbeat, and the corrected pre-install RAM check.
+**Reference:** IC §4.1, §4.2, §4.4.1, §4.5, §3.1, §4 (transport auth, 0-RTT, framing), §12/§12.2 (DHT), MVP §5.3/§8.3.
 
 ---
 
-### Phase 13.1 — Provider Startup
-
-**Reference:** MVP §5.3, IC §3.1
+### Phase 13.1 — Provider startup
 
 #### Session 13.1.1 — Wire provider `main()`
 
-**Task:** Replace the stub in `cmd/provider/main.go` with:
+**PRECONDITIONS**
 
-1. Parse flags per MVP §8.3 table (`--microservice-url`, `--data-dir`, `--declared-storage-gb`,
-   `--relay-addrs`, `--sim-count`, `--sim-base-port`, `--sim-data-dir`, `--sim-asn-count`)
-2. Call `config.SelectProfile()` and `config.ValidateStartupGuards(profile)`
-3. Load or generate Ed25519 identity (`internal/p2p/identity.go`)
-4. Initialise `ChunkStore` — call `RecoverFromCrash()` before starting writer goroutine
-5. Start the writer goroutine (the only goroutine that may call `AppendChunk`)
-6. Initialise libp2p `Host` with QUIC+TCP transports
-7. Register stream handlers (Phases 13.2–13.5)
-8. Start heartbeat goroutine + DHT republication (IC §3.1, IC §12.2)
-9. Register the DHT custom validator using the constant from `dht_namespace.go` (IC §12)
+- `internal/p2p/host.go` (M6) provides `Host`, `NewHost`, and `zeroRTTProhibited`.
+- `internal/storage.ChunkStore` (M5) provides `RecoverFromCrash`, `AppendChunk`, `LookupChunk`, `DeleteChunk`.
+- `cmd/provider/main.go` is currently the M0 stub.
 
----
+**TASK** — replace the stub with, in order:
 
-### Phase 13.2 — Chunk Upload Stream Handler
+1. Parse flags per MVP §8.3 (`--microservice-url`, `--data-dir`, `--declared-storage-gb`, `--relay-addrs`, `--sim-count`, `--sim-base-port`, `--sim-data-dir`, `--sim-asn-count`).
+2. `config.SelectProfile()` then `config.ValidateStartupGuards(profile)`.
+3. **RAM check (Session 13.6.1) runs here, before `ChunkStore` init** — see 13.6.1 (A1).
+4. Load/generate Ed25519 identity (`internal/p2p/identity.go`).
+5. `ChunkStore.RecoverFromCrash()` **before** starting the writer goroutine.
+6. Start the single writer goroutine (only caller of `AppendChunk`).
+7. `NewHost` with QUIC+TCP; **responder-side 0-RTT rejection for every protocol in `zeroRTTProhibited`** (A7).
+8. Register the four stream handlers (Phases 13.2–13.5).
+9. Heartbeat goroutine + DHT republication (IC §3.1, §12.2); register the DHT custom validator from `dht_namespace.go` (IC §12).
 
-**Reference:** OAS `components/schemas/ShardAssignment.capability_token` description and `UploadAssignResponse`, OAS `components/schemas/ShardAssignment.properties`, IC §4.1 (complete wire format, all status codes, capability token verification)
+**FILES** — `cmd/provider/main.go` (rewrite)
 
-#### Session 13.2.1 — Implement `/vyomanaut/chunk-upload/1.0.0` handler
+**VERIFY**
 
-**Task:** Register the stream handler for `/vyomanaut/chunk-upload/1.0.0` on the
-provider daemon. The handler must implement the full Frame 1 verification per IC §4.1:
+```bash
+COMPILE:
+  $ go build ./cmd/provider/
+  EXPECT: exit 0
 
-1. Read the 4-byte length prefix; reject with `0x01` if `length > 262252`
-2. Parse `chunk_id` (32B), `shard_index` (4B), `capability_token` (72B), `chunk_data` (262144B)
-3. Capability token verification steps 1–5 exactly per IC §4.1:
-   - `len(capability_token) == 72 = 8-byte expiry_unix_ms (big-endian int64) ‖ 64-byte Ed25519 signature` → reject `0x03` (Wire encoding on the HTTP side: hex string, pattern `^[0-9a-f]{144}$`)
-   - Parse bytes 0–7 as big-endian int64 `expiry_unix_ms`
-   - Check `expiry_unix_ms > NOW_unix_ms - 30_000` → reject `0x07` (CAPABILITY_EXPIRED)
-   - Verify Ed25519 signature (bytes 8–71) → reject `0x03` if invalid
-   - `chunk_id` mismatch via signing input → same `0x03` path
-4. Verify `SHA-256(chunk_data) == chunk_id` → respond `0x02` before any disk write
-5. Write to vLog via the writer goroutine channel (not directly — single-writer rule)
-6. On success (`0x00`): compute `provider_sig` over
-   `SHA-256(chunk_id || shard_index || provider_id_bytes || timestamp_unix_ms)` (IC §4.1)
-7. Return Frame 2 with `status` byte and (on success) `provider_sig`
+NO_BUSINESS_LOGIC_IN_CMD:      # IC §11 — cmd/ is wiring only
+  $ grep -cE "func (verify|compute|encode|decode|reconstruct)[A-Z]" cmd/provider/main.go
+  EXPECT: 0
 
-Handle `0x06 ALREADY_STORED` for idempotent re-uploads (IC §4.1).
+STARTUP_ORDER_RAM_BEFORE_STORE:
+  $ awk '/RAM|memcheck|RequiredRAM/{r=NR} /RecoverFromCrash/{c=NR} END{print (r>0 && r<c)?"PASS":"FAIL"}' cmd/provider/main.go
+  EXPECT: PASS
 
-Pre-condition check: `providers.status` must be `ACTIVE` or `VETTING` — if `DEPARTED`,
-reset the stream immediately (IC §4.1).
+RECOVER_BEFORE_WRITER:
+  $ awk '/RecoverFromCrash/{r=NR} /go .*[Ww]riter|writerLoop|startWriter/{w=NR} END{print (r>0 && r<w)?"PASS":"FAIL"}' cmd/provider/main.go
+  EXPECT: PASS
 
----
+ALL_FOUR_HANDLERS_REGISTERED:
+  $ grep -cE "chunk-upload/1.0.0|audit-challenge/1.0.0|repair-download/1.0.0|vetting-gc/1.0.0" cmd/provider/main.go
+  EXPECT: >= 4
 
-### Phase 13.3 — Audit Challenge Stream Handler
+RESPONDER_SIDE_ZERO_RTT:       # A7 — deny-list consulted on the responder, not a suffix
+  $ grep -c "zeroRTTProhibited\|DisableEarlyData" cmd/provider/main.go
+  EXPECT: >= 1
 
-**Reference:** IC §4.2 (complete wire format, all status codes)
+DHT_VALIDATOR_FROM_CONSTANT:
+  $ grep -c "dht_namespace\|DHTNamespace\|CustomValidator" cmd/provider/main.go
+  EXPECT: >= 1
 
-#### Session 13.3.1 — Implement `/vyomanaut/audit-challenge/1.0.0` handler
+UNIT_TESTS:
+  $ go test -v -run TestProviderStartup ./cmd/provider/
+  EXPECT: exit 0; tests include:
+    TestStartupRunsRAMCheckBeforeChunkStore
+    TestStartupRecoversBeforeWriterGoroutine
+    TestStartupRegistersAllFourProtocolHandlers
 
-**Task:** Register the stream handler. 0-RTT is PROHIBITED (IC §4.2) — the `Host`
-middleware from M6 Phase 6.1.1 handles this automatically via protocol ID ending in
-`-challenge`. The handler must:
-
-1. Read Frame 1: `chunk_id` (32B), `challenge_nonce` (33B), `server_challenge_ts_ms` (8B)
-   — reject with `0x03` if nonce is not 33 bytes (IC §4.2)
-2. Check nonce version byte against valid `server_secret_vN` versions
-3. Bloom filter check → `LookupChunk()`
-4. If not found: respond `0x01` with `provider_sig` (IC §4.2 Frame 2 note: `0x01/0x02`
-   responses are 1+64 bytes, not 1 byte)
-5. Verify `SHA-256(chunk_data) == content_hash` → respond `0x02` on mismatch (IC §4.2)
-6. Compute `response_hash = SHA-256(chunk_data || challenge_nonce)`
-7. Compute `provider_sig` over `SHA-256(response_hash || challenge_nonce ||
-   server_challenge_ts_ms || provider_id)` (IC §4.2)
-8. Respond Frame 2 with `0x00`, `response_hash`, `provider_sig`
-
-Concurrency: handle at least 32 concurrent challenge streams (IC §4.2). Each stream
-runs in a goroutine; `LookupChunk` is goroutine-safe.
+VET:
+  $ go vet ./cmd/provider/
+  EXPECT: exit 0; zero output
+```
 
 ---
 
-### Phase 13.4 — Repair Download Stream Handler
+### Phase 13.2 — Chunk upload stream handler
 
-**Reference:** IC §4.4.1 (repair download stream, 0-RTT prohibited)
+#### Session 13.2.1 — `/vyomanaut/chunk-upload/1.0.0`
 
-#### Session 13.4.1 — Implement `/vyomanaut/repair-download/1.0.0` handler
+**Reference:** IC §4.1 (full Frame 1 verification, capability token, all status codes), OAS `ShardAssignment.capability_token`. 0-RTT is **permitted** here (IC §4.1).
 
-**Task:** Register the stream handler. 0-RTT PROHIBITED (IC §4.4.1). The handler must:
+**PRECONDITIONS** — writer goroutine and `ChunkStore` live; capability-token verify key available from config.
 
-1. Verify the requesting Peer ID is a registered microservice replica (locally-cached
-   microservice peer list refreshed via DHT and heartbeat acknowledgements — IC §4.4.1)
-2. Reject unregistered Peer IDs with `0x02 NOT_AUTHORISED` immediately
-3. Verify `repair_auth_sig`: Ed25519 over
-   `SHA-256(chunk_id || request_ts_ms || microservice_peer_id)` (IC §4.4.1)
-4. Call `LookupChunk()` — respond `0x01` if not found, `0x03` if corruption
-5. Respond Frame 2 with `0x00` and `chunk_data`
-6. Timeout: 10,000ms (IC §4.4.1)
+**TASK**
+
+1. Read 4-byte length prefix; reject `0x01` if `length > 262252` *(= 32+4+72+262144; matches on-disk `capabilityTokenSize`/`chunkIDFieldSize` constants)*.
+2. Parse `chunk_id`(32) ‖ `shard_index`(4) ‖ `capability_token`(72) ‖ `chunk_data`(262144).
+3. Capability-token verify (IC §4.1 steps 1–5): 72-byte token = `expiry_unix_ms`(8, be int64) ‖ Ed25519 sig(64) → else `0x03`; `expiry_unix_ms > NOW − 30_000` → else `0x07 CAPABILITY_EXPIRED`; verify sig → else `0x03`; `chunk_id` bound in signing input → same `0x03`.
+4. `SHA-256(chunk_data) == chunk_id` → else `0x02` **before any disk write**.
+5. Write via the writer-goroutine channel (single-writer rule — never call `AppendChunk` directly).
+6. On `0x00`: `provider_sig = Ed25519(SHA-256(chunk_id ‖ shard_index ‖ provider_id_bytes ‖ timestamp_unix_ms))`.
+7. Frame 2 = `status` ‖ (on success) `provider_sig`. Handle `0x06 ALREADY_STORED` idempotently.
+8. Pre-condition: `providers.status ∈ {ACTIVE, VETTING}`; if `DEPARTED`, reset stream immediately.
+
+**FILES** — `cmd/provider/handler_upload.go`
+
+**VERIFY**
+
+```bash
+COMPILE:
+  $ go build ./cmd/provider/
+  EXPECT: exit 0
+
+FRAME_SIZE_CAP:
+  $ grep -c "262252" cmd/provider/handler_upload.go
+  EXPECT: >= 1
+
+ALL_EIGHT_UPLOAD_STATUS_CODES:
+  $ grep -cE "0x00|0x01|0x02|0x03|0x04|0x05|0x06|0x07" cmd/provider/handler_upload.go
+  EXPECT: >= 8
+
+HASH_CHECK_BEFORE_WRITE:      # 0x02 must precede any channel send to the writer
+  $ awk '/SHA-256|sha256.Sum256/{h=NR} /writer|AppendChunk|writeCh/{w=NR} END{print (h>0 && h<w)?"PASS":"FAIL"}' cmd/provider/handler_upload.go
+  EXPECT: PASS
+
+SINGLE_WRITER_RULE:           # handler must not call AppendChunk directly
+  $ grep -c "\.AppendChunk(" cmd/provider/handler_upload.go
+  EXPECT: 0
+
+CAPABILITY_EXPIRY_WINDOW:
+  $ grep -c "30_000\|30000" cmd/provider/handler_upload.go
+  EXPECT: >= 1
+
+DEPARTED_RESETS_STREAM:
+  $ grep -c "DEPARTED" cmd/provider/handler_upload.go
+  EXPECT: >= 1
+
+UNIT_TESTS:
+  $ go test -v -run TestChunkUploadHandler ./cmd/provider/
+  EXPECT: exit 0; tests include:
+    TestUploadRejectsExpiredCapabilityToken            # 0x07
+    TestUploadRejectsContentHashMismatchBeforeWrite    # 0x02, no disk write
+    TestUploadIdempotentAlreadyStored                  # 0x06
+    TestUploadRejectsDepartedProvider
+```
 
 ---
 
-### Phase 13.5 — Vetting GC Stream Handler
+### Phase 13.3 — Audit challenge stream handler
 
-**Reference:** IC §4.5 (vetting GC protocol, complete wire format), IC §5.3 (`DeleteChunk`)
+#### Session 13.3.1 — `/vyomanaut/audit-challenge/1.0.0`
 
-#### Session 13.5.1 — Implement `/vyomanaut/vetting-gc/1.0.0` handler
+**Reference:** IC §4.2. 0-RTT **prohibited** — enforced by **membership in `zeroRTTProhibited`** (A7), *not* a `-challenge` suffix, and rejected on the **responder** side.
 
-**Task:** Register the stream handler. 0-RTT PROHIBITED (IC §4.5). The handler must:
+**TASK**
 
-1. Read Frame 1: `chunk_count` (4B), `chunk_ids` (`chunk_count × 32B`)
-2. For each chunk ID: call `DeleteChunk()` from `ChunkStore`
-3. Construct `failure_bitmap`: bit N set if `DeleteChunk(chunk_ids[N])` failed
-4. Respond Frame 2: `0x00` if all succeeded, `0x01` with bitmap on partial failure,
-   `0x02` on `INTERNAL_ERROR`
-5. Maximum 10,000 chunk IDs per frame (IC §4.5); multiple sequential frames on same stream
-6. Timeout: 30,000ms per frame (IC §4.5 — longer than audit challenge timeout)
+1. Frame 1: `chunk_id`(32) ‖ `challenge_nonce`(33) ‖ `server_challenge_ts_ms`(8) — reject `0x03` if nonce ≠ 33 bytes (Invariant 5).
+2. Check nonce version byte against valid `server_secret_vN` versions.
+3. Bloom filter → `LookupChunk()`.
+4. Not found → `0x01` with `provider_sig` (§4.2: `0x01`/`0x02` are 1+64 bytes).
+5. `SHA-256(chunk_data) == content_hash` → else `0x02`.
+6. `response_hash = SHA-256(chunk_data ‖ challenge_nonce)`.
+7. `provider_sig = Ed25519(SHA-256(response_hash ‖ challenge_nonce ‖ server_challenge_ts_ms ‖ provider_id))`.
+8. Frame 2: `0x00` ‖ `response_hash` ‖ `provider_sig`.
+9. Concurrency ≥ 32 simultaneous streams; `LookupChunk` is goroutine-safe.
 
-The protocol handler must remain in the daemon binary indefinitely (IC §13 versioning):
-"Removing the protocol handler from the daemon requires a coordinated network-wide migration."
+**FILES** — `cmd/provider/handler_audit.go`
+
+**VERIFY**
+
+```bash
+COMPILE:
+  $ go build ./cmd/provider/
+  EXPECT: exit 0
+
+NONCE_LENGTH_33_ENFORCED:
+  $ grep -c "33" cmd/provider/handler_audit.go
+  EXPECT: >= 1
+  $ grep -c "BYTEA(32)\|\\[32\\]byte.*nonce\|nonce.*\\[32\\]byte" cmd/provider/handler_audit.go
+  EXPECT: 0                        # Invariant 5 / IC §11 forbidden
+
+ZERO_RTT_BY_DENYLIST_NOT_SUFFIX:   # A7
+  $ grep -c "zeroRTTProhibited" cmd/provider/handler_audit.go
+  EXPECT: >= 1
+  $ grep -c "HasSuffix.*challenge\|strings.HasSuffix" cmd/provider/handler_audit.go
+  EXPECT: 0
+
+ERROR_RESPONSES_ARE_1_PLUS_64:
+  $ grep -c "1 + 64\|1+64\|65" cmd/provider/handler_audit.go
+  EXPECT: >= 1
+
+SIGNING_INPUT_FIXED_LAYOUT:        # no json.Marshal in the signing path (IC §11)
+  $ grep -c "json.Marshal" cmd/provider/handler_audit.go
+  EXPECT: 0
+
+UNIT_TESTS:
+  $ go test -v -run TestAuditChallengeHandler ./cmd/provider/
+  EXPECT: exit 0; tests include:
+    TestAuditRejectsNon33ByteNonce
+    TestAuditNotFoundReturnsSignedResponse             # 0x01, 1+64 bytes
+    TestAuditContentHashMismatchReturns0x02
+    TestAudit32ConcurrentStreams
+```
 
 ---
 
-### Phase 13.6 — Provider RAM Check at Installation
+### Phase 13.4 — Repair download stream handler
 
-#### Session 13.6.1 — Implement pre-installation RAM check**
+#### Session 13.4.1 — `/vyomanaut/repair-download/1.0.0`
 
-**Reference:** NFR-045 (requirements.md §5.5), architecture.md §27.5
+**Reference:** IC §4.4.1. 0-RTT prohibited (deny-list membership, responder side).
 
-In `cmd/provider/main.go` during the startup sequence, before `ChunkStore` is initialised, compute the minimum free RAM required for the DHT record cache: `required_mb = ceil(declared_storage_gb × 400 × 200 / 1_048_576)`. At 50 GB declared this is approximately 40 MB; at 200 GB approximately 160 MB; at 500 GB approximately 400 MB. Read available free memory via a platform-appropriate syscall (`/proc/meminfo` on Linux, `sysctl` on macOS, `GlobalMemoryStatusEx` on Windows — implement in `internal/storage/memcheck_linux.go`, `_darwin.go`, `_windows.go`). If available free RAM < required, print a human-readable warning: `"[WARN] Declared storage requires ~{required_mb} MB free RAM for DHT cache; only {available_mb} MB detected. Chunk assignment will be limited until RAM is freed."` — and reduce `declared_storage_gb` to the safe ceiling for the available RAM. Do not halt the daemon; log the advisory at WARN level and emit the `vyomanaut_daemon_ram_constrained{constrained="true"}` gauge metric. The installer (packaged binary) must run this check before completing the installation wizard and surface the shortfall with a plain-language advisory screen.
+**TASK** *(base — buildable today)*
+
+1. Verify requesting Peer ID ∈ registered-microservice replica set (locally cached; refreshed via DHT + heartbeat acks). Unregistered → `0x02 NOT_AUTHORISED` immediately.
+2. Verify `repair_auth_sig = Ed25519(SHA-256(chunk_id ‖ request_ts_ms ‖ microservice_peer_id))`.
+3. `LookupChunk()` → `0x01` not found, `0x03` corruption.
+4. Frame 2: `0x00` ‖ `chunk_data`. Timeout 10 000 ms.
+
+**⛔ SECURITY ADDENDUM — apply after ADR-032 accepted (A3):**
+
+- Between steps 2 and 3, add: reject when `|now − request_ts_ms| > profile.AuthRequestFreshnessWindow` → `0x02 NOT_AUTHORISED`. (The `request_ts_ms` is already signed; the handler simply never checked freshness.)
+
+**FILES** — `cmd/provider/handler_repair.go`
+
+**VERIFY**
+
+```bash
+COMPILE:
+  $ go build ./cmd/provider/
+  EXPECT: exit 0
+
+PEER_AUTHZ_FIRST:                 # unregistered peer rejected before any lookup
+  $ awk '/NOT_AUTHORISED|0x02/{a=NR} /LookupChunk/{l=NR} END{print (a>0 && a<l)?"PASS":"FAIL"}' cmd/provider/handler_repair.go
+  EXPECT: PASS
+
+REPAIR_AUTH_SIG_VERIFIED:
+  $ grep -c "repair_auth_sig\|repairAuthSig\|ed25519.Verify" cmd/provider/handler_repair.go
+  EXPECT: >= 1
+
+STATUS_CODES_PRESENT:
+  $ grep -cE "0x00|0x01|0x02|0x03" cmd/provider/handler_repair.go
+  EXPECT: >= 4
+
+TIMEOUT_10S:
+  $ grep -c "10_000\|10000\|10 \* time.Second" cmd/provider/handler_repair.go
+  EXPECT: >= 1
+
+UNIT_TESTS:
+  $ go test -v -run TestRepairDownloadHandler ./cmd/provider/
+  EXPECT: exit 0; tests include:
+    TestRepairRejectsUnregisteredPeerBeforeLookup      # 0x02
+    TestRepairRejectsInvalidAuthSig
+    TestRepairReturnsChunkDataOnSuccess
+
+# ── VERIFY (enable after ADR-032 accepted) ──
+FRESHNESS_WINDOW_ENFORCED:
+  $ grep -c "AuthRequestFreshnessWindow" cmd/provider/handler_repair.go
+  EXPECT: >= 1
+UNIT_TESTS_ADR032:
+  $ go test -v -run TestRepairRejectsStaleRequest ./cmd/provider/
+  EXPECT: exit 0
+```
+
+---
+
+### Phase 13.5 — Vetting GC stream handler
+
+#### Session 13.5.1 — `/vyomanaut/vetting-gc/1.0.0`
+
+**Reference:** IC §4.5, IC §5.3 (`DeleteChunk`). 0-RTT prohibited (deny-list membership, responder side).
+
+> **🟠 SECURITY (A3):** As specified in the current IC §4.5, this handler deletes chunks with **no caller authorization**. Since chunk IDs are DHT-discoverable and the daemon cannot distinguish synthetic from real chunks (DM §3 Invariant 6), the base handler is exploitable for real-data destruction. The base session below is faithful to the current contract; **ADR-032 (proposed) closes the hole** and its addendum should be applied as soon as ADR-032 is accepted — ideally before this handler ships to any network carrying real data.
+
+**TASK** *(base — matches current IC §4.5)*
+
+1. Frame 1: `chunk_count`(4) ‖ `chunk_ids`(`chunk_count×32`). Reject if `chunk_count > 10 000`.
+2. For each chunk ID: `DeleteChunk()`.
+3. Build `failure_bitmap`: bit N set iff `DeleteChunk(chunk_ids[N])` failed.
+4. Frame 2: `0x00` all-ok · `0x01` ‖ bitmap partial · `0x02 INTERNAL_ERROR`.
+5. ≤ 10 000 IDs/frame; multiple sequential frames per stream.
+6. Timeout 30 000 ms/frame. Handler remains in the binary indefinitely (IC §13).
+
+**⛔ SECURITY ADDENDUM — apply after ADR-032 accepted (A3):**
+
+- Parse the two new Frame-1 fields `request_ts_ms`(8) ‖ `gc_auth_sig`(64).
+- **Before any `DeleteChunk`:** (a) requesting Peer ID ∈ registered-microservice set → else `0x03 NOT_AUTHORISED`; (b) `|now − request_ts_ms| ≤ profile.AuthRequestFreshnessWindow` → else `0x04 STALE_REQUEST`; (c) verify `gc_auth_sig = Ed25519(SHA-256(chunk_ids ‖ request_ts_ms ‖ microservice_peer_id))` → else `0x03`.
+- Renumber `INTERNAL_ERROR` → `0x05`.
+
+**FILES** — `cmd/provider/handler_vetting_gc.go`
+
+**VERIFY**
+
+```bash
+COMPILE:
+  $ go build ./cmd/provider/
+  EXPECT: exit 0
+
+MAX_10K_IDS_PER_FRAME:
+  $ grep -c "10_000\|10000" cmd/provider/handler_vetting_gc.go
+  EXPECT: >= 1
+
+FAILURE_BITMAP_SIZE:              # ceil(chunk_count/8)
+  $ grep -c "/ 8\|>> 3\|(chunk_count+7)" cmd/provider/handler_vetting_gc.go
+  EXPECT: >= 1
+
+TIMEOUT_30S:
+  $ grep -c "30_000\|30000\|30 \* time.Second" cmd/provider/handler_vetting_gc.go
+  EXPECT: >= 1
+
+DELETE_CALLED:
+  $ grep -c "DeleteChunk" cmd/provider/handler_vetting_gc.go
+  EXPECT: >= 1
+
+UNIT_TESTS:
+  $ go test -v -run TestVettingGCHandler ./cmd/provider/
+  EXPECT: exit 0; tests include:
+    TestVettingGCPartialFailureBitmap
+    TestVettingGCRejectsOver10kIDs
+    TestVettingGCMultipleSequentialFrames
+
+# ── VERIFY (enable after ADR-032 accepted) — the security-critical checks ──
+AUTHZ_BEFORE_ANY_DELETE:
+  $ awk '/NOT_AUTHORISED|0x03/{a=NR} /DeleteChunk/{d=NR} END{print (a>0 && a<d)?"PASS":"FAIL"}' cmd/provider/handler_vetting_gc.go
+  EXPECT: PASS
+GC_AUTH_SIG_VERIFIED:
+  $ grep -c "gc_auth_sig\|gcAuthSig\|ed25519.Verify" cmd/provider/handler_vetting_gc.go
+  EXPECT: >= 1
+FRESHNESS_WINDOW_ENFORCED:
+  $ grep -c "AuthRequestFreshnessWindow" cmd/provider/handler_vetting_gc.go
+  EXPECT: >= 1
+UNIT_TESTS_ADR032:
+  $ go test -v -run 'TestVettingGCRejectsUnauthorizedPeer|TestVettingGCRejectsForgedSig|TestVettingGCRejectsStaleRequest' ./cmd/provider/
+  EXPECT: exit 0
+```
+
+---
+
+### Phase 13.6 — Provider RAM check at installation
+
+#### Session 13.6.1 — Pre-installation RAM check *(A1 fix folded in)*
+
+**Reference:** NFR-045 (requirements.md §5.5), architecture.md §27.5.
+
+**PRECONDITIONS** — runs in `main()` **before** `ChunkStore` init (Session 13.1.1 step 3). `vyomanaut_daemon_ram_constrained` exists (OBS.2.1).
+
+**TASK**
+
+1. Compute required RAM with the **corrected constant** (A1):
+
+   ```
+   ChunksPerGB        = (1 << 30) / ShardSize          // 4096
+   DHTRecordSizeBytes = 200
+   required_mb        = ceil(declared_storage_gb × ChunksPerGB × DHTRecordSizeBytes / (1 << 20))
+   ```
+
+   Sanity: 50 GB → 40 MB, 200 GB → 160 MB, 500 GB → ~400 MB (matches §27.5 / NFR-045).
+2. Read free RAM via platform syscall — `internal/storage/memcheck_linux.go` (`/proc/meminfo`), `_darwin.go` (`sysctl`), `_windows.go` (`GlobalMemoryStatusEx`), plus a `_other.go` build-tagged stub.
+3. If free < required: WARN (do not halt) —
+   `"[WARN] Declared storage requires ~{required_mb} MB free RAM for DHT cache; only {available_mb} MB detected. Chunk assignment will be limited until RAM is freed."` — reduce `declared_storage_gb` to the safe ceiling and set `vyomanaut_daemon_ram_constrained{constrained="true"}`.
+4. Installer runs this before completing the wizard and surfaces the shortfall.
+
+**FILES** — `cmd/provider/main.go` (edit), `internal/storage/memcheck_linux.go`, `_darwin.go`, `_windows.go`, `_other.go`
+
+**VERIFY**
+
+```bash
+COMPILE_ALL_PLATFORMS:
+  $ GOOS=linux   go build ./internal/storage/ && echo linux_PASS
+  $ GOOS=darwin  go build ./internal/storage/ && echo darwin_PASS
+  $ GOOS=windows go build ./internal/storage/ && echo windows_PASS
+  EXPECT: three *_PASS lines
+
+CORRECTED_CONSTANT_NOT_400:      # A1 — the 10× bug must be gone
+  $ grep -c "ChunksPerGB\|(1 << 30) / \|4096" internal/storage/*.go cmd/provider/main.go
+  EXPECT: >= 1
+  $ grep -nE "declared_storage_gb \* 400|declaredStorageGB \* 400|\* 400 \* 200" cmd/provider/main.go internal/storage/*.go
+  EXPECT: no matches            # the erroneous *400 formula must not appear
+
+REQUIRED_MB_TABLE_CORRECT:
+  $ go test -v -run TestDHTCacheRAMFormula ./internal/storage/
+  EXPECT: exit 0; asserts 50GB->40, 200GB->160, 500GB->~400
+
+DOES_NOT_HALT_ON_SHORTFALL:
+  $ grep -c "os.Exit\|log.Fatal" cmd/provider/main.go | head -1
+  # (RAM shortfall path must WARN, not exit — verify manually the WARN branch has no Fatal)
+  EXPECT: reviewer-confirmed: no Fatal on the RAM-shortfall branch
+
+RAM_CONSTRAINED_METRIC_SET:
+  $ grep -c "vyomanaut_daemon_ram_constrained\|RamConstrained" cmd/provider/main.go
+  EXPECT: >= 1
+
+OTHER_STUB_EXISTS:               # build-tag hygiene (skill §3)
+  $ test -f internal/storage/memcheck_other.go && echo PASS || echo FAIL
+
+UNIT_TESTS:
+  $ go test -v -run TestRAMCheck ./cmd/provider/
+  EXPECT: exit 0; tests include:
+    TestRAMCheckWarnsAndReducesDeclaredStorageOnShortfall
+    TestRAMCheckDoesNotHalt
+```
 
 ---
 
 ## Milestone 14 — Vetting & Synthetic Chunks (`internal/vettingchunk`)
 
-**Deliverable:** Synthetic chunk lifecycle: generation, upload to providers, GC delivery
-on ACTIVE transition, departure cleanup. Enforces Invariant 6 end-to-end.
-
-**Reference:** IC §5.10 (`Generator` and `GCDelivery` interfaces, sentinel errors),
-IC §4.5 (vetting GC protocol — client side), DM §3 Invariant 6, DM §4.5 (`is_vetting_chunk`
-column semantics)
+**Deliverable:** synthetic-chunk lifecycle — generation, upload, GC delivery on ACTIVE transition, departure cleanup. Enforces Invariant 6 end-to-end.
+**Reference:** IC §5.10 (`Generator`, `GCDelivery`, sentinels), IC §4.5 (client side), DM §3 Invariant 6, DM §4.5. Import scope (IC §9): `internal/vettingchunk → config, crypto, storage, p2p` (+ `metrics` if A2/Option A is adopted).
 
 ---
 
-### Phase 14.1 — Synthetic Chunk Generator
-
-**Reference:** IC §5.10 (`Generator` interface: `GenerateChunk`, `CurrentCount`, `Cap`)
+### Phase 14.1 — Synthetic chunk generator
 
 #### Session 14.1.1 — Implement `Generator`
 
-**Task:** In `internal/vettingchunk/generator.go`, implement `GenerateChunk()` per
-IC §5.10:
+**PRECONDITIONS** — `internal/vettingchunk/doc.go` stub exists; upload client (M15) or a shared upload helper available.
 
-1. Generate 256 KB via `crypto/rand` — NOT retained by the microservice after confirmation
-2. Compute `chunkID = SHA-256(data)`
-3. Upload via `/vyomanaut/chunk-upload/1.0.0` to the provider (using the same client
-   as the upload orchestrator in M15)
-4. On success: INSERT `chunk_assignments` row with `is_vetting_chunk = TRUE`,
-   `segment_id = NULL`, `shard_index = NULL` (IC §5.10, DM §4.5)
+**TASK** — implement `GenerateChunk()` per IC §5.10:
 
-**Cap enforcement (IC §5.10):** `Cap(declaredStorageGB int) int = floor(declaredStorageGB × 400)`.
-The caller is responsible for checking `CurrentCount < Cap` before calling `GenerateChunk`
-(IC §5.10 pre-condition).
+1. 256 KB via `crypto/rand` — not retained after confirmation.
+2. `chunkID = SHA-256(data)`.
+3. Upload via `/vyomanaut/chunk-upload/1.0.0`.
+4. On success: INSERT `chunk_assignments` with `is_vetting_chunk = TRUE`, `segment_id = NULL`, `shard_index = NULL` (DM §4.5, Invariant 6).
+   Cap: `Cap(declaredStorageGB) = floor(declaredStorageGB × 400)` (the vetting cap — **distinct** from the RAM formula constant in 13.6.1; do not conflate, per A1). Caller checks `CurrentCount < Cap` before calling.
+
+**FILES** — `internal/vettingchunk/generator.go`, `internal/vettingchunk/errors.go`
+
+**VERIFY**
+
+```bash
+COMPILE:
+  $ go build ./internal/vettingchunk/
+  EXPECT: exit 0
+
+IMPORT_CONSTRAINTS:              # IC §9 — must NOT import scoring/repair/payment
+  $ grep -cE "internal/(scoring|repair|payment)" internal/vettingchunk/*.go
+  EXPECT: 0
+
+CRYPTO_RAND_USED:
+  $ grep -c "crypto/rand" internal/vettingchunk/generator.go
+  EXPECT: >= 1
+
+INVARIANT6_INSERT_SHAPE:        # vetting rows: segment_id NULL, shard_index NULL, is_vetting TRUE
+  $ grep -c "is_vetting_chunk" internal/vettingchunk/generator.go
+  EXPECT: >= 1
+  $ grep -c "NULL\|nil" internal/vettingchunk/generator.go
+  EXPECT: >= 1
+
+CAP_FORMULA:
+  $ grep -c "400" internal/vettingchunk/generator.go
+  EXPECT: >= 1                   # vetting cap = floor(GB*400); correct here (cf. A1)
+
+UNIT_TESTS:
+  $ go test -v -run TestGenerator ./internal/vettingchunk/
+  EXPECT: exit 0; tests include:
+    TestGenerateChunkProduces256KBRandom
+    TestGeneratedRowIsVettingWithNullSegmentAndShard   # Invariant 6
+    TestCapIsFloorGBTimes400
+
+VET:
+  $ go vet ./internal/vettingchunk/
+  EXPECT: exit 0; zero output
+```
 
 ---
 
-### Phase 14.2 — GC Delivery
-
-**Reference:** IC §5.10 (`GCDelivery` interface, `ErrProviderOffline`), IC §4.5
-(vetting GC protocol — the libp2p client side initiated by the microservice)
+### Phase 14.2 — GC delivery
 
 #### Session 14.2.1 — Implement `DeliverGCInstruction()`
 
-**Task:** In `internal/vettingchunk/gc.go`, implement `DeliverGCInstruction()` per
-IC §5.10. Triggered immediately after `providers.status` transitions to `ACTIVE`:
+**Reference:** IC §5.10 (`GCDelivery`, `ErrProviderOffline`), IC §4.5 (client side).
 
-1. Query all synthetic chunk IDs: `WHERE is_vetting_chunk = TRUE AND provider_id = $1
-   AND status = 'ACTIVE'`
-2. Batch into frames of ≤ 10,000 chunk IDs (IC §4.5)
-3. Open libp2p stream `/vyomanaut/vetting-gc/1.0.0` to the provider
-4. For each frame: send `VettingGCRequest`, await `VettingGCResponse` within 30,000ms
-5. On `0x00`: mark batch as `DELETED` in `chunk_assignments`
-6. On `0x01` (partial failure): retry failed entries on next connection
-7. On provider offline: set all rows to `PENDING_DELETION`, return `ErrProviderOffline`
-   for retry on next heartbeat (IC §4.5, IC §5.10)
+**PRECONDITIONS** — triggered immediately after `providers.status → ACTIVE`. p2p `Host` injected by the M12 entrypoint (vettingchunk never imports `cmd/`).
 
-Retry backoff: `profile.GCRetryBackoff` (IC §4.5: prod is `[5m, 15m, 60m]`, demo is
-`[10s, 30s, 2m]` — profile-variable, NOT hardcoded).
+**TASK** *(base — matches current IC §4.5)*
+
+1. Query synthetic IDs: `WHERE is_vetting_chunk = TRUE AND provider_id = $1 AND status = 'ACTIVE'`.
+2. Batch ≤ 10 000 IDs/frame.
+3. Open `/vyomanaut/vetting-gc/1.0.0`.
+4. Per frame: send `VettingGCRequest`, await `VettingGCResponse` ≤ 30 000 ms.
+5. `0x00` → mark batch `DELETED`.
+6. `0x01` → retry failed entries next connection.
+7. Provider offline → all rows `PENDING_DELETION`, return `ErrProviderOffline`.
+   Backoff: `profile.GCRetryBackoff` (prod `[5m,15m,60m]`, demo `[10s,30s,2m]` — never hardcoded).
+
+**⛔ SECURITY ADDENDUM — apply after ADR-032 accepted (A3):** when building `VettingGCRequest`, append `request_ts_ms`(8) and `gc_auth_sig`(64) = `Ed25519(microservice_signing_key, SHA-256(chunk_ids ‖ request_ts_ms ‖ microservice_peer_id))`. Handle new response codes `0x03 NOT_AUTHORISED` / `0x04 STALE_REQUEST` (log + alert; do not mark `DELETED`).
+
+**FILES** — `internal/vettingchunk/gc.go`
+
+**VERIFY**
+
+```bash
+COMPILE:
+  $ go build ./internal/vettingchunk/
+  EXPECT: exit 0
+
+QUERY_FILTERS_VETTING_ACTIVE:
+  $ grep -c "is_vetting_chunk = TRUE" internal/vettingchunk/gc.go
+  EXPECT: >= 1
+
+BATCH_10K:
+  $ grep -c "10_000\|10000" internal/vettingchunk/gc.go
+  EXPECT: >= 1
+
+TIMEOUT_30S:
+  $ grep -c "30_000\|30000\|30 \* time.Second" internal/vettingchunk/gc.go
+  EXPECT: >= 1
+
+BACKOFF_FROM_PROFILE_NOT_HARDCODED:
+  $ grep -c "profile.GCRetryBackoff" internal/vettingchunk/gc.go
+  EXPECT: >= 1
+  $ grep -cE "5 \* time.Minute|15 \* time.Minute|60 \* time.Minute" internal/vettingchunk/gc.go
+  EXPECT: 0                       # values live in NetworkProfile, never inline
+
+OFFLINE_SETS_PENDING_DELETION:
+  $ grep -c "PENDING_DELETION\|ErrProviderOffline" internal/vettingchunk/gc.go
+  EXPECT: >= 2
+
+SENTINEL_NOT_INLINE:            # errors.Is pattern; no inline errors.New at call site
+  $ grep -c "errors.New" internal/vettingchunk/gc.go
+  EXPECT: 0
+
+UNIT_TESTS:
+  $ go test -v -run TestDeliverGC ./internal/vettingchunk/
+  EXPECT: exit 0; tests include:
+    TestDeliverGCMarksDeletedOn0x00
+    TestDeliverGCPartialFailureRetriesFailedOnly
+    TestDeliverGCOfflineSetsPendingDeletionReturnsErrProviderOffline
+    TestDeliverGCBackoffFromProfile
+
+# ── VERIFY (enable after ADR-032 accepted) ──
+SIGNS_GC_REQUEST:
+  $ grep -c "gc_auth_sig\|gcAuthSig\|ed25519.Sign" internal/vettingchunk/gc.go
+  EXPECT: >= 1
+HANDLES_NEW_STATUS_CODES:
+  $ grep -cE "0x03|0x04|NOT_AUTHORISED|STALE_REQUEST" internal/vettingchunk/gc.go
+  EXPECT: >= 1
+```
 
 ---
 
