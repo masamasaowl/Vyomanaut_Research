@@ -15,7 +15,7 @@
 ## Options Considered
 
 | Option | Pros | Cons |
-|---|---|---|
+| --- | --- | --- |
 | Managed consensus service (etcd / Consul) | Battle-tested; strong consistency; automatic leader election | Introduces an external operational dependency; adds latency for every coordinated write; overkill for a cluster of 3–5 nodes |
 | Single-node microservice | Simple to implement | Single point of failure; violates the availability requirement stated in ADR-001 |
 | **N=3 quorum + gossip membership (Dynamo model, storng + eventual consistency)** | Proven at Amazon scale; no external dependency; tolerates one replica failure; gossip is self-healing | Eventual membership consistency (up to ~10 s stale); requires seed node configuration at deploy time |
@@ -27,7 +27,7 @@ The coordination microservice is deployed as a cluster of **N=3 replicas**.
 **Quorum parameters:**
 
 | Parameter | Value | Meaning |
-|---|---|---|
+| --- | --- | --- |
 | N | 3 | Total replicas storing each metadata record |
 | R | 2 | Minimum replicas that must respond to a read |
 | W | 2 | Minimum replicas that must acknowledge a write |
@@ -60,19 +60,43 @@ Background tasks (Merkle log compaction, materialised view refresh, repair job q
 ## Consequences
 
 **Positive:**
+
 - One replica failure does not interrupt service — availability is maintained with N=3, R=2, W=2
 - Gossip membership is self-healing: replicas added or removed without manual intervention beyond seed configuration
 - Client-driven coordination removes load-balancer as a latency source for hot paths (30+ ms improvement at 99.9th percentile, Dynamo Section 6.4)
 - No external dependency (no etcd/Consul to operate)
 
 **Negative / trade-offs:**
+
 - Membership view may be up to ~10 s stale at the client; a newly joined replica may not receive requests immediately
 - Seed node addresses must be stable — if both seeds become unavailable simultaneously, new replicas cannot discover the cluster
 - Gossip at 1 peer/s adds ~N messages/s of intra-cluster traffic; acceptable for a 3-node cluster
 
 **Open constraints:**
+
 - Background task threshold of 50 ms is a starting value; must be tuned empirically after launch
 - If the cluster grows beyond 5 replicas, evaluate whether managed consensus (etcd) becomes simpler to operate than hand-rolled gossip
+
+## Addendum — Windowed p99 Control Signal for the Background-Task Throttle
+
+*Appended after the M-OBS/13/14 milestone review. Originally proposed there as a standalone "ADR-033," before the real ADR-033 (`audit-receipts-partitioning`) came to exist. Filed here instead of as a new ADR because it corrects this ADR's own "Background task throttling" decision (above) rather than making a new one — the 60-second-window requirement was already decided here; what follows fixes an implementation that drifted from it.*
+
+**Context.** The "Background task throttling" paragraph above already specifies the control signal precisely: p99 of foreground DB read latency *"over the last 60 seconds."* NFR-028 restates the same window. The M-OBS implementation (Session OBS.1.1) instead wired the throttle to `histogram_quantile` over the `vyomanaut_db_read_latency_seconds` Prometheus histogram — which is **cumulative since process start**, not a 60-second window. After hours of healthy operation, a genuine latency burst gets diluted by accumulated history, so the throttle fires late or never — precisely when the audit challenge SLA this mechanism exists to protect most needs it. This is a scalability-critical control loop; the mismatch matters at load, not at demo scale.
+
+**Decision.** Separate the **control signal** from the **exported metric**:
+
+- `internal/metrics` maintains a dedicated **60-second sliding-window p99 estimator** for foreground DB reads (a rotating per-second bucketed latency counter, or a bounded ring buffer). Expose `metrics.ForegroundReadP99Window() time.Duration`. The background-task throttle reads only this — never the cumulative histogram.
+- The cumulative `vyomanaut_db_read_latency_seconds` histogram remains, unchanged, for dashboards and alerts (architecture.md §23).
+- A single `metrics.ForegroundReadLatency.Observe(d)` call updates **both** the histogram and the window, so instrumentation call sites don't need to know about the split.
+- Add a `0.04 s` bucket to the histogram so it can visualize "approaching 50 ms" (NFR-028's own phrasing). Final bucket boundaries: `{0.01, 0.025, 0.04, 0.05, 0.1}`.
+
+**Consequences.**
+
+- *Positive:* the throttle reacts to *recent* latency, as originally intended above; the exported histogram stays a correct cumulative series for dashboards; no PromQL recording-rule gymnastics needed for an in-process control loop.
+- *Negative / trade-offs:* a small amount of additional in-process state (≤ 60 buckets); `Observe()` performs two updates instead of one.
+- *Affected:* architecture.md §23 (bucket boundaries note), NFR-028's implementation note; Sessions OBS.1.1, OBS.1.2, and the M12 Session 12.1.1 throttle read site.
+
+**Status:** Proposed (this addendum only — the rest of ADR-025 is unaffected and remains Accepted).
 
 ## References
 

@@ -10,7 +10,7 @@
 
 ## Context
 
-`internal/api/errors.go` implements a machine-readable error envelope (`error_code`, `message`, `request_id`, `retry_after`, `field`, `details`) across **186 `WriteError()` call sites spanning 43 distinct `ErrorCode` values** (owner.go, provider.go, upload.go, otp.go, file.go, token_refresh.go). Every `message` string at every one of those sites is written for an API consumer, not a data owner or provider: `"provider_sig must be 128 lowercase hex characters"`, `"escrow balance insufficient for 30-day storage cost"`, `"missing auth claims"`. That is the correct register for an API layer.
+`internal/api/errors.go` implements a machine-readable error envelope (`error_code`, `message`, `request_id`, `retry_after`, `field`, `details`) across **186 `WriteError()` call sites spanning 28 distinct `ErrorCode` values** (owner.go, provider.go, upload.go, otp.go, file.go, token_refresh.go, auth_middleware.go, router.go, readiness.go). Every `message` string at every one of those sites is written for an API consumer, not a data owner or provider: `"provider_sig must be 128 lowercase hex characters"`, `"escrow balance insufficient for 30-day storage cost"`, `"missing auth claims"`. That is the correct register for an API layer.
 
 `docs/api/openapi.yaml` independently carries its own example `message` text for many of the same codes, and it is somewhat more complete prose (*"Escrow balance is insufficient to cover 30 days of storage for this file."*, *"Too many OTP requests for this phone number. Try again in 10 minutes."*) — but it remains API-contract documentation: several examples embed a raw UUID or an exact byte-length requirement, appropriate for an integrator and wrong for an end user. So there are, precisely, **two existing technical layers and zero end-user layers** — not one layer with a gap.
 
@@ -27,15 +27,23 @@ Introduce a single canonical **copy table** mapping `error_code → {headline, b
 
 ### 1. Location and shape
 
-A new file, `docs/system-design/ux-copy.md`, holds the canonical table — one row per `ErrorCode` constant in `internal/api/errors.go`, e.g.:
+The canonical table lives as **`interface-contracts.md` §14 — User-Facing Copy Contract** (full content below), one row per `ErrorCode` constant in `internal/api/errors.go`, with columns `error_code | surface | headline | body | suggested_action | severity`.
 
-| `error_code` | Headline | Body | Suggested action | Severity |
-| --- | --- | --- | --- | --- |
-| `INSUFFICIENT_ASN_DIVERSITY` | Upload paused | Not enough provider diversity right now. | Retrying automatically — no action needed. | info / auto-retry |
-| `ESCROW_INSUFFICIENT` | Add funds to continue | Your balance won't cover 30 days of storage for this file. | Top up your balance to resume. | action-required |
-| `PROVIDER_DEPARTED` | This provider has left the network | — | No action needed; repair will replace it automatically. | info |
+Interface Contracts, not a new standalone file, because §3.3 (Error Envelope Contract) and §3.4 (Readiness Gate Contract) already own the machine-readable side of this exact same `error_code` vocabulary — putting the human-facing translation in the same document keeps one place engineers check for "what does this error mean and what do I do with it," rather than a fourth artifact (after Go, OAS, and IC) to remember exists. It is documentation, not code, deliberately: reviewable by non-engineers and trivially diffable in PRs, same as the rest of IC.
 
-This is documentation, not code, deliberately — it stays reviewable by non-engineers (matches the discipline already used for `docs/system-design/*.md`) and is trivially diffable in PRs.
+**§14 content (ready to paste in as written):**
+
+> ## 14. User-Facing Copy Contract
+>
+> This section is the single canonical mapping from `error_code` (§3.3) to end-user copy. `cmd/client` (data owner) and `cmd/provider` (provider daemon) both render from this table — not from `message` (§3.3, which is a developer/API-consumer diagnostic and "may change between releases") and not from `openapi.yaml`'s example `message` text (API-contract documentation, addressed to integrators). This section is authoritative for tone and wording; §3.3 remains authoritative for the envelope shape.
+>
+> **Severity legend:** `info` — no action needed · `action-required` — user must do something before proceeding · `transient-retry` — client retries automatically · `escalate` — likely a client/system defect, not a user mistake · `n/a` — never rendered by `cmd/client` or `cmd/provider`.
+>
+> **Fallback rule.** Any `error_code` without a row below renders: *"Something went wrong (code: `{error_code}`). Try again, or contact support with this code."* — logged client-side as a warning. New codes added to `errors.go` MUST add a row here in the same change.
+>
+> *(28-row table — all current `ErrorCode` values, each tagged Data Owner / Provider / Both / n/a, with headline, body, suggested action, and severity. See the companion draft for the full table; omitted here for length.)*
+
+The full 28-row table is provided as a companion file to this ADR (`interface-contracts-section-14.md`) so it can be reviewed and pasted in verbatim rather than retyped.
 
 ### 2. Consumption contract
 
@@ -47,7 +55,7 @@ Any `error_code` without a table entry renders a generic fallback: *"Something w
 
 ### 4. Process going forward
 
-Adding a new `ErrorCode` to `internal/api/errors.go` should add a corresponding row to `ux-copy.md` in the same change — the same reconciliation discipline `errors.go`'s own header comment already applies to keeping Go and the OAS in sync, extended to a third artifact.
+Adding a new `ErrorCode` to `internal/api/errors.go` should add a corresponding row to IC §14 in the same change — the same reconciliation discipline `errors.go`'s own header comment already applies to keeping Go and the OAS in sync, now extended to a third document (which happens to already be IC itself, so this is one more section of an artifact engineers already reconcile against, not a wholly new habit).
 
 ## Alternatives considered
 
