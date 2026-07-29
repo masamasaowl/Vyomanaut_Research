@@ -987,7 +987,7 @@ UNIT_TESTS:
 3. `LookupChunk()` → `0x01` not found, `0x03` corruption.
 4. Frame 2: `0x00` ‖ `chunk_data`. Timeout 10 000 ms.
 
-**⛔ SECURITY ADDENDUM — apply after ADR-032 accepted (A3):**
+**⛔ SECURITY ADDENDUM — apply after ADR-036 accepted (A3):**
 
 - Between steps 2 and 3, add: reject when `|now − request_ts_ms| > profile.AuthRequestFreshnessWindow` → `0x02 NOT_AUTHORISED`. (The `request_ts_ms` is already signed; the handler simply never checked freshness.)
 
@@ -1023,11 +1023,11 @@ UNIT_TESTS:
     TestRepairRejectsInvalidAuthSig
     TestRepairReturnsChunkDataOnSuccess
 
-# ── VERIFY (enable after ADR-032 accepted) ──
+# ── VERIFY (enable after ADR-036 accepted) ──
 FRESHNESS_WINDOW_ENFORCED:
   $ grep -c "AuthRequestFreshnessWindow" cmd/provider/handler_repair.go
   EXPECT: >= 1
-UNIT_TESTS_ADR032:
+UNIT_TESTS_ADR036:
   $ go test -v -run TestRepairRejectsStaleRequest ./cmd/provider/
   EXPECT: exit 0
 ```
@@ -1040,7 +1040,7 @@ UNIT_TESTS_ADR032:
 
 **Reference:** IC §4.5, IC §5.3 (`DeleteChunk`). 0-RTT prohibited (deny-list membership, responder side).
 
-> **🟠 SECURITY (A3):** As specified in the current IC §4.5, this handler deletes chunks with **no caller authorization**. Since chunk IDs are DHT-discoverable and the daemon cannot distinguish synthetic from real chunks (DM §3 Invariant 6), the base handler is exploitable for real-data destruction. The base session below is faithful to the current contract; **ADR-032 (proposed) closes the hole** and its addendum should be applied as soon as ADR-032 is accepted — ideally before this handler ships to any network carrying real data.
+> **🟠 SECURITY (A3):** As specified in the current IC §4.5, this handler deletes chunks with **no caller authorization**. Since chunk IDs are DHT-discoverable and the daemon cannot distinguish synthetic from real chunks (DM §3 Invariant 6), the base handler is exploitable for real-data destruction. The base session below is faithful to the current contract; **ADR-036 (proposed) closes the hole** and its addendum should be applied as soon as ADR-036 is accepted — ideally before this handler ships to any network carrying real data.
 
 **TASK** *(base — matches current IC §4.5)*
 
@@ -1051,7 +1051,7 @@ UNIT_TESTS_ADR032:
 5. ≤ 10 000 IDs/frame; multiple sequential frames per stream.
 6. Timeout 30 000 ms/frame. Handler remains in the binary indefinitely (IC §13).
 
-**⛔ SECURITY ADDENDUM — apply after ADR-032 accepted (A3):**
+**⛔ SECURITY ADDENDUM — apply after ADR-036 accepted (A3):**
 
 - Parse the two new Frame-1 fields `request_ts_ms`(8) ‖ `gc_auth_sig`(64).
 - **Before any `DeleteChunk`:** (a) requesting Peer ID ∈ registered-microservice set → else `0x03 NOT_AUTHORISED`; (b) `|now − request_ts_ms| ≤ profile.AuthRequestFreshnessWindow` → else `0x04 STALE_REQUEST`; (c) verify `gc_auth_sig = Ed25519(SHA-256(chunk_ids ‖ request_ts_ms ‖ microservice_peer_id))` → else `0x03`.
@@ -1089,7 +1089,7 @@ UNIT_TESTS:
     TestVettingGCRejectsOver10kIDs
     TestVettingGCMultipleSequentialFrames
 
-# ── VERIFY (enable after ADR-032 accepted) — the security-critical checks ──
+# ── VERIFY (enable after ADR-036 accepted) — the security-critical checks ──
 AUTHZ_BEFORE_ANY_DELETE:
   $ awk '/NOT_AUTHORISED|0x03/{a=NR} /DeleteChunk/{d=NR} END{print (a>0 && a<d)?"PASS":"FAIL"}' cmd/provider/handler_vetting_gc.go
   EXPECT: PASS
@@ -1099,7 +1099,7 @@ GC_AUTH_SIG_VERIFIED:
 FRESHNESS_WINDOW_ENFORCED:
   $ grep -c "AuthRequestFreshnessWindow" cmd/provider/handler_vetting_gc.go
   EXPECT: >= 1
-UNIT_TESTS_ADR032:
+UNIT_TESTS_ADR036:
   $ go test -v -run 'TestVettingGCRejectsUnauthorizedPeer|TestVettingGCRejectsForgedSig|TestVettingGCRejectsStaleRequest' ./cmd/provider/
   EXPECT: exit 0
 ```
@@ -1253,7 +1253,7 @@ VET:
 7. Provider offline → all rows `PENDING_DELETION`, return `ErrProviderOffline`.
    Backoff: `profile.GCRetryBackoff` (prod `[5m,15m,60m]`, demo `[10s,30s,2m]` — never hardcoded).
 
-**⛔ SECURITY ADDENDUM — apply after ADR-032 accepted (A3):** when building `VettingGCRequest`, append `request_ts_ms`(8) and `gc_auth_sig`(64) = `Ed25519(microservice_signing_key, SHA-256(chunk_ids ‖ request_ts_ms ‖ microservice_peer_id))`. Handle new response codes `0x03 NOT_AUTHORISED` / `0x04 STALE_REQUEST` (log + alert; do not mark `DELETED`).
+**⛔ SECURITY ADDENDUM — apply after ADR-036 accepted (A3):** when building `VettingGCRequest`, append `request_ts_ms`(8) and `gc_auth_sig`(64) = `Ed25519(microservice_signing_key, SHA-256(chunk_ids ‖ request_ts_ms ‖ microservice_peer_id))`. Handle new response codes `0x03 NOT_AUTHORISED` / `0x04 STALE_REQUEST` (log + alert; do not mark `DELETED`).
 
 **FILES** — `internal/vettingchunk/gc.go`
 
@@ -1298,7 +1298,7 @@ UNIT_TESTS:
     TestDeliverGCOfflineSetsPendingDeletionReturnsErrProviderOffline
     TestDeliverGCBackoffFromProfile
 
-# ── VERIFY (enable after ADR-032 accepted) ──
+# ── VERIFY (enable after ADR-036 accepted) ──
 SIGNS_GC_REQUEST:
   $ grep -c "gc_auth_sig\|gcAuthSig\|ed25519.Sign" internal/vettingchunk/gc.go
   EXPECT: >= 1

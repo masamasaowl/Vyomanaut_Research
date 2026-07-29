@@ -2321,7 +2321,6 @@ coordination across the affected components before deployment**.
 - `/vyomanaut/vetting-gc/1.0.0` — initial version. The GC instruction frame format (VettingGCRequest / VettingGCResponse) must increment the version string if any of the following change: the `chunk_count` field encoding, the batch size limit, the failure bitmap format, or the response status byte semantics. The protocol must remain in the daemon binary indefinitely: an `ACTIVE provider` that received GC instructions years earlier may need to re-run GC after a crash (the `PENDING_DELETION` rows will retrigger delivery on reconnect). Removing the protocol handler from the daemon requires a coordinated network-wide migration.
 - **Protocol strings are mode-invariant.** All libp2p protocol IDs (`/vyomanaut/chunk-upload/1.0.0`, `/vyomanaut/audit-challenge/1.0.0`, etc.) are identical in demo and production. The wire format, frame sizes, and 0-RTT policies documented in §4 apply in both modes. A demo provider daemon can interoperate with a production microservice at the protocol layer (though the readiness gate will prevent uploads until production conditions are met). (ADR-031)
 
-
 ### Internal Go Package Interfaces
 
 - **Additive changes** (new exported functions, new optional parameters via a new overloaded
@@ -2330,7 +2329,6 @@ coordination across the affected components before deployment**.
 - **Sentinel error identity.** Exported `var Err... = errors.New(...)` values must never be renamed; callers use `errors.Is()` for matching. Adding a new sentinel is additive and safe.
 - **NetworkProfile fields.** A new `NetworkProfile` field is not a versioned interface change
 — it is a configuration change. However, adding a field requires simultaneous values in both `ProductionProfile` and `DemoProfile` in the same PR. The Go struct-literal syntax enforces this at compile time: an omitted field is a compile error, not a silent zero-value default. If a new field's zero value is a valid production setting (e.g. `false`), add a comment explaining why the zero value is intentional; otherwise the intent is ambiguous to future engineers. (ADR-031)
-
 
 ### PostgreSQL Schema
 
@@ -2367,9 +2365,3 @@ coordination across the affected components before deployment**.
 - Any change to the key derivation formula (`HMAC-SHA256(chunk_hash, file_owner_key)`) is a
   **network-breaking change** requiring a full re-indexing of all DHT records. This is a V3+
   concern; do not change the formula in V2.
-
-
-
-
-
-  
