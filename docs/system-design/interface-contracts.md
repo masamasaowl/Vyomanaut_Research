@@ -2365,3 +2365,46 @@ coordination across the affected components before deployment**.
 - Any change to the key derivation formula (`HMAC-SHA256(chunk_hash, file_owner_key)`) is a
   **network-breaking change** requiring a full re-indexing of all DHT records. This is a V3+
   concern; do not change the formula in V2.
+
+## 14. User-Facing Copy Contract
+
+This section is the single canonical mapping from `error_code` (§3.3) to end-user copy. `cmd/client` (data owner) and `cmd/provider` (provider daemon) both render from this table — not from `message` (§3.3, which is a developer/API-consumer diagnostic and "may change between releases") and not from `openapi.yaml`'s example `message` text (which is API-contract documentation, addressed to integrators, and sometimes carries raw identifiers or byte-length specifics unsuitable for an end user). This section is authoritative for tone and wording; §3.3 remains authoritative for the machine-readable envelope shape.
+
+**Severity legend:** `info` — no action needed, purely informational · `action-required` — the user must do something before proceeding · `transient-retry` — the client retries automatically; surfaced for awareness, not action · `escalate` — likely a client/system defect, not a user mistake; direct to support · `n/a` — never rendered by `cmd/client` or `cmd/provider` (operator/internal-only; see note on each such row).
+
+**Fallback rule.** Any `error_code` without a row below (including any added to §3.3 after this table was last updated) renders: *"Something went wrong (code: `{error_code}`). Try again, or contact support with this code."* — logged client-side as a warning so the gap is caught in testing rather than shipped silently. New codes added to `internal/api/errors.go` MUST add a row here in the same change; this is a required step of that change, not an optional follow-up (see also ADR-034).
+
+**Coverage note.** 8 of the 28 `ErrorCode` values currently declared in `internal/api/errors.go` are either explicitly internal-only or not yet triggered by any live code path (reserved ahead of the feature that will use them). Those rows are marked `n/a` / "reserved" below rather than given invented consumer copy — writing warm end-user prose for an error no user can currently encounter would misrepresent the product's current behavior.
+
+| `error_code` | Surface | Headline | Body | Suggested action | Severity |
+| --- | --- | --- | --- | --- | --- |
+| `INVALID_REQUEST` | Both | That didn't go through | Something in the request wasn't formatted correctly. | Update to the latest client version and try again; if it keeps happening, contact support with the request ID. Usually a client-side defect, not a user mistake. | `escalate` |
+| `PROVIDER_DEPARTED` | Provider | This provider has left the network | Your provider record is marked departed and can no longer serve requests. | If this is unexpected, re-register via `cmd/provider register` to rejoin. | `action-required` |
+| `ESCROW_FROZEN` | Provider | Your account is frozen | Your escrow balance is frozen pending a dispute or seizure review. | Contact support — this isn't something to retry. *(Reserved: not yet triggered by any live code path.)* | `escalate` |
+| `NETWORK_NOT_READY` | Data Owner | Uploads are paused network-wide | The network hasn't met its minimum readiness conditions yet. | Retrying automatically — no action needed. | `transient-retry` |
+| `INSUFFICIENT_ASN_DIVERSITY` | Data Owner | Upload paused | Not enough provider diversity right now. | Retry will happen automatically when the network recovers. *(FR-009 wording — do not rephrase.)* | `transient-retry` |
+| `RAZORPAY_UNAVAILABLE` | Data Owner | Payment service is temporarily down | We couldn't reach the payment provider just now. | Try again in a few minutes. | `transient-retry` |
+| `INTERNAL_ERROR` | Both | Something went wrong on our end | An unexpected error occurred. | Try again; if it persists, contact support with the request ID shown. | `escalate` |
+| `VETTING_CAP_EXCEEDED` | — | *n/a* | Internal assignment-service scheduling condition; the service retries automatically as existing vetting chunks are retired. | Never surfaced to a client request. | `n/a` |
+| `REAL_SHARD_ON_VETTING_PROVIDER` | — | *n/a* | Internal invariant violation. | Never surfaced to clients (already noted as such in §3.3). | `n/a` |
+| `DEMO_MODE_REAL_PAYMENT` | — | *n/a* | Startup guard: the process refuses to start. | Operator/deployment concern (surfaced in process logs), not rendered by `cmd/client` or `cmd/provider`. | `n/a` |
+| `PROD_MODE_ENV_SECRET` | — | *n/a* | Startup guard: the process refuses to start. | Operator/deployment concern, not rendered by either client app. | `n/a` |
+| `UNAUTHORIZED` | Both | You've been signed out | Your session token is missing, expired, or invalid. | Log in again. | `action-required` |
+| `INSUFFICIENT_ESCROW_BALANCE` | Data Owner | Add funds to continue | Your balance won't cover 30 days of storage for this file. | Top up your balance, then retry the upload. | `action-required` |
+| `INVALID_PHONE_NUMBER` | Both | Check that phone number | The number entered isn't in a recognized format. | Re-enter your number including the country code. | `action-required` |
+| `INVALID_AMOUNT` | Data Owner | Enter a valid amount | The amount needs to be a positive number. | Re-enter the amount and try again. | `action-required` |
+| `INVALID_CHALLENGE_NONCE` | — | *n/a (pending)* | Not currently triggered via the REST API. | If wired into a libp2p protocol response instead of the REST envelope, treat as a provider-daemon diagnostic, not end-user copy — revisit this row if that changes. | `n/a` |
+| `WRONG_ROLE` | Both | Wrong kind of account for this | This action needs a different account type than the one signed in. | Switch accounts, or check you're running the right command (`cmd/client` vs. `cmd/provider`). | `action-required` |
+| `INVALID_BODY_SIGNATURE` | Both | Couldn't verify that request | The cryptographic signature on this request didn't check out. | Usually a client bug or a corrupted local key. Try again; if it persists, check your keystore or contact support. | `escalate` |
+| `NOT_FOUND` | Both | Couldn't find that | The file or provider referenced doesn't exist, or you don't have access to it. | Double-check the ID and try again. | `action-required` |
+| `DUPLICATE_CHALLENGE_NONCE` | — | *n/a (pending)* | Not currently triggered via the REST API. | Same note as `INVALID_CHALLENGE_NONCE` above. | `n/a` |
+| `PHONE_ALREADY_REGISTERED` | Both | That number is already registered | An account already exists for this phone number. | Log in instead, or use account recovery if you've lost access. | `action-required` |
+| `OTP_RATE_LIMITED` | Both | Too many attempts | You've requested a verification code too many times. | Wait for the cooldown shown, then try again. | `transient-retry` |
+| `INVALID_OTP` | Both | That code didn't match | The verification code entered is wrong or has expired. | Request a new code and try again. | `action-required` |
+| `TOKEN_REFRESH_RATE_LIMITED` | Provider | Session refresh on cooldown | Your daemon tried to refresh its session token too soon. | Automatic — the daemon retries after the cooldown. No action needed. | `transient-retry` |
+| `DOWNTIME_ALREADY_ACTIVE` | Provider | Downtime window already open | You've already reported planned downtime that hasn't ended yet. | No action needed. If this is unexpected, check your daemon's status. | `info` |
+| `FILE_ALREADY_DELETED` | Data Owner | Already deleted | This file was already removed. | No action needed. | `info` |
+| `FILE_ALREADY_REGISTERED` | Data Owner | Already uploaded | A file with this ID has already been registered. | If this wasn't intentional, check your upload history before retrying. | `info` |
+| `INSUFFICIENT_PROVIDER_CAPACITY` | Data Owner | Not enough storage available right now | The network doesn't have enough free provider capacity for this upload size. | Try again later, or try a smaller file. *(Reserved: constant exists in Go; not yet wired to a live path or to `openapi.yaml`.)* | `transient-retry` |
+
+**Process rule.** This table, `internal/api/errors.go`, and `openapi.yaml` must reconcile on every change to any one of them — the same three-way discipline `errors.go`'s own header comment already applies to itself and OAS, extended here to include this section. See ADR-034 for the decision to centralize copy here rather than duplicating it inside `cmd/client`/`cmd/provider`, and for the incremental-coverage rationale behind the fallback rule above.
