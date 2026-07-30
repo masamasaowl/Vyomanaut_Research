@@ -4,7 +4,7 @@
 **Author:** Vyomanaut Engineering  
 **Date:** April 2026  
 **Version:** 1.0  
-**Repository:** https://github.com/masamasaowl/Vyomanaut_Research  
+**Repository:** <https://github.com/masamasaowl/Vyomanaut_Research>  
 **Architecture reference:** `docs/system-design/architecture.md`  
 **Decisions index:** `docs/decisions/README.md`
 
@@ -59,18 +59,20 @@
    - [9.2 Feature Flags](#92-feature-flags)
    - [9.3 Risk Factors and Mitigations](#93-risk-factors-and-mitigations)
    - [9.4 Rollback Plan](#94-rollback-plan)
-10. [Research Questions](#10-research-questions) 
-   - [10.1 Product Open Questions](#101-product-open-questions)
-   - [10.2 Engineering Open Questions - Telemetry](#102-engineering-open-questions--telemetry)
-   - [10.3 V3 Deferred Questions](#103-v3-deferred-questions)
-11. [Appendix](#11-appendix)
-   - [11.1 Research Basis](#111-research-basis)
-   - [11.2 Rejected Requirements](#112-rejected-requirements)
-   - [11.3 Answered Questions](#113-answered-questions)
+10. [Research Questions](#10-research-questions)
+
+- [10.1 Product Open Questions](#101-product-open-questions)
+- [10.2 Engineering Open Questions - Telemetry](#102-engineering-open-questions--telemetry)
+- [10.3 V3 Deferred Questions](#103-v3-deferred-questions)
+ 1. [Appendix](#11-appendix)
+
+- [11.1 Research Basis](#111-research-basis)
+- [11.2 Rejected Requirements](#112-rejected-requirements)
+- [11.3 Answered Questions](#113-answered-questions)
 
 ---
 
- ## 1. Overview
+## 1. Overview
 
 This document formalises what Vyomanaut V2 must do and how well it must do it, in a form
 that product, engineering, and operations teams can align on before a single line of
@@ -150,7 +152,7 @@ first quarter post-launch). Every P0 requirement is a launch blocker.
 ### 4.1 Data Owner — Registration and Onboarding
 
 | ID | Requirement | Priority | ADR / Notes |
-|----|-------------|----------|-------------|
+| ---- | ------------- | ---------- | ------------- |
 | FR-001 | The system must allow a data owner to create an account using a phone number verified by OTP, with no other personal information required. | P0 | Registration gate is the Sybil defence |
 | FR-002 | At account creation, the system must derive a 32-byte master secret from the owner's passphrase using Argon2id (t=3, m=65536 KiB (64 MB), p=4) and must never write the master secret to disk or transmit it to the microservice. | P0 | ADR-020 |
 | FR-003 | At account creation, the system must generate a BIP-39 24-word mnemonic from the master secret and display it exactly once, requiring the owner to confirm two randomly chosen words before proceeding. | P0 | ADR-020 — only recovery path on passphrase loss |
@@ -161,7 +163,7 @@ first quarter post-launch). Every P0 requirement is a launch blocker.
 ### 4.2 Data Owner — File Upload
 
 | ID | Requirement | Priority | ADR / Notes |
-|----|-------------|----------|-------------|
+| ---- | ------------- | ---------- | ------------- |
 | FR-007 | The client must perform all encryption and erasure encoding on the data owner's device before any data is transmitted to any provider. | P0 | ADR-019, ADR-022 |
 | FR-008 | The encoding pipeline must use AONT-RS. (Refer: [architecture.md Section 10](./architecture.md#10-data-encoding-pipeline)) | P0 | ADR-022, ADR-019, ADR-003 |
 | FR-009 | The system must select 56 distinct providers for each file segment, ensuring no single ASN holds more than 20% of fragments (~11 of 56) for that segment. If the constraint is unsatisfied, the microservice must return HTTP 503 with error code INSUFFICIENT_ASN_DIVERSITY and a human-readable explanation. The client must surface this as: "Upload paused — not enough provider diversity. Retry will happen automatically when the network recovers." | P0 | ADR-014, ADR-005 |
@@ -174,7 +176,7 @@ first quarter post-launch). Every P0 requirement is a launch blocker.
 ### 4.3 Data Owner — File Retrieval
 
 | ID | Requirement | Priority | ADR / Notes |
-|----|-------------|----------|-------------|
+| ---- | ------------- | ---------- | ------------- |
 | FR-015 | The client must retrieve the encrypted pointer file from the microservice, decrypt it locally using the HKDF-derived key, and use the provider list and chunk IDs inside to initiate retrieval — without the microservice being involved in the data transfer. | P0 | ADR-020, zero-knowledge |
 | FR-016 | The client must attempt retrieval from the 16 fastest-responding providers (not necessarily the first 16 in the pointer file), cancelling remaining connections once k=16 responses are received. "Fastest-responding" is measured by initiating parallel libp2p dials to all 56 providers simultaneously. The first 16 to complete the connection handshake are used. This is the standard parallel-fetch-with-cancel pattern. No pre-probe is required. | P1 | Reduces P99 retrieval latency |
 | FR-017 | The client must verify each retrieved fragment against its SHA-256 content address before decoding. Any fragment that fails must be replaced by requesting from an alternate provider. | P0 | Integrity check; ADR-022 canary verification |
@@ -183,7 +185,7 @@ first quarter post-launch). Every P0 requirement is a launch blocker.
 ### 4.4 Data Owner — File Management
 
 | ID | Requirement | Priority | ADR / Notes |
-|----|-------------|----------|-------------|
+| ---- | ------------- | ---------- | ------------- |
 | FR-019 | The system must provide a file list view showing each file's name, size, upload date, current storage cost per month, and retrieval status (all fragments available / degraded / unavailable). | P1 | DO-04 |
 | FR-020 | The system must allow a data owner to delete a file, which must trigger removal of all 56 chunk assignments from the microservice and notify each holding provider to delete their fragment. If a provider is unreachable at deletion time, the microservice must flag the chunk assignment as `pending_deletion` and retry the deletion notification at each subsequent heartbeat cycle. The provider daemon must check for `pending_deletion` assignments on startup and act on them before accepting new audit challenges. The provider daemon must run the vLog GC procedure for the affected chunk_id, as specified in ADR-023 §Garbage collection. | P1 | ADR-007; GC on vLog |
 | FR-021 | The system must provide an escrow balance view showing: current balance, amount reserved for active files (next 30 days), amount available for withdrawal, and transaction history. | P1 | DO-04, ADR-016 |
@@ -191,7 +193,7 @@ first quarter post-launch). Every P0 requirement is a launch blocker.
 ### 4.5 Provider — Installation and Registration
 
 | ID | Requirement | Priority | ADR / Notes |
-|----|-------------|----------|-------------|
+| ---- | ------------- | ---------- | ------------- |
 | FR-022 | The provider daemon must be installable on Windows 10+, macOS 12+, and Ubuntu 22.04+ via a signed single-file installer with no manual dependency installation. | P0 | ADR-009; desktop-only V2 |
 | FR-023 | At first launch, the daemon must generate an Ed25519 key pair, persist it encrypted under a daemon-local passphrase, and display the public key fingerprint to the provider for their records. | P0 | ADR-021; peer identity |
 | FR-024 | The daemon must register with the microservice by submitting the provider's phone number (OTP-verified), Ed25519 public key, declared storage allocation in GB, and declared city/region. | P0 | ADR-001, ADR-005 |
@@ -209,7 +211,7 @@ first quarter post-launch). Every P0 requirement is a launch blocker.
 ### 4.6 Provider — Operation
 
 | ID | Requirement | Priority | ADR / Notes |
-|----|-------------|----------|-------------|
+| ---- | ------------- | ---------- | ------------- |
 | FR-027 | The daemon must send a signed heartbeat to the microservice control plane every 4 hours containing the provider's current libp2p multiaddresses, so that the microservice always has a fresh address for challenge dispatch. | P0 | ADR-028; DHCP rotation problem |
 | FR-028 | The daemon must respond to audit challenges by reading the specified chunk from the vLog, verifying its SHA-256 content hash, computing SHA-256(chunk_data ‖ challenge_nonce), and returning a signed receipt — all within the per-provider deadline of (256 KB / p95_throughput_kbps) × 1.5. | P0 | ADR-002, ADR-014 |
 | FR-029 | The daemon must expose a local status interface (CLI or tray icon) showing: daemon health, number of stored chunks, last audit result, current reliability score, and pending earnings. | P1 | PR-02 |
@@ -219,7 +221,7 @@ first quarter post-launch). Every P0 requirement is a launch blocker.
 ### 4.7 Provider — Exit and Departure
 
 | ID | Requirement | Priority | ADR / Notes |
-|----|-------------|----------|-------------|
+| ---- | ------------- | ---------- | ------------- |
 | FR-032 | The system must allow a provider to announce a planned offline period (0–72 hours) through the app. During a promised offline period, audit FAILs must not decrement the reliability score, and no escrow penalty must be applied unless the period is overrun. | P0 | ADR-007 |
 | FR-033 | If a provider overruns a promised offline period, the system must reclassify the state to Permanent Silent Departure and apply the 72-hour departure consequences. | P0 | ADR-007 |
 | FR-034 | The system must allow a provider to announce a permanent departure. On announcement, the system must immediately queue repair for all affected chunks, release the provider's pending escrow proportional to the fraction of the current 30-day window completed, and set `providers.status = DEPARTED`. | P0 | ADR-007, ADR-024 |
@@ -229,17 +231,17 @@ first quarter post-launch). Every P0 requirement is a launch blocker.
 ### 4.8 Audit System
 
 | ID | Requirement | Priority | ADR / Notes |
-|----|-------------|----------|-------------|
+| ---- | ------------- | ---------- | ------------- |
 | FR-037 | The microservice must issue exactly one audit challenge per assigned chunk per 24-hour period, with challenge timing randomised within the window to prevent providers from anticipating it. An exception is when the accelerated re-audit protocol of FR-041 is active for that provider, in which case the challenge cadence is controlled by the repair scheduler. | P0 | ADR-002, ADR-014 |
 | FR-038 | Every challenge nonce must be 33 bytes: a 1-byte version prefix identifying the server_secret version, followed by HMAC-SHA256(server_secret_vN, chunk_id + server_ts) where server_ts is set by the microservice at challenge time. The version byte enables any replica to validate any nonce across failover. Providers must not be able to compute nonces in advance. | P0 | ADR-017, ADR-027 |
-| FR-039 | Every audit event must produce an INSERT-only row in `audit_receipts` containing the 14 schema fields defined in ADR-017 (BYTEA(33)) and subsequent amendments in ADR-014 jit_flag and ADR-015's abandoned_at and a UNIQUE index on challenge_nonce, signed by both provider (Ed25519) and microservice (Ed25519). No row in this table may ever be updated or deleted except the audit_result column which allows UPDATE from NULL (PENDING) to PASS/FAIL as part of the idempotent retry protocol. | P0 | ADR-015, ADR-017 |
+| FR-039 | Every audit event must produce an INSERT-only row in `audit_receipts` containing the 14 schema fields defined in ADR-017 (BYTEA(33)) and subsequent amendments in ADR-014 jit_flag and ADR-015's abandoned_at, a per-partition UNIQUE index on `(challenge_nonce, server_challenge_ts)`, and a global replay-protection guard on `challenge_nonce` alone via the `audit_receipt_nonces` table (ADR-033) — signed by both provider (Ed25519) and microservice (Ed25519). No row in this table may ever be updated or deleted except: the `response_hash`, `provider_sig`, `response_latency_ms`, and `jit_flag` columns, which may be set once — while `audit_result` is still NULL — when a provider's validated response is recorded; the `audit_result` column (together with `service_sig` and `service_countersign_ts`), which allows UPDATE from NULL (PENDING) to PASS, FAIL, or TIMEOUT as part of the idempotent retry protocol; and `abandoned_at`, which the GC process may set once, from NULL to a timestamp, for rows that never receive a terminal result. | P0 | ADR-015, ADR-017, ADR-033 |
 | FR-040 | The microservice must use a per-provider TCP-style RTO (RTO = AVG + 4 × VAR of recent audit response times) as the challenge timeout, not a fixed value. New providers must default to the pool-median RTO. | P0 | ADR-006, Paper 28 |
 | FR-041 | If a provider's content_hash verification fails when reading a chunk for an audit response, the provider daemon must immediately report `audit_result = FAIL` with a corruption error code, and the microservice must queue accelerated re-audit of all chunks on that provider within the next polling cycle. | P0 | ADR-023, Paper 32 |
 
 ### 4.9 Repair System
 
 | ID | Requirement | Priority | ADR / Notes |
-|----|-------------|----------|-------------|
+| ---- | ------------- | ---------- | ------------- |
 | FR-042 | The repair scheduler must trigger a repair job when the available fragment count for any chunk drops to s + r0 = 24 (8 above the reconstruction floor of s=16). | P0 | ADR-004 |
 | FR-043 | The repair scheduler must prioritise repair jobs triggered by confirmed permanent departures (72-hour threshold) over jobs triggered by the r0 pre-warning threshold. Transient-absence jobs must wait behind permanent-departure jobs and must be promoted to permanent-departure priority if they have been queued for more than 6 hours without service | P0 | ADR-004, Paper 39 |
 | FR-044 | Repair must be triggered immediately (regardless of the 72-hour threshold) if the fragment count for any chunk drops to s=16 (the reconstruction floor). | P0 | ADR-004 emergency floor |
@@ -249,7 +251,7 @@ first quarter post-launch). Every P0 requirement is a launch blocker.
 ### 4.10 Payment System
 
 | ID | Requirement | Priority | ADR / Notes |
-|----|-------------|----------|-------------|
+| ---- | ------------- | ---------- | ------------- |
 | FR-046 | All payment amounts must be computed and stored as integer paise (₹1 = 100 paise). Floating-point arithmetic must not appear anywhere in the payment calculation or storage path. | P0 | ADR-016 |
 | FR-047 | Every payout API call to Razorpay must include the `X-Payout-Idempotency` header set to SHA-256(provider_id + audit_period). Duplicate payout calls with the same key must return the existing payout state without creating a second transfer. | P0 | ADR-012, Paper 35 |
 | FR-048 | Monthly earnings release must run on the 23rd of each month. Razorpay's `on_hold_until` must be set to the last working day of the current month (accounting for RBI bank holidays via a static lookup table updated each December), targeting release within the first 3 business days of the following month. | P0 | ADR-024, Paper 35 |
@@ -281,7 +283,7 @@ first quarter post-launch). Every P0 requirement is a launch blocker.
 ### 4.14 Data Owner — Escrow Management and Upload Resume
 
 | ID | Requirement | Priority | ADR / Notes |
-|----|-------------|----------|-------------|
+| ---- | ------------- | ---------- | ------------- |
 | FR-058 | The system must provide an authenticated endpoint (`GET /api/v1/provider/receipts`) allowing a provider to retrieve all audit receipts where they are the responding provider, filterable by `chunk_id` and date range. This endpoint is the provider's primary dispute evidence path and must be available even after a provider's status is set to DEPARTED. | P1 | SY-02; ADR-015, ADR-017 |
 | FR-059 | The system must allow a data owner to withdraw their available escrow balance — defined as the total balance minus the amount reserved to cover active file storage for the next 30 days — to their UPI-linked bank account. Withdrawal must use the Razorpay payout path with its own idempotency key (SHA-256(owner_id + withdrawal_request_id)) and must be blocked while any file upload is in-flight. | P1 | DO-04; ADR-011, ADR-016 |
 | FR-060 | If the data owner client crashes or loses connectivity after some but not all 56 shard uploads have completed for a given segment, the client must be able to resume the upload on next launch without re-transmitting already-acknowledged shards. Upload session state (segment ID, list of provider IDs with acknowledgement status, and pointer file draft) must be persisted locally keyed by a session ID generated at upload start, and must be cleaned up only after the pointer file has been successfully stored with the microservice. | P0 | DO-01; crash safety |
@@ -293,7 +295,7 @@ first quarter post-launch). Every P0 requirement is a launch blocker.
 ### 5.1 Durability
 
 | ID | Requirement | Type | Target | ADR |
-|----|-------------|------|--------|-----|
+| ---- | ------------- | ------ | -------- | ----- |
 | NFR-001 | The system must sustain an annual file loss rate of less than 10⁻¹⁵ per stored file at the target provider MTTF of 300 days. | Durability | < 10⁻¹⁵/year | ADR-003 |
 | NFR-002 | The 20% ASN cap (FR-009) is a co-requisite for NFR-001. Disabling the cap invalidates the durability guarantee regardless of erasure parameters. | Durability | Non-negotiable | ADR-003, ADR-014 |
 | NFR-003 | The system must tolerate the simultaneous departure of any 40 of 56 fragment holders for any file without data loss or reconstruction failure. | Durability | 40-fault tolerance | ADR-003 |
@@ -303,7 +305,7 @@ first quarter post-launch). Every P0 requirement is a launch blocker.
 ### 5.2 Availability
 
 | ID | Requirement | Type | Target | ADR |
-|----|-------------|------|--------|-----|
+| ---- | ------------- | ------ | -------- | ----- |
 | NFR-004 | A file must be retrievable as long as any 16 of its 56 fragment holders are reachable. The client must retry across alternate providers without user intervention. | Availability | k=16 of n=56 | ADR-003, FR-016 |
 | NFR-005 | The coordination microservice must absorb the failure of any single replica without interrupting audit scheduling, challenge dispatch, or payment processing. | Availability | Single-replica fault tolerance | ADR-025 |
 | NFR-006 | A provider behind symmetric NAT must remain fully auditable via Circuit Relay v2, with relay one-way RTT below 50 ms from Indian cloud-hosted relay nodes. Total round-trip overhead (two relay legs) is therefore bounded at 100 ms — within the 614 ms audit deadline at standard throughput. | Availability | Relay RTT < 50 ms | ADR-021, Paper 30 |
@@ -311,7 +313,7 @@ first quarter post-launch). Every P0 requirement is a launch blocker.
 ### 5.3 Performance
 
 | ID | Requirement | Type | Target | ADR |
-|----|-------------|------|--------|-----|
+| ---- | ------------- | ------ | -------- | ----- |
 | NFR-007 | Each provider must respond to an audit challenge within (256 KB / p95_measured_upload_throughput_kbps) × 1.5. For a provider with p95 throughput of 500 KB/s this is 768 ms. | Performance | Per-provider deadline | ADR-014 |
 | NFR-008 | The audit challenge lookup path on the provider daemon (Bloom filter check + RocksDB lookup + vLog read + hash verification) must complete within 100 ms at p99 on SSD hardware and 200 ms at p99 on HDD hardware, under concurrent upload load. | Performance | p99 ≤ 100 ms SSD / 200 ms HDD | ADR-023 |
 | NFR-009 | The AONT encoding pass for a full 14 MB segment must complete within 200 ms at p50 and a p99 target will be set after the Q16-1 benchmark protocol on hardware without AES-NI (minimum-spec Indian desktop: dual-core, no AES-NI, 2 GB RAM, 7200 RPM HDD). | Performance | p50 ≤ 200 ms | ADR-019, benchmarking-protocol.md |
@@ -320,12 +322,12 @@ first quarter post-launch). Every P0 requirement is a launch blocker.
 | NFR-012 | Steady-state repair bandwidth per provider must not exceed 100 Kbps at the target MTTF of 300 days and a network of 1,000 providers each storing 50 GB. At these parameters, BWavg ≈ 39 Kbps/peer per the Giroire formula. | Performance | ≤ 100 Kbps/provider | ADR-003, ADR-004 |
 | NFR-013 | Write amplification in the provider storage engine must not exceed 1.1× at 256 KB chunk size, meaning a provider storing 50 GB of chunks must write no more than 55 GB to their storage device in total. | Performance | Write amplification ≤ 1.1× | ADR-023 |
 | NFR-035 | The total repair bandwidth attributable to vetting provider departures must be zero. At any N, a vetting provider departure must not increment the repair queue depth or consume BWavg budget. | Performance | 0 Kbps repair per vetting departure. | ADR-030 |
-| NFR-037 | In `VYOMANAUT_MODE=demo`, the Argon2id master secret derivation uses t=1, m=4096 KiB, p=1. The session-start latency target is p50 ≤ 50 ms on any modern laptop. The reduced parameters weaken offline brute-force resistance; this is an accepted trade-off for demo sessions where no real data is stored. | Performance | p50 ≤ 50 ms in demo | ADR-031 
+| NFR-037 | In `VYOMANAUT_MODE=demo`, the Argon2id master secret derivation uses t=1, m=4096 KiB, p=1. The session-start latency target is p50 ≤ 50 ms on any modern laptop. The reduced parameters weaken offline brute-force resistance; this is an accepted trade-off for demo sessions where no real data is stored. | Performance | p50 ≤ 50 ms in demo | ADR-031
 
 ### 5.4 Security and Privacy
 
 | ID | Requirement | Type | Target | ADR |
-|----|-------------|------|--------|-----|
+| ---- | ------------- | ------ | -------- | ----- |
 | NFR-014 | The service must never hold, derive, or transmit any key that could decrypt any stored file. The microservice stores pointer file ciphertext but must never hold the decryption key. | Security | Zero-knowledge | ADR-019, ADR-020 |
 | NFR-015 | All audit challenge responses must be unforgeable without the actual chunk data. (1) The response hash (proving possession) is SHA-256(chunk_data ‖ challenge_nonce). (2) Receipt replay prevention uses SHA-256(chunk_id ‖ challenge_nonce ‖ response_hash ‖ timestamp) as specified in ADR-015. Both must be verified by the microservice before countersigning. | Security | Computational unforgability | ADR-002 |
 | NFR-016 | All provider-to-provider and provider-to-client connections must be authenticated at the transport layer (TLS 1.3 via QUIC, or Noise XX via TCP). A provider cannot impersonate another provider's Peer ID. | Security | Transport authentication | ADR-021 |
@@ -337,7 +339,7 @@ first quarter post-launch). Every P0 requirement is a launch blocker.
 ### 5.5 Reliability and Correctness
 
 | ID | Requirement | Type | Target | ADR |
-|----|-------------|------|--------|-----|
+| ---- | ------------- | ------ | -------- | ----- |
 | NFR-021 | The audit receipt table must be append-only for all completed rows. The sole permitted exception is a single UPDATE from audit_result = NULL (PENDING state) to a terminal state (PASS, FAIL, TIMEOUT), as required by the idempotent retry protocol in ADR-015. All other UPDATE and DELETE operations must be prohibited via Postgres row security policy. | Correctness | Tamper-evident log | ADR-015 |
 | NFR-022 | The escrow_events table must be INSERT-only. Account balance must always be computed from the event log (SUM of deposits minus releases and seizures) and must never be stored as a mutable column. | Correctness | CRDT-safe ledger | ADR-016 |
 | NFR-023 | The vLog write path on the provider daemon must serialise all appends through a single writer goroutine. Concurrent upload goroutines must not write to the vLog file handle directly. | Correctness | Data integrity | ADR-023 |
@@ -350,7 +352,7 @@ first quarter post-launch). Every P0 requirement is a launch blocker.
 ### 5.6 Observability and Operability
 
 | ID | Requirement | Type | Target | ADR |
-|----|-------------|------|--------|-----|
+| ---- | ------------- | ------ | -------- | ----- |
 | NFR-025 | The microservice must expose the following metrics (at minimum) to a Prometheus-compatible scrape endpoint: audit challenges issued, audit results by outcome (PASS/FAIL/TIMEOUT), repair queue depth, repair jobs completed, escrow events by type, microservice replica count by health state, and foreground DB read p99 latency. | Observability | Prometheus | ADR-025 |
 | NFR-026 | The provider daemon must expose the following metrics to the local status interface: stored chunk count, audit response p99 latency, content hash failure count, heartbeat success rate, and pending earnings in paise. | Observability | Local daemon | ADR-009 |
 | NFR-027 | The system must fire an alert if any of the following thresholds are crossed: repair queue depth > 1,000 jobs, audit TIMEOUT rate > 5% of challenges in a 1-hour window, content hash failure count > 0 on any provider in a rolling 7-day window, microservice healthy replica count < 3. | Operability | Alert thresholds | architecture.md §24 |
@@ -366,7 +368,7 @@ first quarter post-launch). Every P0 requirement is a launch blocker.
 ### 5.7 Compliance and Payments
 
 | ID | Requirement | Type | Target | ADR |
-|----|-------------|------|--------|-----|
+| ---- | ------------- | ------ | -------- | ----- |
 | NFR-029 | All UPI deposit flows must use UPI Intent (app-based selection) or QR code. UPI Collect flow must not be used. (UPI Collect is deprecated by NPCI as of 28 February 2026.) | Compliance | NPCI mandate | ADR-011, Paper 35 |
 | NFR-030 | Every Razorpay payout API call must include the `X-Payout-Idempotency` header (mandatory as of 15 March 2025). Payout calls without this header are rejected by Razorpay. | Compliance | Razorpay API | ADR-012, Paper 35 |
 | NFR-031 | The RBI bank holiday lookup table used to compute `on_hold_until` dates must be updated as part of the December release deployment each year. | Compliance | RBI | ADR-024 |
@@ -486,7 +488,7 @@ can surface this state to any operator monitoring tool.
 ### 7.2 Key External Dependencies
 
 | Dependency | Failure mode | Impact |
-|------------|-------------|--------|
+| ------------ | ------------- | -------- |
 | Razorpay Route API | Payment releases pause | Audits and storage continue; providers experience delayed payments |
 | Secrets manager (Vault / SSM) | Replicas cannot start | Challenge issuance halts on startup; existing instances run with cached secret for 5 minutes |
 | Indian ISP infrastructure | Connectivity degradation | Covered by 40-fragment parity and relay infrastructure |
@@ -598,7 +600,7 @@ print(f'median={times[5]*1000:.0f}ms  min={times[0]*1000:.0f}ms  max={times[-1]*
 **Pass criteria and fallback ladder:**
 
 | Result | Action |
-|---|---|
+| --- | --- |
 | median ≤ 500 ms | **PASS** — use t=3, m=64 MB, p=4 |
 | 500 ms–1000 ms | Acceptable with spinner UI; no parameter change |
 | > 1000 ms, step 1 | Try t=2, m=64 MB, p=4 |
@@ -664,7 +666,7 @@ for MTTF validation. (Q08-1)
 ### 8.3 Key Events
 
 | Event | Trigger | Purpose |
-|-------|---------|---------|
+| ------- | --------- | --------- |
 | `data_owner_registered` | OTP verified, account created | Funnel top |
 | `mnemonic_confirmed` | Owner correctly enters 2 of 24 words | Safety gate completion rate |
 | `escrow_deposit_initiated` | UPI Intent flow started | Payment funnel |
@@ -703,7 +705,7 @@ for MTTF validation. (Q08-1)
 These target quarters are planning references, not commitments.
 
 | Phase | Condition to exit | Upload gate | Target Quarter |
-|-------|-----------------|-------------|---------------|
+| ------- | ----------------- | ------------- | --------------- |
 | **Internal** | All P0 FRs and NFR benchmarks pass | Disabled (internal team only) | Q3 2026 |
 | **Private beta** | Network readiness gate satisfied (FR-053); relay nodes deployed | Enabled for 20 invited data owners and 100 providers | Q4 2026 |
 | **Public beta** | Provider 30-day survival rate ≥ 50%; no data loss events; audit TIMEOUT rate < 5% | Open registration, escrow deposits enabled | Q1 2027 |
@@ -712,7 +714,7 @@ These target quarters are planning references, not commitments.
 ### 9.2 Feature Flags
 
 | Flag | Default (internal) | Default (beta) | Purpose |
-|------|--------------------|---------------|---------|
+| ------ | -------------------- | --------------- | --------- |
 | `upload_gate_enabled` | false | true | Enforces FR-053 readiness conditions |
 | `payment_releases_enabled` | false | true | Enables actual Razorpay payouts |
 | `sim_mode_allowed` | true | false | Allows `--sim-count` flag on daemon |
@@ -721,7 +723,7 @@ These target quarters are planning references, not commitments.
 ### 9.3 Risk Factors and Mitigations
 
 | Risk | Likelihood | Impact | Mitigation |
-|------|-----------|--------|-----------|
+| ------ | ----------- | -------- | ----------- |
 | Indian ISP CGNAT blocks QUIC for > 30% of providers | Medium | High | Confirmed TCP fallback path; identical hole-punch success rate (Paper 30) |
 | Razorpay Route API changes break `on_hold_until` semantics | Low | High | Abstract behind PaymentProvider interface (ADR-011); monitor API changelog |
 | Razorpay Linked Account cooling period delays launch | High | Medium | Pre-register provider accounts at least 48 hours before the target launch date. Track cooling completion per provider in providers.razorpay_cooling_complete_at. |
@@ -872,7 +874,7 @@ from a specific formula, measurement, or proof in the research log:
 The following were considered and deliberately excluded:
 
 | Rejected requirement | Reason |
-|---------------------|--------|
+| --------------------- | -------- |
 | File deduplication across data owners | Violates zero-knowledge: deduplication requires comparing ciphertexts or plaintexts; both create privacy risks |
 | Per-retrieval payment to providers | Swarm SWAP failed structurally (Paper 07). Ties payment to transfer layer, creates liability during microservice outages (ADR-012) |
 | Convergent encryption | Explicitly rejected (Paper 16, ADR-022). Each AONT key K is fresh random per segment |
@@ -891,7 +893,7 @@ superseding ADR. The full resolution record is in `docs/research/answered-questi
 #### Coordination and DHT
 
 | Question | Answer | ADR |
-|---|---|---|
+| --- | --- | --- |
 | How to avoid the tracker as a single point of failure? | Kademlia DHT replaces the tracker for all peer and chunk discovery. | ADR-001 |
 | How to pseudonymise chunk IDs in the DHT without breaking FIND_VALUE? | DHT lookup key = `HMAC-SHA256(chunk_hash, file_owner_key)` where `file_owner_key = HKDF(master_secret, "vyomanaut-dht-v1", file_id)`. The DHT never sees chunk_hash or file_id. | ADR-001 |
 | How to set DHT branching factor and concurrency? | k-bucket size k=16, α=3 parallel lookups. O(log n / 3) round trips. | ADR-001, ADR-021 |
@@ -901,7 +903,7 @@ superseding ADR. The full resolution record is in `docs/research/answered-questi
 #### Erasure Coding and Repair
 
 | Question | Answer | ADR |
-|---|---|---|
+| --- | --- | --- |
 | What is Qpeek at N=1,000, 50 GB/provider? | ~793 GB per failure event. At 100 Kbps/peer aggregate, repair completes in ~8 hours — within the 12-hour safety window. | ADR-003, ADR-004 |
 | What is BWavg at target parameters? | ~39 Kbps/peer at MTTF=300 days, N=1,000, 50 GB/peer (Giroire Formula 1). | ADR-003 |
 | At what correlated failure rate does RS(16,56) become worse than a simpler scheme? | Never, under the 20% ASN cap. The reversal condition (Paper 38) requires correlated failure size to approach r=40. The ASN cap bounds maximum correlated failure at ~11 shards, leaving 44 survivors — 28 above the reconstruction floor. | ADR-003, ADR-014 |
@@ -911,7 +913,7 @@ superseding ADR. The full resolution record is in `docs/research/answered-questi
 #### NAT Traversal and Transport
 
 | Question | Answer | ADR |
-|---|---|---|
+| --- | --- | --- |
 | Does Circuit Relay v2 violate the audit response deadline? | No. Relay RTT < 50 ms from Indian cloud regions. Two relay legs = < 100 ms overhead, within the 614 ms deadline at 5 Mbps. | ADR-021 |
 | What is the latency cost of forcing 1-RTT for audit reconnects? | 5–90 ms depending on NAT type (5 ms same-city, ~40 ms cross-city, +50 ms for relay-dependent). Worst case 90 ms, well within the 614 ms deadline. 0-RTT remains disabled for audit interactions. | ADR-021 |
 | How many relay nodes are required at launch? | 3 nodes (Mumbai AZ1, Mumbai AZ2, Chennai/Hyderabad), 128 concurrent reservations each = 384 slots. 4.3× headroom at 300 initial providers. Scale to 4th node when provider count exceeds 570 (45% CGNAT assumption) or 850 (30% baseline). | ADR-021 |
@@ -922,7 +924,7 @@ superseding ADR. The full resolution record is in `docs/research/answered-questi
 #### Encryption and Key Management
 
 | Question | Answer | ADR |
-|---|---|---|
+| --- | --- | --- |
 | Does code-then-encrypt with per-chunk keys improve on AONT-RS? | No. AONT-RS achieves 2^256 computational security with zero external key management. Code-then-encrypt with 56 keys per file offers no meaningful security improvement. | ADR-022 |
 | Should the Ed25519 signing key be derived from master_secret or stored separately? | Store separately, encrypted under a key derived from master_secret (HKDF `"vyomanaut-keystore-v1"`). A compromised signing key can then be rotated without rotating master_secret or re-encrypting any data. | ADR-020 |
 | What fraction of Indian desktop providers lack AES-NI? | Planning estimate: 10–15% lack AES-NI (Celeron N-series, Atom). Both cipher paths must be production-quality. CPUID detection at daemon startup is non-negotiable. | ADR-019 |
@@ -930,14 +932,14 @@ superseding ADR. The full resolution record is in `docs/research/answered-questi
 #### Erasure Code Selection
 
 | Question | Answer | ADR |
-|---|---|---|
+| --- | --- | --- |
 | Are Clay / MSR codes feasible at (n=56, k=16)? | No. Sub-packetisation α = 40^16 ≈ 10^25 — computationally intractable (Paper 22). MSR and Clay codes are rejected. Hitchhiker (α=2) is the only viable V3 candidate if BWavg telemetry gate triggers. | ADR-026 |
 | Are LRC codes viable? | No. Non-MDS; local group co-locality cannot be guaranteed in a consumer P2P network; repair benefit collapses to RS-level under Indian ISP conditions. | ADR-026 |
 
 #### Storage Engine
 
 | Question | Answer | ADR |
-|---|---|---|
+| --- | --- | --- |
 | Fixed or variable vLog entry size? | Fixed (262,212 bytes = 256 KB chunk + headers). GC tail advancement requires only arithmetic, no parsing. | ADR-023 |
 | Is proactive continuous disk scrubbing justified? | No. The base UE rate is 2–6 per 1,000 drive days (Schroeder et al.). Scrubbing is reactive: triggered by the first audit FAIL. | ADR-023 |
 | Does the chunk index fall in the hot, warm, or cold data regime? | Moot at 256 KB values. WiscKey eliminates value movement from compaction — write amplification ≈ 1.0 regardless of access regime. | ADR-023 |
@@ -945,7 +947,7 @@ superseding ADR. The full resolution record is in `docs/research/answered-questi
 #### Economic Mechanism and Payment
 
 | Question | Answer | ADR |
-|---|---|---|
+| --- | --- | --- |
 | How should Razorpay `on_hold_until` be set to target first-3-business-days release? | Embed a static `rbi_bank_holidays_YYYY` table (updated each December). Monthly release job runs on the 23rd: set `on_hold_until` to the last working day of the current month. Route releases on the next business day, landing within the first 1–3 days of the following month. | ADR-024 |
 | How should the service-denial attack be monitored? | Three layers: (1) structural — RS(16,56) requires > 40 simultaneous refusals; ASN cap limits any group to ~11. (2) scoring signal — 3 independent data owner retrieval failure reports from the same provider within 72h rolling window → 0.3× audit FAIL weight for 24h window. (3) V3 upgrade — repair-event interactions provide microservice-visible retrieval evidence. | ADR-014, ADR-008 |
 
