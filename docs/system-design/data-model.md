@@ -742,17 +742,6 @@ proof event — PASS, FAIL, TIMEOUT, or in-flight PENDING — creates exactly on
 INSERT here. No row is ever updated except during the two-phase PENDING → final
 write (ADR-015). No row is ever deleted (Invariant 1, ADR-015, NFR-021).
 
-> **Updated by [ADR-033](../decisions/ADR-033-audit-receipts-partitioning.md).**
-> `audit_receipts` is now `PARTITION BY RANGE (server_challenge_ts)` (monthly). Two
-> consequences change the DDL shown below: (1) the primary key is the composite
-> `(receipt_id, server_challenge_ts)` and the nonce unique constraint is the local
-> composite `(challenge_nonce, server_challenge_ts)` — Postgres requires the
-> partition key in every unique constraint; (2) **global** nonce uniqueness (the
-> real replay guard, Invariant 5) moves to a dedicated non-partitioned
-> `audit_receipt_nonces` table, into which the microservice writes the nonce in the
-> **same transaction** as the receipt (IC §6). Old months are archived by
-> `DETACH PARTITION` (DDL) — never by `DELETE` (which Invariant 1 forbids).
-
 >**NOTE:**-- No FK to chunk_assignments. chunk_assignments may be soft-deleted on provider departure while audit_receipts must remain permanently (Invariant 1). The logical link is: chunk_assignments.chunk_id = audit_receipts.chunk_id AND chunk_assignments.provider_id = audit_receipts.provider_id. This is enforced at the application layer only.
 
 ```sql
@@ -1318,36 +1307,38 @@ CREATE UNIQUE INDEX idx_repair_jobs_threshold_no_dup
 
 ## 6. Row Security Policies
 
-> **Superseded in part by [ADR-032](../decisions/ADR-032-rls-role-model.md) and
-> [ADR-033](../decisions/ADR-033-audit-receipts-partitioning.md).** The
-> `CREATE POLICY` bodies below are still current, but three things they omitted are
-> now mandatory and enforced by the migration (`migrations/generator.go`):
->
-> 1. **`FORCE ROW LEVEL SECURITY`** on `audit_receipts`, `escrow_events`,
->    `chunk_assignments` (and `audit_receipt_nonces`). `ENABLE` alone lets the
->    table **owner** bypass every policy — so append-only was only "enforced" for a
->    non-owning role. `FORCE` closes that gap.
-> 2. **`SELECT` policies** for `vyomanaut_app` (and `vyomanaut_gc` on
->    `audit_receipts`). Without them, under `FORCE` RLS the two-phase `UPDATE`'s
->    `WHERE` clause matches zero rows and silently returns `UPDATE 0`.
-> 3. **A three-role model** (`vyomanaut_migrator` owns the schema and holds
->    `BYPASSRLS`; `vyomanaut_app` / `vyomanaut_gc` are `NOSUPERUSER NOBYPASSRLS`),
->    plus least-privilege `GRANT`s with **no `DELETE`** anywhere. The service roles
->    must **not** be the schema owner, or `FORCE` is moot.
->
-> See ADR-032 for the full role model and ADR-033 for the `audit_receipts`
-> partitioning and the `audit_receipt_nonces` global replay guard.
-
 Row security policies enforce Invariants 1 and 2 at the database engine level,
-independent of application code. Enable **and force** row-level security on the
-tables and grant the non-owning application role `INSERT` (plus the scoped
-`UPDATE` / `SELECT` below) only — never `DELETE`.
+independent of application code. Enable row-level security on both tables and
+grant the application role `INSERT` only.
+
+DOC SYNC NOTE (Milestone 7 corrections session): this section previously
+showed only three policies (`audit_receipts_insert_only`,
+`audit_receipts_phase2_update`, `audit_receipts_gc_abandon`) and predated
+ADR-032 (`FORCE ROW LEVEL SECURITY` + the `_app_select`/`_gc_select` SELECT
+policies) and ADR-033 (`audit_receipt_nonces`, the global replay-protection
+guard table). Code had already shipped both in `migrations/generator.go`;
+this section is now brought back in sync with it, plus the new
+`audit_receipts_record_response` policy this session adds (see below).
 
 ```sql
 -- ────────────────────────────────────────────────────────────────────────────
 -- audit_receipts — INSERT only (Invariant 1)
 -- ────────────────────────────────────────────────────────────────────────────
 ALTER TABLE audit_receipts ENABLE ROW LEVEL SECURITY;
+-- FORCE so the policies apply even to a role that OWNS the table. Without
+-- this, an owner (or superuser) silently bypasses append-only enforcement.
+-- (ADR-032)
+ALTER TABLE audit_receipts FORCE ROW LEVEL SECURITY;
+
+-- SELECT: the request path must read receipts (own-receipt lookups, and the
+-- row read that every UPDATE's WHERE clause performs under FORCE RLS —
+-- without a SELECT policy, an UPDATE silently matches zero rows regardless
+-- of the target row's actual state). (ADR-032)
+CREATE POLICY audit_receipts_app_select
+    ON audit_receipts
+    FOR SELECT
+    TO vyomanaut_app         -- the microservice's Postgres role
+    USING (TRUE);
 
 -- Allow the microservice application role to insert new rows.
 CREATE POLICY audit_receipts_insert_only
@@ -1371,6 +1362,31 @@ CREATE POLICY audit_receipts_phase2_update
         service_countersign_ts IS NOT NULL
     );
 
+-- Milestone 7 corrections session (Option B, three-phase write): persists
+-- response_hash, provider_sig, response_latency_ms, and jit_flag onto a
+-- still-PENDING row the instant a provider's signed response is validated —
+-- BEFORE audit_receipts_phase2_update above adjudicates PASS/FAIL/TIMEOUT.
+-- This is a SEPARATE PERMISSIVE policy, not an edit to
+-- audit_receipts_phase2_update above: PostgreSQL ORs the USING/WITH CHECK
+-- clauses of multiple PERMISSIVE policies for the same role and command, so
+-- the two policies together cover exactly the two UPDATE shapes vyomanaut_app
+-- performs on this table — audit_result staying NULL (this policy) or
+-- becoming terminal (the policy above) — and nothing else.
+CREATE POLICY audit_receipts_record_response
+    ON audit_receipts
+    FOR UPDATE
+    TO vyomanaut_app
+    USING (
+        audit_result IS NULL AND
+        abandoned_at IS NULL AND
+        response_hash IS NULL
+    )
+    WITH CHECK (
+        audit_result   IS NULL AND
+        response_hash  IS NOT NULL AND
+        provider_sig   IS NOT NULL
+    );
+
 -- Allow the GC process to mark PENDING rows as abandoned after 48h.
 CREATE POLICY audit_receipts_gc_abandon
     ON audit_receipts
@@ -1386,7 +1402,45 @@ CREATE POLICY audit_receipts_gc_abandon
         audit_result IS NULL      -- GC never sets the result; only abandoned_at
     );
 
+-- SELECT for the GC role: the abandon UPDATE's own USING/WHERE clause must
+-- be able to read the stale PENDING rows it targets under FORCE RLS.
+-- (ADR-032)
+CREATE POLICY audit_receipts_gc_select
+    ON audit_receipts
+    FOR SELECT
+    TO vyomanaut_gc
+    USING (TRUE);
+
 -- No DELETE policy is created. Any DELETE attempt returns permission denied.
+
+-- ────────────────────────────────────────────────────────────────────────────
+-- audit_receipt_nonces — global replay-protection guard (Invariant 5, ADR-033)
+-- ────────────────────────────────────────────────────────────────────────────
+-- A partitioned audit_receipts cannot enforce global uniqueness on
+-- challenge_nonce alone (the unique key must include the partition key —
+-- ADR-033). This small, non-partitioned table holds that global guarantee:
+-- the microservice INSERTs the nonce here in the SAME transaction as the
+-- receipt (see WriteReceiptPhase1, IC §6). A duplicate nonce raises a PK
+-- violation and aborts the whole write — the replay is rejected.
+ALTER TABLE audit_receipt_nonces ENABLE ROW LEVEL SECURITY;
+-- FORCE + insert-only means a compromised app credential cannot delete
+-- guard rows to enable a replay; only the migrator (out-of-band, BYPASSRLS)
+-- prunes expired nonces.
+ALTER TABLE audit_receipt_nonces FORCE ROW LEVEL SECURITY;
+
+CREATE POLICY audit_receipt_nonces_app_select
+    ON audit_receipt_nonces
+    FOR SELECT
+    TO vyomanaut_app
+    USING (TRUE);
+
+CREATE POLICY audit_receipt_nonces_insert_only
+    ON audit_receipt_nonces
+    FOR INSERT
+    TO vyomanaut_app
+    WITH CHECK (TRUE);
+
+-- No UPDATE or DELETE policy. A nonce, once recorded, is immutable for the app.
 
 -- ────────────────────────────────────────────────────────────────────────────
 -- escrow_events — INSERT only (Invariant 2)
@@ -1765,16 +1819,8 @@ Before applying `migrations/001_initial_schema.sql` to any environment, verify:
 
 - [ ] `btree_gist` extension is installed (required for `audit_periods` exclusion constraint).
   `CREATE EXTENSION IF NOT EXISTS btree_gist;`
-- [ ] **`vyomanaut_migrator`** (schema owner, `BYPASSRLS`) is provisioned by the
-  environment and runs the migration; the migration creates **`vyomanaut_app`** and
-  **`vyomanaut_gc`** as `NOSUPERUSER NOBYPASSRLS` roles with least-privilege grants
-  (no `DELETE`). The service roles are **not** the schema owner. (ADR-032)
-- [ ] Row security is **`ENABLE`d and `FORCE`d** on `audit_receipts`, `escrow_events`,
-  `chunk_assignments`, and `audit_receipt_nonces`; each has a `SELECT` policy for
-  `vyomanaut_app`. (ADR-032)
-- [ ] `audit_receipts` is **`PARTITION BY RANGE (server_challenge_ts)`** with a
-  `DEFAULT` partition; the `audit_receipt_nonces` guard table enforces global nonce
-  uniqueness; `vyomanaut_create_audit_receipts_partition()` exists. (ADR-033)
+- [ ] Postgres roles `vyomanaut_app` and `vyomanaut_gc` exist with appropriate privileges.
+- [ ] Row security policies are enabled on `audit_receipts` and `escrow_events` after `CREATE TABLE`.
 - [ ] `challenge_nonce` is `BYTEA(33)`, not `BYTEA(32)`. Verify with `\d audit_receipts`.
   See `requirements.md §9.3` and `ADR-027`.
 - [ ] All `escrow_events.amount_paise` columns are `BIGINT`, not `NUMERIC` or `DECIMAL`.
@@ -1783,7 +1829,7 @@ Before applying `migrations/001_initial_schema.sql` to any environment, verify:
   initial state for the PENDING phase; a default of any string value would break the
   two-phase write protocol).
 - [ ] Monthly partition DDL for `audit_receipts` is applied. At 56 providers storing
-  50 GB each, the table accumulates ~1.8 TB/year at full V3 scale. Partitioning by month (`PARTITION BY RANGE (server_challenge_ts)`) is implemented from day one; archiving old partitions to cold object storage is done by `DETACH PARTITION` (a DDL operation), never by `DELETE` (which Invariant 1 forbids). At V2 scale (architecture.md §26: hundreds of providers) all rows land in the `DEFAULT` partition and monthly partitions are created ahead of demand via `vyomanaut_create_audit_receipts_partition()`. See [ADR-033](../decisions/ADR-033-audit-receipts-partitioning.md) and `Architectural_Probable_Problems/capacity.md`.
+  50 GB each, the table accumulates ~1.8 TB/year. Partitioning by month (`PARTITION BY RANGE (server_challenge_ts)`) and archiving partitions older than 30 days to cold object storage is mandatory from day one. See `capacity.md §4.3`.
 - [ ] Materialised views are created after all base tables.
 - [ ] Unique indexes on materialised views are present (required for `REFRESH MATERIALIZED VIEW CONCURRENTLY`).
 - [ ] Add to mv_provider_scores:
