@@ -303,11 +303,17 @@ GREP_CHECK_ADDED:
 UNIT_TESTS:
   $ go test -v -run TestChallengeNonce ./internal/audit/
   EXPECT: exit 0; tests include:
-    TestChallengeNonceLength         (always exactly 33 bytes for any input)
     TestChallengeNonceVersionByte    (nonce[0] == versionByte, tried for 0, 1, 255)
     TestChallengeNonceDeterministic  (identical inputs → identical nonce)
     TestChallengeNonceVariesWithTs   (different serverTsMs → different nonce)
     TestChallengeNonceVariesWithChunk (different chunkID → different nonce)
+  NOTE (Milestone 7 corrections session): no TestChallengeNonceLength — the
+  33-byte invariant is enforced by ChallengeNonce's [33]byte return type at
+  compile time, so a runtime test for it is tautological by construction. An
+  earlier attempt at this test was dead code (always-true assertion) that
+  correctly tripped staticcheck's SA4006 and was commented out rather than
+  fixed; this VERIFY block still referenced it. See the corresponding note
+  in internal/audit/challenge_test.go.
 
 NEGATIVE_CHECKS:
   # IC §9: must not import the three prohibited packages
@@ -962,7 +968,7 @@ VET:
 Create `internal/audit/audit_test.go` covering the three areas `mvp.md §8.2` names for this file, each exercising the full pipeline (nonce → response → two-phase write) rather than a single function in isolation:
 
 | Test name | What it validates |
-|---|---|
+| --- | --- |
 | `TestTwoPhaseCrashSafety` | Phase 1 succeeds, then simulate a "crash" (no Phase 2 call); confirm the row is queryable as PENDING (`audit_result IS NULL`) and not silently lost |
 | `TestTwoPhaseIdempotentRetry` | Call `WriteReceiptPhase2` twice with the same `receiptID` and the same result; second call returns `ErrReceiptAlreadyFinal`; exactly one row exists; no duplicate insert |
 | `TestCrossReplicaNonceValidation` | A nonce generated with `server_secret_vN` validates successfully against a `ClusterSecretCache` that has independently loaded `vN` (simulating a second replica) — this is the property IC §27's failover story depends on |
@@ -1426,7 +1432,7 @@ VET:
 Create `internal/scoring/score_test.go` consolidating the two behaviors `mvp.md §8.2` names for this file, at the integration level (spanning `score.go` + `passes.go` + `rto.go` together, not just re-running each file's own unit tests):
 
 | Test name | What it validates |
-|---|---|
+| --- | --- |
 | `TestDualWindowFlagAgainstRealView` | Seed `audit_receipts` so the 7-day pass rate is deliberately worse than the 30-day rate by more than 0.20; refresh `mv_provider_scores`; confirm `GetScore` reports `DualWindowFlag == true` — exercising the real materialised view, not a mocked struct |
 | `TestVettingActiveTransitionRaceGuard` | Launch N concurrent calls to `IncrementConsecutivePasses` for the same provider at exactly `VettingMinPasses - 1` remaining passes; confirm the provider transitions to `ACTIVE` exactly once (no double-transition, no lost update) under `-race` |
 | `TestDemoAndProductionProfilesBothReachActive` | Run the full pass sequence once with `config.DemoProfile` (expect transition at 5 passes) and once with `config.ProductionProfile` (expect transition at 80 passes) against the same schema, confirming the profile — not a hardcoded literal — drives the outcome |
@@ -2271,7 +2277,7 @@ VET:
 Create `internal/repair/repair_test.go` covering the four areas `mvp.md §8.2` names, at the integration level:
 
 | Test name | What it validates |
-|---|---|
+| --- | --- |
 | `TestPriorityOrderingEndToEnd` | Enqueue one job of each trigger type in reverse-priority order; `DequeueNextJob` returns them EMERGENCY → PERMANENT_DEPARTURE → PRE_WARNING regardless of insertion order — the specific bug this revision fixed |
 | `TestASNCapAcrossRepairAndOriginalAssignment` | Simulate a segment already at the ASN cap boundary; confirm `SelectReplacementProvider` never pushes any ASN over `floor(TotalShards * 0.20)`, matching FR-045's "same cap as original assignment" |
 | `TestEmergencyFloorBypassesQueueOrder` | A `PRE_WARNING` job is already queued; an `EMERGENCY` job for a different chunk is enqueued after it; `DequeueNextJob` returns the EMERGENCY job first despite arriving later |
@@ -3189,7 +3195,7 @@ VET:
 In `internal/api/readiness.go`, implement the readiness evaluator and HTTP handler. All seven conditions are evaluated on every call (re-computed at most every 60 seconds by a background goroutine — Milestone 12, Session 12.1.1 — with the handler reading the cached last-evaluated result):
 
 | # | `conditions` key (OAS) | Data source | `required_value` |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | 1 | `active_vetted_providers` | `COUNT(*) FROM providers WHERE status IN ('VETTING','ACTIVE')` | `profile.MinActiveProviders` |
 | 2 | `distinct_asns` | `COUNT(DISTINCT asn) FROM providers WHERE status IN ('VETTING','ACTIVE')` | `profile.MinDistinctASNs` |
 | 3 | `distinct_metro_regions` | `COUNT(DISTINCT region) FROM providers WHERE status IN ('VETTING','ACTIVE')` | `profile.MinMetroRegions` |
@@ -4356,7 +4362,7 @@ VET:
 **TASK:** Before generating shard assignments, exclude candidate providers whose current chunk allocation would push steady-state repair bandwidth above 100 Kbps (NFR-044). Ceiling by MTTF tier, from architecture.md §27.3's actual reference table — **do not linearly interpolate between them without deriving the true Giroire-formula relationship first**:
 
 | MTTF tier | Storage ceiling |
-|---|---|
+| --- | --- |
 | 180 days (desktop minimum) | ~70 GB |
 | 300 days (planning target) | ~130 GB |
 
