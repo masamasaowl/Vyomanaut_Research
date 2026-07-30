@@ -7,12 +7,12 @@ Where this document conflicts with an ADR, the ADR wins. Where it conflicts with
 **Version:** 1.0
 **Date:** April 2026
 **Author:** Vyomanaut Engineering
-**Repository:** https://github.com/masamasaowl/Vyomanaut_Research
+**Repository:** <https://github.com/masamasaowl/Vyomanaut_Research>
 **Supersedes:** —
 **Companion documents:**
 
 - [`openapi.yaml`](./openapi.yaml) — authoritative REST/HTTP surface
-- [`data-model.md`](./data-model.md) — x
+- [`data-model.md`](./data-model.md) — canonical database schema and invariants
 - [`architecture.md`](./architecture.md) — system overview and component descriptions
 - [`requirements.md`](./requirements.md) — functional and non-functional requirements
 - [`ADR-001`](../decisions/ADR-001-coordination-architecture.md) through [`ADR-029`](../decisions/ADR-029-bootstrap-minimum-viable-network.md) — all architectural decisions
@@ -30,7 +30,7 @@ Where this document conflicts with an ADR, the ADR wins. Where it conflicts with
    - [3.4 - Readiness Gate Contract](#34-readiness-gate-contract)
 4. [libp2p Protocol Contracts](#4-libp2p-protocol-contracts)
    - [4.1 Chunk Upload Stream Protocol](#41-chunk-upload-stream-protocol)
-   - [4.2 Audit Challenge Protocol](#42-audit-challenge-protocol) 
+   - [4.2 Audit Challenge Protocol](#42-audit-challenge-protocol)
    - [4.3 Circuit Relay v2 Reservation](#43-circuit-relay-v2-reservation)
    - [4.4 Repair Reconstruction Stream Protocol](#44-repair-reconstruction-stream-protocol)
    - [4.5 Vetting GC Protocol](#45-vetting-gc-protocol)
@@ -73,6 +73,7 @@ an invariant must be rejected at review time; if a contract in this document per
 path, this document is wrong and must be corrected via PR before the code merges.
 
 **In scope:**
+
 - libp2p application protocol messages (framing, size limits, timeouts, 0-RTT policy)
 - Internal Go package exported interfaces (signatures, pre/post-conditions, concurrency contracts)
 - PostgreSQL per-table DML permissions (what roles may INSERT, UPDATE, DELETE, and under what conditions)
@@ -81,12 +82,14 @@ path, this document is wrong and must be corrected via PR before the code merges
 - DHT key derivation and validator contract
 
 **Out of scope:**
+
 - REST/HTTP endpoint schemas — defined exclusively in [`openapi.yaml`](./openapi.yaml); do
   not duplicate here
 - Infrastructure provisioning details — covered in [`architecture.md §8`](./architecture.md#8-deployment-topology)
 - Capacity calculations — covered in [`capacity.md`](./capacity.md)
 
 **How to add a new interface.** Before implementing any new cross-component call:
+
 1. Identify which section below covers it (or add a new section if it is a new interface class)
 2. Write the contract here first — protocol ID, message schema, pre/post-conditions,
    error semantics, concurrency rules
@@ -139,11 +142,10 @@ flowchart LR
 
 **Demo topology.** In `VYOMANAUT_MODE=demo`, the relay node box and the secrets manager box are absent from the physical topology (MinRelayNodes=0, RequireSecretsManager=false). The logical communication links they represent still exist in the code; they are simply not exercised. The mock PaymentProvider replaces the Razorpay box. The diagram above shows the production topology. (ADR-031)
 
-
 ### Cross-reference: diagram links to ADRs
 
 | Link | Protocol | ADR |
-|---|---|---|
+| --- | --- | --- |
 | Data Owner Client → Microservice | HTTPS REST | [`ADR-001`](../decisions/ADR-001-coordination-architecture.md) |
 | Data Owner Client → Provider Daemon | libp2p QUIC / TCP+Noise XX (chunk upload) | [`ADR-021`](../decisions/ADR-021-p2p-transfer-protocol.md) |
 | Provider Daemon → Microservice | HTTPS REST (heartbeat, audit receipt) | [`ADR-028`](../decisions/ADR-028-provider-heartbeat.md), [`ADR-002`](../decisions/ADR-002-proof-of-storage.md) |
@@ -180,7 +182,7 @@ clarification before implementing against it.
 Cross-references for key REST contract decisions that originated in ADRs:
 
 | Contract concern | Source |
-|---|---|
+| --- | --- |
 | `challenge_nonce BYTEA(33)` — 33 bytes, not 32 | [`ADR-027`](../decisions/ADR-027-cluster-audit-secret.md), [`requirements.md §9.3`](./requirements.md#93-hard-constraints) |
 | All `amount_paise` fields are `int64`, never float | [`ADR-016`](../decisions/ADR-016-payment-db-schema.md), [`NFR-046`](./requirements.md#77-compliance-and-payments) |
 | `X-Payout-Idempotency` header mandatory since 15 March 2025 | [`ADR-012`](../decisions/ADR-012-payment-basis.md), Paper 35 |
@@ -189,7 +191,7 @@ Cross-references for key REST contract decisions that originated in ADRs:
 
 ---
 
-### 3.1 Heartbeat Multiaddr Update 
+### 3.1 Heartbeat Multiaddr Update
 
 **Endpoint:** `POST /api/v1/provider/heartbeat` — schema defined in [`openapi.yaml`](./openapi.yaml).
 
@@ -197,6 +199,7 @@ Cross-references for key REST contract decisions that originated in ADRs:
 after microservice restart). Timer is reset after each successful acknowledgement.
 
 **Required fields in the signed payload:**
+
 - `current_multiaddrs[]` — all current libp2p multiaddrs (QUIC, TCP, relay), ordered by
   preference
 - `timestamp` — ISO 8601 UTC; rejected if skew > ±5 minutes from microservice clock
@@ -238,8 +241,6 @@ must prompt re-registration (full OTP flow) on its local status interface.
 
 **Refer:** ([`ADR-028`](../decisions/ADR-028-provider-heartbeat.md))
 
----
-
 ### 3.2 Ed25519 Signing Conventions
 
 All Ed25519 operations in Vyomanaut use the same key material, format, and verification
@@ -264,18 +265,21 @@ JSON serialisation MUST NOT be used for signing inputs — field ordering is not
 across Go versions.
 
 **Verification procedure:**
+
 1. Retrieve the signer's public key from providers.ed25519_public_key (for provider sigs)
    or from the microservice's known signing public key (for service_sig).
 2. Compute SHA-256(input_bytes) using the identical layout as the signer.
 3. Call ed25519.Verify(pubKey, sha256Digest, signature). Return ErrInvalidSignature if false.
 
 **What constitutes a valid signature at the microservice:**
+
 - len(sig) == 64 (Ed25519 signatures are always 64 bytes)
 - ed25519.Verify returns true
 - The public key in providers.ed25519_public_key matches the Peer ID of the connection
   (verified at transport layer — these must not diverge)
 
 **What constitutes an invalid signature:**
+
 - len(sig) != 64
 - Verify returns false
 - The signing public key does not match the registered provider
@@ -300,7 +304,7 @@ All error responses from the microservice REST API use a standard JSON body.
 **HTTP status codes and Vyomanaut semantics:**
 
 | HTTP Status | error_code | Trigger |
-|---|---|---|
+| --- | --- | --- |
 | 400 | INVALID_REQUEST | Missing required field, wrong type, nonce length != 33 |
 | 401 | UNAUTHENTICATED | Missing or expired session token |
 | 403 | PROVIDER_DEPARTED | Provider's status == 'DEPARTED'; re-registration required |
@@ -315,8 +319,8 @@ All error responses from the microservice REST API use a standard JSON body.
 | 500 | DEMO_MODE_REAL_PAYMENT | Startup guard: demo mode + live Razorpay endpoint detected; process refuses to start |
 | 500 | PROD_MODE_ENV_SECRET | Startup guard: prod mode + VYOMANAUT_CLUSTER_MASTER_SEED env var detected; process refuses to start |
 
-
 **Error propagation from Razorpay failures:**
+
 - Razorpay 4xx (bad request from microservice side): log at ERROR, surface as INTERNAL_ERROR
   to the caller — do not expose Razorpay error details in the API response.
 - Razorpay 5xx or timeout: surface as RAZORPAY_UNAVAILABLE with retry_after.
@@ -480,7 +484,7 @@ causes signature verification to fail (step 4), which returns `0x03`.
 **Frame 2 — UploadResponse:**
 
 | Field | Type | Size | Description |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | `length` | uint32 big-endian | 4 B | Payload length. Success: 1 + 64 = 65 bytes. Error: 1 byte. |
 | `status` | uint8 | 1 B | `0x00` = OK, chunk stored durably. `0x01` = FRAME_TOO_LARGE. `0x02` = CHUNK_ID_MISMATCH (SHA-256 of received data does not match `chunk_id`). `0x03` = NOT_ASSIGNED (provider is not the assigned holder for this chunk_id). `0x04` = STORAGE_FULL (provider has reached `declared_storage_gb` cap). `0x05` = INTERNAL_ERROR (vLog write or RocksDB insert failed). `0x06` = ALREADY_STORED — idempotent; treat as 0x00. `0x07` CAPABILITY_EXPIRED — token `expiry_unix_ms` is in the past. Data owner must request a fresh assignment from the microservice. |
 | `provider_sig` | bytes | 64 B | Ed25519 signature by the provider over `SHA-256(chunk_id ‖ shard_index ‖ provider_id_bytes ‖ timestamp_unix_ms)`. Present only when `status = 0x00`. This is the upload receipt that the initiator must retain as proof of acknowledged storage. |
@@ -490,6 +494,7 @@ causes signature verification to fail (step 4), which returns `0x03`.
 and may retry on a different connection.
 
 **Pre-conditions on the responder (provider daemon):**
+
 - The provider's `providers.status` must be `ACTIVE` or `VETTING` at the time the stream is
   accepted. If `status = DEPARTED`, the stream must be reset immediately with a TCP RST
   equivalent (stream reset, no application response).
@@ -497,6 +502,7 @@ and may retry on a different connection.
   `status = 0x02` before writing anything to disk.
 
 **Post-conditions on a successful response (`status = 0x00`):**
+
 - The chunk_data is durably written to the vLog (fsync completed).
 - The RocksDB index entry `(chunk_id → vlog_offset, chunk_size)` is inserted.
 - The `content_hash = SHA-256(chunk_data)` is embedded in the vLog entry.
@@ -540,7 +546,7 @@ Microservice                        Provider Daemon
 **Frame 1 — ChallengeRequest:**
 
 | Field | Type | Size | Description |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | `length` | uint32 big-endian | 4 B | Payload length. Must equal 32 + 33 + 8 = 73 bytes. |
 | `chunk_id` | bytes | 32 B | SHA-256 content address of the chunk to prove. The provider uses this as the RocksDB lookup key. The microservice already holds this in chunk_assignments.chunk_id. |
 | `challenge_nonce` | bytes | 33 B | 1-byte version prefix \|\| 32-byte HMAC-SHA256. **Must be exactly 33 bytes.** ([`ADR-027`](../decisions/ADR-027-cluster-audit-secret.md), [`requirements.md §9.3`](./requirements.md#93-hard-constraints)) A frame with a nonce of any other length must be rejected with `status = 0x03`. |
@@ -551,9 +557,9 @@ Maximum frame payload: 73 bytes.
 **Frame 2 — ChallengeResponse:**
 
 | Field | Type | Size | Description |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | `length` | uint32 big-endian | 4 B | Payload length. Success: 1 + 32 + 64 = 97 bytes. Error frames `0x01/0x02` are 1 + 64 = 65 bytes, not 1 byte |
-| `status` | uint8 | 1B  | `0x00` = OK (PASS). `0x01` = FAIL_NOT_FOUND (Bloom filter absent — chunk not on this provider). `0x02` = FAIL_CORRUPTION (`SHA-256(chunk_data) ≠ content_hash` — disk corruption). `0x03` = INVALID_NONCE (nonce is not 33 bytes). `0x04` = INTERNAL_ERROR (vLog read failed for a reason other than corruption). |
+| `status` | uint8 | 1B | `0x00` = OK (PASS). `0x01` = FAIL_NOT_FOUND (Bloom filter absent — chunk not on this provider). `0x02` = FAIL_CORRUPTION (`SHA-256(chunk_data) ≠ content_hash` — disk corruption). `0x03` = INVALID_NONCE (nonce is not 33 bytes). `0x04` = INTERNAL_ERROR (vLog read failed for a reason other than corruption). |
 | `response_hash` | bytes | 32 B | `SHA-256(chunk_data \|\| challenge_nonce)`. Present only when `status = 0x00`. |
 | `provider_sig` | bytes | 64 B | Ed25519 signature by the provider over `SHA-256(response_hash \|\| challenge_nonce \|\| server_challenge_ts_ms \|\| provider_id)`. For `0x01/0x02`, signing input is `SHA-256(status_byte ‖ challenge_nonce ‖ server_challenge_ts_ms ‖ provider_id)`. This proves the provider deliberately reported FAIL rather than a transport drop. Present for `0x00`, `0x01`, `0x02`; absent for `0x03`, `0x04`. |
 
@@ -579,6 +585,7 @@ multiplexing is handled by QUIC. The provider daemon must handle at least 32 con
 challenge streams without queuing delay.
 
 **Pre-conditions on the responder (provider daemon):**
+
 - The provider must verify that `challenge_nonce[0]` (the version byte) corresponds to a
   currently-valid `server_secret_vN`. If the version byte refers to a retired secret (past
   the 24-hour rotation overlap window), the provider should respond with `status = 0x03`.
@@ -589,7 +596,8 @@ challenge streams without queuing delay.
 
 - `response_hash` = `SHA-256(chunk_data || challenge_nonce)` — unforgeable without the chunk
 - `provider_sig` covers both the response and the server-set timestamp — prevents replay
-- The provider has NOT recorded the receipt in any local database — the microservice owns the authoritative receipt record
+- The provider has NOT recorded the receipt in any local database — the microservice owns
+  the authoritative receipt record
 
 >**NOTE:** The correctness of response_hash — that it was computed over the actual 256 KB chunk and not fabricated — is guaranteed by the computational hardness of SHA-256 preimage inversion, not by independent microservice verification. Please note the microservice never verifies the response_hash, it knows the chunk_id but not the 256 KB chunk data making the SHA-256(chunk_data || challenge_nonce) unverifiable. It only verifies the Ed25519 signature.
 
@@ -654,15 +662,17 @@ Peer ID is registered as a microservice replica in its locally-cached microservi
 are rejected immediately with status 0x02 (NOT_AUTHORISED).
 
 Frame 1 — RepairDownloadRequest:
+
 | Field | Type | Size | Description |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | length | uint32 be | 4 B | Must equal 32 + 64 = 96 bytes |
 | chunk_id | bytes | 32 B | Content address of the requested shard |
 | repair_auth_sig | bytes | 64 B | Ed25519 signature by the microservice signing key over SHA-256(chunk_id ‖ request_ts_ms ‖ microservice_peer_id). Proves the request originates from a legitimate microservice replica. |
 
 Frame 2 — RepairDownloadResponse:
+
 | Field | Type | Size | Description |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | length | uint32 be | 4 B | Success: 1 + 262144 = 262145 B. Error: 1 B |
 | status | uint8 | 1 B | 0x00=OK, 0x01=NOT_FOUND, 0x02=NOT_AUTHORISED, 0x03=CORRUPTION (content_hash mismatch), 0x04=INTERNAL_ERROR |
 | chunk_data | bytes | 262144 B | Raw shard data. Present only when status=0x00 |
@@ -739,6 +749,7 @@ Maximum single frame payload: `4 + (10000 × 32) = 320,004 bytes`.
 ## 5. Internal Go Package Contracts
 
 This section specifies the exported interface of every internal package, including:
+
 - Exported function/method signatures (as compilable Go code)
 - Pre-conditions: what must be true before the call (caller's responsibility)
 - Post-conditions: what is guaranteed if the call returns `nil` error
@@ -878,9 +889,7 @@ func AONTEncodeSegment(segment []byte, aesNIAvailable bool) ([]byte, error)
 // Also verifies the canary word after decryption. (FR-018, ADR-022)
 //
 // Pre-conditions:
-//   - len(aontPackage) >= 64   (at least 1 data word + 1 canary word + a
-//     32-byte key block: 2×16 + 32 = 64. 32 bytes alone is just the key
-//     block with zero ciphertext words, which can never be valid.)
+//   - len(aontPackage) >= 32   (must have at least one data word, canary word, key-block)
 //   - len(aontPackage) is a multiple of 16
 //   - aesNIAvailable must be the value returned by DetectAESNI() at startup
 // Post-conditions (on nil error):
@@ -1290,36 +1299,86 @@ func ValidateResponse(challengeNonce [33]byte, responseHash [32]byte,
     providerSig [64]byte, providerPubKey [32]byte) error
 
 // WriteReceiptPhase1 performs the crash-safe Phase 1 INSERT to audit_receipts.
-// Inserts a PENDING row (audit_result = NULL) with the provider signature.
-// Returns the receipt_id (UUIDv7) assigned to the row.
-// (ADR-015 §Crash-safe receipt writing)
+// Inserts a PENDING row (audit_result = NULL) at CHALLENGE DISPATCH time —
+// before any provider response exists. ReceiptFields carries no provider
+// signature (an earlier revision of this doc said it did; that was
+// incorrect — see the PHASE TIMING NOTE in receipt.go for the full
+// reasoning). Returns the receipt_id (UUIDv7) assigned to the row.
+// Also INSERTs into audit_receipt_nonces, in the SAME transaction, as the
+// global replay-protection guard (Milestone 7 corrections session; DM §4.7,
+// ADR-033) — a partitioned audit_receipts cannot enforce global uniqueness
+// on challenge_nonce alone.
+// (ADR-015 §Crash-safe receipt writing, ADR-033)
 //
 // Pre-conditions:
 //   - All required receipt fields are non-zero
 //   - The database connection is open
 // Post-conditions (on nil error):
 //   - A row with audit_result = NULL exists in audit_receipts
-//   - The row is durable (WAL-flushed) before this function returns
-// Error semantics: database errors are returned; caller must not proceed with
-//   Phase 2 if Phase 1 fails.
+//   - A matching row exists in audit_receipt_nonces
+//   - Both rows are durable (WAL-flushed) before this function returns
+// Error semantics:
+//   - ErrReplayDetected: challenge_nonce was already used by a prior receipt
+//     — the whole transaction is rolled back, nothing is written.
+//   - Other database errors: returned; caller must not proceed to
+//     WriteReceiptRecordResponse/WriteReceiptPhase2 if Phase 1 fails.
 // Goroutine-safe: yes (uses connection pool).
 func WriteReceiptPhase1(ctx context.Context, db *sql.DB, fields ReceiptFields) (receiptID uuid.UUID, err error)
 
+// WriteReceiptRecordResponse performs the middle phase of the three-phase
+// write (Option B, Milestone 7 corrections session): persists
+// response_hash, provider_sig, response_latency_ms, and jit_flag onto a
+// still-PENDING row the instant a provider's signed response is validated
+// (ValidateResponse) — before WriteReceiptPhase2 adjudicates
+// PASS/FAIL/TIMEOUT. jit_flag is computed here via
+// EvaluateJIT(responseLatencyMs, p95ThroughputKbps); p95ThroughputKbps is
+// the caller's responsibility to supply, from the same providers row the
+// EWMA update below already requires reading after every response.
+// (ADR-014 Defence 3, ADR-015)
+//
+// Callers MUST call this before WriteReceiptPhase2 for any PASS or FAIL
+// result — see WriteReceiptPhase2's own pre-conditions below.
+//
+// Pre-conditions:
+//   - receiptID identifies an existing PENDING row from WriteReceiptPhase1
+//   - responseLatencyMs >= 0
+// Post-conditions (on nil error):
+//   - response_hash, provider_sig, response_latency_ms, and jit_flag are
+//     set; audit_result is still NULL
+// Error semantics:
+//   - ErrResponseAlreadyRecorded: response_hash was already non-NULL
+//     (idempotent retry), or the row is already abandoned or final.
+//   - Other database errors: returned to caller.
+// Goroutine-safe: yes.
+func WriteReceiptRecordResponse(ctx context.Context, db *sql.DB,
+    receiptID uuid.UUID, responseHash [32]byte, providerSig [64]byte,
+    responseLatencyMs int, p95ThroughputKbps *float64) error
+
 // WriteReceiptPhase2 performs the crash-safe Phase 2 UPDATE on audit_receipts.
 // Sets audit_result, service_sig, and service_countersign_ts atomically.
+// Unchanged in shape by the move to a three-phase write — still only ever
+// touches these three columns.
 // (ADR-015 §Crash-safe receipt writing, Invariant 1 in data-model.md)
 //
 // Pre-conditions:
 //   - receiptID must identify an existing PENDING row (audit_result IS NULL)
 //   - result must be PASS, FAIL, or TIMEOUT (not NULL)
 //   - len(serviceSig) == 64
+//   - for PASS/FAIL: WriteReceiptRecordResponse has already succeeded for
+//     this receiptID (DM §4.7's audit_receipts_response_consistency CHECK
+//     constraint requires response_hash/provider_sig to be non-NULL for
+//     PASS/FAIL; this function has no parameter for either and relies on
+//     WriteReceiptRecordResponse to have populated them first). A genuine
+//     TIMEOUT never calls WriteReceiptRecordResponse at all.
 // Post-conditions (on nil error):
 //   - The row is updated; audit_result is no longer NULL
 //   - The row security policy permits this specific NULL → terminal transition
 // Error semantics:
 //   - ErrReceiptAlreadyFinal: the row already has a non-NULL audit_result (idempotent; caller
 //     should treat this as success and return the existing service_sig)
-//   - Other database errors: return to caller.
+//   - Other database errors: returned to caller — including the
+//     response-consistency CHECK-constraint violation described above, for
+//     a PASS/FAIL call that skipped WriteReceiptRecordResponse.
 // Goroutine-safe: yes.
 func WriteReceiptPhase2(ctx context.Context, db *sql.DB,
     receiptID uuid.UUID, result AuditResult,
@@ -1771,6 +1830,7 @@ These contracts are the enforcement point for Invariants 1–3 from
 the database layer; the contracts here document the intent for application-layer code review.
 
 **Database roles used:**
+
 - `vyomanaut_app` — the microservice application role; all normal application writes
 - `vyomanaut_gc` — the background garbage-collection process; minimal privileges
 - `vyomanaut_ro` — read-only analytics and admin tooling; no writes
@@ -1780,7 +1840,7 @@ the database layer; the contracts here document the intent for application-layer
 ### `owners`
 
 | Operation | Permitted by | Condition |
-|---|---|---|
+| --- | --- | --- |
 | INSERT | `vyomanaut_app` | At OTP-verified registration only |
 | UPDATE `smart_collect_vpa` | `vyomanaut_app` | On Razorpay `virtual_account.created` webhook only |
 | UPDATE any other column | **Prohibited** | No application path modifies owner identity |
@@ -1789,7 +1849,7 @@ the database layer; the contracts here document the intent for application-layer
 ### `providers`
 
 | Operation | Permitted by | Condition |
-|---|---|---|
+| --- | --- | --- |
 | INSERT | `vyomanaut_app` | At registration only |
 | UPDATE `status` | `vyomanaut_app` | Transitions must follow the state machine in [`ADR-007`](../decisions/ADR-007-provider-exit-states.md): `PENDING_ONBOARDING → VETTING`, `VETTING → ACTIVE`, any `→ DEPARTED`. No transition moves backward. |
 | UPDATE `last_known_multiaddrs`, `last_heartbeat_ts`, `multiaddr_stale` | `vyomanaut_app` | On heartbeat receipt only |
@@ -1805,7 +1865,7 @@ the database layer; the contracts here document the intent for application-layer
 ### `files`
 
 | Operation | Permitted by | Condition |
-|---|---|---|
+| --- | --- | --- |
 | INSERT | `vyomanaut_app` | On `POST /api/v1/file/register` only; only after all shards are acknowledged |
 | UPDATE `status` to `'DELETED'` | `vyomanaut_app` | On `DELETE /api/v1/file/{file_id}` only |
 | UPDATE any other column | **Prohibited** | Pointer files are immutable once registered |
@@ -1814,7 +1874,7 @@ the database layer; the contracts here document the intent for application-layer
 ### `segments` and `chunk_assignments`
 
 | Operation | Permitted by | Condition |
-|---|---|---|
+| --- | --- | --- |
 | INSERT `segments` | `vyomanaut_app` | During upload assignment only |
 | INSERT `chunk_assignments` | `vyomanaut_app` | During upload assignment and repair replacement only; ASN cap enforced at INSERT time |
 | INSERT `is_vetting_chunk = TRUE` | `vyomanaut_app` | Only when the target provider's `status = 'VETTING'`. The assignment service must verify provider status before INSERT. |
@@ -1838,20 +1898,35 @@ This `table enforces Invariant 1. The row security policy in
 [`data-model.md §6`](./data-model.md#6-row-security-policies) implements these restrictions at
 the database level, independent of application code.
 
+Three-phase write (Milestone 7 corrections session, Option B — previously
+two-phase; see IC §5.5):
+
 | Operation | Permitted by | Condition |
-|---|---|---|
-| INSERT | `vyomanaut_app` | Phase 1 of the two-phase write: `audit_result = NULL`, `provider_sig` populated |
-| UPDATE `audit_result`, `service_sig`, `service_countersign_ts`, `jit_flag` | `vyomanaut_app` | Phase 2 of the two-phase write only; `WHERE audit_result IS NULL AND abandoned_at IS NULL`; `audit_result` must be `PASS`, `FAIL`, or `TIMEOUT` — never re-set to NULL |
+| --- | --- | --- |
+| INSERT | `vyomanaut_app` | Phase 1 (dispatch): `audit_result = NULL`. `provider_sig` is NOT populated at this point — dispatch precedes any provider response (see IC §5.5's WriteReceiptPhase1). Also INSERTs a matching row into `audit_receipt_nonces`, in the SAME transaction (ADR-033, global replay protection) |
+| UPDATE `response_hash`, `provider_sig`, `response_latency_ms`, `jit_flag` | `vyomanaut_app` | Record-response step only (`WriteReceiptRecordResponse`); `WHERE audit_result IS NULL AND abandoned_at IS NULL AND response_hash IS NULL`; `audit_result` must remain `NULL` |
+| UPDATE `audit_result`, `service_sig`, `service_countersign_ts` | `vyomanaut_app` | Phase 2 (adjudicate, `WriteReceiptPhase2`) only; `WHERE audit_result IS NULL AND abandoned_at IS NULL`; `audit_result` must be `PASS`, `FAIL`, or `TIMEOUT` — never re-set to NULL. For `PASS`/`FAIL`, the record-response step above must already have run (DM §4.7 `audit_receipts_response_consistency` CHECK constraint) |
 | UPDATE `abandoned_at` | `vyomanaut_gc` | GC process only; `WHERE audit_result IS NULL AND abandoned_at IS NULL AND server_challenge_ts < NOW() - INTERVAL '48 hours'`; sets to `NOW()` and never to NULL |
 | UPDATE any other column | **Prohibited** | All other columns are immutable after INSERT |
 | DELETE | **Prohibited for all roles** | No deletion ever. Invariant 1. |
+
+### `audit_receipt_nonces`
+
+This table holds the global replay-protection guarantee ADR-033 introduces —
+`audit_receipts` alone cannot enforce it once partitioned (DM §6).
+
+| Operation | Permitted by | Condition |
+| --- | --- | --- |
+| INSERT | `vyomanaut_app` | Same transaction as the corresponding `audit_receipts` Phase 1 INSERT, never on its own. A `PRIMARY KEY` violation on `challenge_nonce` means a replayed nonce; the whole transaction rolls back |
+| UPDATE | **Prohibited for all roles** | A nonce, once recorded, is immutable for the app |
+| DELETE | **Prohibited for `vyomanaut_app`** | Pruning of expired nonces is performed out-of-band by the migrator role (`BYPASSRLS`), never by the application |
 
 ### `escrow_events`
 
 This table enforces Invariant 2.
 
 | Operation | Permitted by | Condition |
-|---|---|---|
+| --- | --- | --- |
 | INSERT | `vyomanaut_app` | One row per DEPOSIT, RELEASE, or SEIZURE event; `amount_paise` must be `> 0`; `idempotency_key` must be unique |
 | UPDATE | **Prohibited for all roles** | Balance is always recomputed from the immutable event log. Invariant 2. |
 | DELETE | **Prohibited for all roles** | Invariant 2. |
@@ -1859,7 +1934,7 @@ This table enforces Invariant 2.
 ### `audit_periods` and `repair_jobs`
 
 | Operation | Permitted by | Condition |
-|---|---|---|
+| --- | --- | --- |
 | INSERT both tables | `vyomanaut_app` | Normal application writes |
 | UPDATE `audit_periods.audit_passes/fails/timeouts`, `release_computed` | `vyomanaut_app` | Materialised tally updates and monthly release flag |
 | UPDATE `repair_jobs.status`, `started_at`, `completed_at` | `vyomanaut_app` | Job lifecycle transitions only: `QUEUED → IN_PROGRESS → COMPLETED/FAILED` |
@@ -1890,8 +1965,8 @@ Smart Collect 2.0. This is the **only** event that credits a data owner's escrow
 **Fields read from payload:**
 
 | Field path | Type | Mapped to |
-|---|---|---|
-| `payload.payment.entity.id` | string | `idempotency_key` = `SHA-256("deposit" || payment_id)` |
+| --- | --- | --- |
+| `payload.payment.entity.id` | string | `idempotency_key` = `SHA-256("deposit" | | payment_id)` |
 | `payload.virtual_account.entity.id` | string | Used to look up `owners.owner_id` via the Smart Collect VPA mapping table |
 | `payload.payment.entity.amount` | integer (paise from Razorpay) | `escrow_events.amount_paise` — **already in paise; do not multiply** |
 
@@ -1930,7 +2005,7 @@ effective escrow balance.
 **Fields read from payload:**
 
 | Field path | Type | Mapped to |
-|---|---|---|
+| --- | --- | --- |
 | `payload.payout.entity.id` | string | Used to look up the original RELEASE event's `idempotency_key` |
 | `payload.payout.entity.amount` | integer (paise) | The reversal amount; must match the original RELEASE row |
 | `payload.payout.entity.reference_id` | string | The `X-Payout-Idempotency` value from the original payout call |
@@ -1972,7 +2047,7 @@ version — check Paper 35 and the Razorpay changelog at deployment time)
 **Fields read from payload:**
 
 | Field path | Type | Mapped to |
-|---|---|---|
+| --- | --- | --- |
 | `payload.account.entity.id` | string | `providers.razorpay_linked_account_id` |
 | `payload.account.entity.notes.provider_id` | UUID string | Used to look up the `providers` row |
 
@@ -2012,6 +2087,7 @@ Where `N` is the version integer (starts at 1 at cluster bootstrap; incremented 
 Each path stores a 32-byte (256-bit) secret, base64-encoded.
 
 **Read contract:**
+
 - The microservice reads `server_secret_vN` at startup and on every 5-minute cache refresh.
 - If the secrets manager is unreachable at **startup**, the replica **must not start** (fail-closed).
   Better to produce zero audit challenges than to issue challenges that cannot be validated.
@@ -2021,6 +2097,7 @@ Each path stores a 32-byte (256-bit) secret, base64-encoded.
   it must not issue challenges with an expired secret.
 
 **Rotation contract (24-hour overlap window):**
+
 - During rotation, both `v{N}` and `v{N+1}` must exist in the secrets manager simultaneously.
 - The microservice reads both versions and caches them both.
 - New challenges are issued under `v{N+1}` (higher version byte in the nonce prefix).
@@ -2070,8 +2147,6 @@ var (
 
 The following import directions are **prohibited**. A PR that introduces any prohibited import must be rejected at review regardless of the stated justification. These constraints exist because the packages involved are either security-critical (no business-logic dependency allowed) or architecturally separated (payment must not depend on repair to avoid cycles through the departure handler).
 
->**NOTE:** internal/config is universally importable by all packages
-
 | Package | Must NOT import |
 | --- | --- |
 | `internal/crypto` | Any other `internal/` package. This package is purely functional — no shared state, no I/O, no dependency on the data layer. Any utility needed here (e.g. byte comparison) uses the standard library only. |
@@ -2084,7 +2159,7 @@ The following import directions are **prohibited**. A PR that introduces any pro
 
 The permitted dependency graph flows in one direction: `cmd/*` → `internal/client/*` → (`internal/crypto`, `internal/erasure`, `internal/p2p`) → no further `internal/` imports. The microservice entrypoint wires `internal/audit`, `internal/scoring`, `internal/repair`, and `internal/payment` together; none of these four packages imports any of the others directly.
 
-**Enforcement.** `go build ./...` and `go vet ./...` catches circular imports.
+**Enforcement.** `go build ./...` catches circular imports. `go vet ./...` with the import-graph analyser catches prohibited non-circular imports. Both are CI required checks. A PR that disables or modifies the import-graph check must be rejected.
 
 ---
 
@@ -2181,9 +2256,11 @@ lookup requests with file identity. This closes DHT Challenge 3 from the SoK DSN
 ```
 
 **What the validator accepts:**
+
 - Any 32-byte key (the HMAC output is always exactly 32 bytes)
 
 **What the validator rejects:**
+
 - Keys shorter or longer than 32 bytes
 - Keys that are plaintext SHA-256 hashes (detectable by a prefix check: Vyomanaut plain
   chunk hashes are stored with a `vyom-chunk:` prefix in other contexts, never in the DHT)
@@ -2276,7 +2353,7 @@ The `dht_key` must be persisted locally by the daemon (e.g., in RocksDB alongsid
 
 ---
 
-### 12.3 Stale Address Fallback Path
+## Stale Address Fallback Path
 
 The DHT is the FALLBACK path, not the primary path. The normal retrieval sequence is:
 
@@ -2365,46 +2442,3 @@ coordination across the affected components before deployment**.
 - Any change to the key derivation formula (`HMAC-SHA256(chunk_hash, file_owner_key)`) is a
   **network-breaking change** requiring a full re-indexing of all DHT records. This is a V3+
   concern; do not change the formula in V2.
-
-## 14. User-Facing Copy Contract
-
-This section is the single canonical mapping from `error_code` (§3.3) to end-user copy. `cmd/client` (data owner) and `cmd/provider` (provider daemon) both render from this table — not from `message` (§3.3, which is a developer/API-consumer diagnostic and "may change between releases") and not from `openapi.yaml`'s example `message` text (which is API-contract documentation, addressed to integrators, and sometimes carries raw identifiers or byte-length specifics unsuitable for an end user). This section is authoritative for tone and wording; §3.3 remains authoritative for the machine-readable envelope shape.
-
-**Severity legend:** `info` — no action needed, purely informational · `action-required` — the user must do something before proceeding · `transient-retry` — the client retries automatically; surfaced for awareness, not action · `escalate` — likely a client/system defect, not a user mistake; direct to support · `n/a` — never rendered by `cmd/client` or `cmd/provider` (operator/internal-only; see note on each such row).
-
-**Fallback rule.** Any `error_code` without a row below (including any added to §3.3 after this table was last updated) renders: *"Something went wrong (code: `{error_code}`). Try again, or contact support with this code."* — logged client-side as a warning so the gap is caught in testing rather than shipped silently. New codes added to `internal/api/errors.go` MUST add a row here in the same change; this is a required step of that change, not an optional follow-up (see also ADR-034).
-
-**Coverage note.** 8 of the 28 `ErrorCode` values currently declared in `internal/api/errors.go` are either explicitly internal-only or not yet triggered by any live code path (reserved ahead of the feature that will use them). Those rows are marked `n/a` / "reserved" below rather than given invented consumer copy — writing warm end-user prose for an error no user can currently encounter would misrepresent the product's current behavior.
-
-| `error_code` | Surface | Headline | Body | Suggested action | Severity |
-| --- | --- | --- | --- | --- | --- |
-| `INVALID_REQUEST` | Both | That didn't go through | Something in the request wasn't formatted correctly. | Update to the latest client version and try again; if it keeps happening, contact support with the request ID. Usually a client-side defect, not a user mistake. | `escalate` |
-| `PROVIDER_DEPARTED` | Provider | This provider has left the network | Your provider record is marked departed and can no longer serve requests. | If this is unexpected, re-register via `cmd/provider register` to rejoin. | `action-required` |
-| `ESCROW_FROZEN` | Provider | Your account is frozen | Your escrow balance is frozen pending a dispute or seizure review. | Contact support — this isn't something to retry. *(Reserved: not yet triggered by any live code path.)* | `escalate` |
-| `NETWORK_NOT_READY` | Data Owner | Uploads are paused network-wide | The network hasn't met its minimum readiness conditions yet. | Retrying automatically — no action needed. | `transient-retry` |
-| `INSUFFICIENT_ASN_DIVERSITY` | Data Owner | Upload paused | Not enough provider diversity right now. | Retry will happen automatically when the network recovers. *(FR-009 wording — do not rephrase.)* | `transient-retry` |
-| `RAZORPAY_UNAVAILABLE` | Data Owner | Payment service is temporarily down | We couldn't reach the payment provider just now. | Try again in a few minutes. | `transient-retry` |
-| `INTERNAL_ERROR` | Both | Something went wrong on our end | An unexpected error occurred. | Try again; if it persists, contact support with the request ID shown. | `escalate` |
-| `VETTING_CAP_EXCEEDED` | — | *n/a* | Internal assignment-service scheduling condition; the service retries automatically as existing vetting chunks are retired. | Never surfaced to a client request. | `n/a` |
-| `REAL_SHARD_ON_VETTING_PROVIDER` | — | *n/a* | Internal invariant violation. | Never surfaced to clients (already noted as such in §3.3). | `n/a` |
-| `DEMO_MODE_REAL_PAYMENT` | — | *n/a* | Startup guard: the process refuses to start. | Operator/deployment concern (surfaced in process logs), not rendered by `cmd/client` or `cmd/provider`. | `n/a` |
-| `PROD_MODE_ENV_SECRET` | — | *n/a* | Startup guard: the process refuses to start. | Operator/deployment concern, not rendered by either client app. | `n/a` |
-| `UNAUTHORIZED` | Both | You've been signed out | Your session token is missing, expired, or invalid. | Log in again. | `action-required` |
-| `INSUFFICIENT_ESCROW_BALANCE` | Data Owner | Add funds to continue | Your balance won't cover 30 days of storage for this file. | Top up your balance, then retry the upload. | `action-required` |
-| `INVALID_PHONE_NUMBER` | Both | Check that phone number | The number entered isn't in a recognized format. | Re-enter your number including the country code. | `action-required` |
-| `INVALID_AMOUNT` | Data Owner | Enter a valid amount | The amount needs to be a positive number. | Re-enter the amount and try again. | `action-required` |
-| `INVALID_CHALLENGE_NONCE` | — | *n/a (pending)* | Not currently triggered via the REST API. | If wired into a libp2p protocol response instead of the REST envelope, treat as a provider-daemon diagnostic, not end-user copy — revisit this row if that changes. | `n/a` |
-| `WRONG_ROLE` | Both | Wrong kind of account for this | This action needs a different account type than the one signed in. | Switch accounts, or check you're running the right command (`cmd/client` vs. `cmd/provider`). | `action-required` |
-| `INVALID_BODY_SIGNATURE` | Both | Couldn't verify that request | The cryptographic signature on this request didn't check out. | Usually a client bug or a corrupted local key. Try again; if it persists, check your keystore or contact support. | `escalate` |
-| `NOT_FOUND` | Both | Couldn't find that | The file or provider referenced doesn't exist, or you don't have access to it. | Double-check the ID and try again. | `action-required` |
-| `DUPLICATE_CHALLENGE_NONCE` | — | *n/a (pending)* | Not currently triggered via the REST API. | Same note as `INVALID_CHALLENGE_NONCE` above. | `n/a` |
-| `PHONE_ALREADY_REGISTERED` | Both | That number is already registered | An account already exists for this phone number. | Log in instead, or use account recovery if you've lost access. | `action-required` |
-| `OTP_RATE_LIMITED` | Both | Too many attempts | You've requested a verification code too many times. | Wait for the cooldown shown, then try again. | `transient-retry` |
-| `INVALID_OTP` | Both | That code didn't match | The verification code entered is wrong or has expired. | Request a new code and try again. | `action-required` |
-| `TOKEN_REFRESH_RATE_LIMITED` | Provider | Session refresh on cooldown | Your daemon tried to refresh its session token too soon. | Automatic — the daemon retries after the cooldown. No action needed. | `transient-retry` |
-| `DOWNTIME_ALREADY_ACTIVE` | Provider | Downtime window already open | You've already reported planned downtime that hasn't ended yet. | No action needed. If this is unexpected, check your daemon's status. | `info` |
-| `FILE_ALREADY_DELETED` | Data Owner | Already deleted | This file was already removed. | No action needed. | `info` |
-| `FILE_ALREADY_REGISTERED` | Data Owner | Already uploaded | A file with this ID has already been registered. | If this wasn't intentional, check your upload history before retrying. | `info` |
-| `INSUFFICIENT_PROVIDER_CAPACITY` | Data Owner | Not enough storage available right now | The network doesn't have enough free provider capacity for this upload size. | Try again later, or try a smaller file. *(Reserved: constant exists in Go; not yet wired to a live path or to `openapi.yaml`.)* | `transient-retry` |
-
-**Process rule.** This table, `internal/api/errors.go`, and `openapi.yaml` must reconcile on every change to any one of them — the same three-way discipline `errors.go`'s own header comment already applies to itself and OAS, extended here to include this section. See ADR-034 for the decision to centralize copy here rather than duplicating it inside `cmd/client`/`cmd/provider`, and for the incremental-coverage rationale behind the fallback rule above.
