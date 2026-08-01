@@ -770,6 +770,51 @@ These require a business or product decision before private beta opens.
 | OQ-004 | What RocksDB rate limiter value keeps p99 audit latency ≤ 200 ms under concurrent compaction on a consumer 7200 RPM HDD? Run benchmark protocol §7.5 Q27-1 before GA. | Engineering | Before V2 GA | ADR-023 |
 | OQ-005 | At what observed BWavg does Hitchhiker code adoption for V3 become justified? Decision gate: if V2 BWavg exceeds 60 Kbps/peer over the first 6 months, implement. (Q39-1) | Engineering | 6 months post-launch | ADR-026 |
 
+### Q42-1 — Does a paid, escrow-penalized marketplace need a public leaderboard the way BOINC's unpaid volunteer model does?
+
+**Raised by:** Paper 42 (BOINC)
+**Status:** open
+**Blocked on:** the Impact Analytics design (`ux-finding.md` §8) — real money may change whether ranking against other providers motivates or discourages participation. Not resolved by Paper 42, which only covers an unpaid context.
+
+---
+
+### Q43-1 — If Vyomanaut pursues an institution-led rollout, is the unit of trust the institution's IT department, or the individual machine's user with institutional awareness but no formal sign-off?
+
+**Raised by:** Paper 43 (Condor)
+**Status:** open
+**Blocked on:** the business-development decision in `ux-finding.md` §5.2. Neither Condor's IT-led model nor BOINC's individual-opt-in model (Paper 42) precedents a hybrid directly.
+
+---
+
+### Q44-1 — What is a defensible, citable per-terabyte or per-server embodied-carbon figure, current enough to show a specific number to an individual provider?
+
+**Raised by:** Paper 44 (Masanet et al.)
+**Status:** open
+**Blocked on:** a dedicated embodied-carbon source — Paper 44 only grounds the operational-energy half of the Impact Analytics claim, not the manufacturing/embodied half the actual pitch depends on.
+
+---
+
+### Q45-1 — Does Wails' in-process binding model constrain a future browser-based or mobile companion app?
+
+**Raised by:** Paper 45 (Wails/Electron)
+**Status:** open
+**Blocked on:** scoping of any future mobile companion. The existing REST API (M11) is expected to serve that need independent of the desktop shell choice, but this has not been explicitly verified against Wails' architecture.
+
+---
+
+### Q46-1 — What fraction of Storj's total network capacity comes from its Commercial Storage Node Operator Program versus individual/home operators?
+
+**Raised by:** Paper 46 (Storj node operator docs)
+**Status:** open
+**Blocked on:** Storj does not publish this split publicly, as far as this review found. Without it, the size of the "true home consumer" segment within Storj's existing network is an estimate, not a measured figure.
+
+---
+
+### Q47-1 — How much of Vyomanaut's reliability-score/payout-multiplier formula should be disclosed to providers, given that full opacity risks the trust breakdown this paper documents, and full disclosure risks the score being gamed?
+
+**Raised by:** Paper 47 (Rosenblat & Stark)
+**Status:** open
+**Blocked on:** the forthcoming Impact Analytics / earnings-transparency design. Directly related to the already-accepted ADR-016 addendum (gross/multiplier/withheld columns), which supplies the data this decision would act on, but does not itself decide how much of the formula to show
 ---
 
 ### 10.2 Engineering Open Questions — Telemetry

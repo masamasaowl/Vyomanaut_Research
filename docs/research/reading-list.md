@@ -7,7 +7,7 @@ All phases before Phase 2B were completed. The updated list reflects true status
 ## Phase 0 — Landscape survey ✅ Complete
 
 | # | Paper | Status |
-|---|---|---|
+| --- | --- | --- |
 | 1 | BitTorrent — Bram Cohen | ✅ Paper 01 |
 | 2 | Kademlia — Maymounkov & Mazieres | ✅ Paper 02 |
 | 3 | S/Kademlia — Baumgart & Mies | ✅ Paper 03 |
@@ -19,7 +19,7 @@ All phases before Phase 2B were completed. The updated list reflects true status
 ## Phase 1 — Coordination, storage, and foundational protocols ✅ Complete
 
 | # | Paper | Status |
-|---|---|---|
+| --- | --- | --- |
 | 1 | Blake & Rodrigues (HotOS 2003) | ✅ Paper 06 |
 | 2 | SoK: DSN — Li et al. | ✅ Paper 07 |
 | 3 | Bhagwan et al. — Availability (IPTPS 2003) | ✅ Paper 08 |
@@ -40,7 +40,7 @@ All phases before Phase 2B were completed. The updated list reflects true status
 ## Phase 2A — Erasure coding, peer measurement, geographic routing ✅ Complete
 
 | # | Paper | Status |
-|---|---|---|
+| --- | --- | --- |
 | 1 | EC Survey — Shen et al. (ACM ToS 2025) | ✅ Paper 19 |
 | 2 | IPFS Measurement — Trautwein et al. (SIGCOMM 2022) | ✅ Paper 20 |
 | 3 | Gnutella/Napster Measurement — Saroiu et al. (MMCN 2002) | ✅ Paper 21 |
@@ -53,7 +53,7 @@ All phases before Phase 2B were completed. The updated list reflects true status
 ## Phase 2B — Reputation, adversarial behaviour, DHT churn ⚠️ Partial
 
 | # | Paper | Status | Priority |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | 1 | EigenTrust — Kamvar et al. (WWW 2003) | ✅ Paper 24 | — |
 | 2 | Handling Churn in a DHT — Rhea et al. (USENIX ATC 2004) | ⬜ READ NEXT | HIGH — validates ADR-006 polling interval; confirms Kademlia preference for long-lived contacts aligns with incentivized provider behaviour |
 | 3 | IRON File Systems — Prabhakaran et al. (SOSP 2005) | ✅ Paper 25 | — |
@@ -85,7 +85,7 @@ All phases before Phase 2B were completed. The updated list reflects true status
 These two papers were not in the original plan but directly answer blocking open questions.
 
 | # | Paper | Priority | Why |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | 4-1 | "Challenging Tribal Knowledge — Large-Scale Measurement Campaign on Decentralized NAT Traversal" — Balduf et al. (arXiv 2025, arxiv.org/abs/2510.27500) | HIGH | First large-scale DCUtR study: 4.4M traversal attempts, 70% hole-punch success, TCP=UDP under DCUtR. Answers Q13-1 (relay overhead for symmetric-NAT providers) and Q20-1 (Indian router NAT type distribution). Must be read before the libp2p integration module is built. |
 | 4-2 | "Flash Reliability in Production: The Expected and the Unexpected" — Schroeder, Lagisetty, Merchant (FAST 2016, usenix.org/conference/fast16/...) | MEDIUM | Empirical latent sector error and spatial failure correlation rates in consumer SSDs and HDDs. Answers Q25-1 (proactive scrubbing) and Q25-2 (sparse vLog placement necessity). Must be read before the WiscKey storage engine ships to production. |
 
@@ -94,7 +94,7 @@ These two papers were not in the original plan but directly answer blocking open
 ## Phase 5 — Economic mechanism ❌ Blocked on Phase 1 #14 (Filecoin) + Phase 2B #4 replacement (PeerTrust)
 
 | # | Paper | Status | Why |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | 5-1 | Filecoin Whitepaper §3–4 | ⬜ Prerequisite from Phase 1 | Pricing model and SLA enforcement |
 | 5-2 | PeerTrust — Xiong & Liu (IEEE TKDE 2004) | ⬜ Phase 2B #4 replacement | Reputation aggregation, penalty structure design |
 | 5-3 | "Incentive Mechanisms in Peer-to-Peer Networks — A Systematic Literature Review" — Ihle et al. (ACM Computing Surveys 2023, doi:10.1145/3578581) | ⬜ NEW | Comprehensive survey of monetary, reputation, and service incentives across P2P network types. Directly feeds ADR-024 parameter space: minimum vetting period, held-earnings percentage, penalty structure design. More directly applicable to Vyomanaut than TrustDSN would have been. |
@@ -103,14 +103,40 @@ After reading Phase 5, ADR-024 can be written and the pricing model finalised.
 
 ---
 
-## Phase 6 — Strengthening the Architecture 
+## Phase 7 — User-facing application: precedent, audience, and shell architecture 🆕 In progress
+
+Triggered by the decision to design a dedicated desktop application (`ux-finding.md`, `desktop-application-foundations.md`). These sources ground the market positioning, provider-persona correction, and shell-technology decision in primary and documentary evidence rather than informal research alone.
+
+| # | Paper | Status | Feeds |
+| --- | --- | --- | --- |
+| 42 | Anderson — BOINC: A System for Public-Resource Computing and Storage (GRID 2004) | ✅ Paper 42 | ADR-009 confirmation; Impact Analytics design; provider-audience-segmentation framing |
+| 43 | Litzkow, Livny & Mutka — Condor: A Hunter of Idle Workstations (ICDCS 1988) | ✅ Paper 43 | Institutional/IT-led rollout precedent; app least-privilege caution |
+| 44 | Masanet et al. — Recalibrating Global Data Center Energy-Use Estimates (Science 2020) | ✅ Paper 44 | Impact Analytics claim — narrows the environmental pitch to avoided new-hardware manufacturing, not general "data centers are wasteful" framing |
+| 45 | Wails and Electron desktop shell documentation and issue trackers | ✅ Paper 45 | Shell technology decision (`desktop-application-foundations.md` §1) |
+| 46 | Storj node operator documentation and community forum | ✅ Paper 46 | Provider persona correction (`ux-finding.md` §4.2) |
+| 47 | Rosenblat & Stark — Algorithmic Labor and Information Asymmetries: A Case Study of Uber's Drivers (IJoC 2016) | ✅ Paper 47 | Earnings-transparency design consuming the ADR-016 addendum; provider-facing tone/positioning |
+
+**Not yet covered, candidates for continuing Phase 7:**
+
+| Candidate | Why it would help |
+| --- | --- |
+| A rigorous, peer-reviewed source on P2P/DePIN adoption barriers specific to crypto-token economics (beyond the informal review already in `ux-finding.md` §4) | Would upgrade the "crypto tokens confuse mainstream users" claim from an informally-reviewed finding to a properly cited one before it's used to justify the fiat/UPI differentiation in an ADR |
+| HCI/CSCW literature on volunteer-computing motivation beyond Anderson's own account (e.g. Nov, Anderson & Arazy on citizen-science participation) | Would deepen the Impact Analytics design beyond BOINC's own single-paper account of what keeps participants engaged |
+| A primary source on WebKitGTK's maturity/quality relative to Chromium, if and when Linux support is scoped | Not needed for the Windows-first decision already made, but should be read before any Linux-specific native-shell ADR is drafted |
+| A follow-up empirical study on gig-worker trust after platforms added more disclosure (post-2016), to check whether Paper 47's findings still hold once platforms respond | Would confirm whether the earnings-transparency design informed by Paper 47 is calibrated correctly, or whether disclosure alone was later shown to be insufficient |
+
+After Phase 7's core six papers, the shell-technology and provider-persona decisions in `ux-finding.md` / `desktop-application-foundations.md` are considered adequately grounded to proceed to formal ADRs, per the plan agreed for this phase of work.
+
+---
+
+## Phase 6 — Strengthening the Architecture
 
 | **Paper** | **Priority** | **ADR risk** | **Reasoning** |
 | --- | --- | --- | --- |
-| **New — not on provided list** |  |  |  |
+| **New — not on provided list** | | | |
 | **Dalle et al. — "Analysis of Failure Correlation in P2P Storage" (IEEE P2P 2009)** | **Read first** | ADR-003 ADR-004 | Same Giroire group as Paper 10. Proves the independent-failure formula gives correct BWavg average but misses burst variance when a provider departs and simultaneously drops all its chunks. Our n=56 wide stripe makes burst amplitude large. The safety margin of r=40 is unvalidated against this regime. Could require increasing r0 or adding a burst headroom multiplier. |
 | **Shelby — "Proving Incentive Compatibility in DSN" (arXiv:2510.11866, Oct 2025)** | **Read first** | ADR-002 ADR-024 | Formally proves P2P provider auditing has mutual full dishonesty as the unique Nash equilibrium. Vyomanaut's microservice-as-sole-auditor design is the game-theoretic escape. Validates ADR-002 and ADR-024 with a proof that was unavailable when those ADRs were written. No ADR changes needed — this strengthens them. |
-| **Erasure coding + repair group** |  |  |  |
+| **Erasure coding + repair group** | | | |
 | **Nath et al. — "Subtleties in Tolerating Correlated Failures" (NSDI 2006)** | **Before building** | ADR-003 ADR-014 | Shows larger-m erasure systems suffer stronger diminishing returns under correlated failures. ERASURE(8,16) is hurt much more than ERASURE(1,4) as correlation rises. Our ERASURE(16,56) has m=40 parity chunks — the widest stripe in any studied system. Combined with Dalle et al., this establishes that our 20% ASN cap must be the primary correlated-failure defense, not the erasure parameters alone. No ADR change likely, but the quantitative safety argument must be updated. |
 | **Silberstein et al. — "Lazy Means Smart" (SYSTOR 2014)** | **Before building** | ADR-004 ADR-026 | Claims simple threshold-based lazy repair (Giroire's r0 approach) is "not effective in large-scale DSS." Proposes priority-based repair scheduling. At Vyomanaut's P2P scale (hundreds of providers), the simple threshold likely holds, but the priority ordering insight matters for the repair scheduler implementation. Feeds ADR-026 (Hitchhiker, V3). No ADR change needed but adds one implementation constraint to ADR-004. |
 | **Game Theoretic Framework for P2P Incentives** | **Before building** | ADR-024 | Nash equilibrium conditions for honest storage. ADR-024 is now Accepted but was designed without formal game-theoretic validation. This paper checks whether our per-audit-passed payment satisfies the Nash conditions. The Shelby paper (above) provides a partial answer, but this paper addresses the general P2P game independently. Should be read to confirm ADR-024 is not accidentally incentive-incompatible at the parameter level. |
