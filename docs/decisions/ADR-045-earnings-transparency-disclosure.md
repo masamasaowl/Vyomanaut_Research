@@ -1,36 +1,38 @@
-# ADR-044 — Impact Analytics: Scope the Environmental Claim to Avoided Hardware, Not General Data-Center Waste
+# ADR-045 — Earnings Transparency: Disclose Amounts and Reason Category, Not the Scoring Formula
 
 **Status:** Proposed
-**Topic:** #23 Environmental Impact & Sustainability Messaging
+**Topic:** #20 Client-Facing UX & Copy
 **Supersedes:** —
 **Superseded by:** —
-**Research source:** Paper 44 (Masanet et al.)
+**Research source:** Paper 47 (Rosenblat & Stark)
 
 ---
 
 ## Context
 
-`ux-finding.md` §8 commits to an "Impact Analytics" feature showing providers a defensible environmental claim. Paper 44 (Science, 2020) found that global data-center electricity use stayed roughly flat from 2010–2018 despite a 550% workload increase, directly undercutting the popular "data centers are an exploding energy problem" framing several informal sustainability pitches rely on. This decision fixes the scope of the claim before any copy or number is written.
+The ADR-016 addendum already records, per release, the gross amount and the exact multiplier applied — the data needed to explain a reduced payout. Paper 47 documents that Uber drivers' distrust stems specifically from opaque fare/earnings calculation, while also showing that platforms have reason to keep some algorithmic detail undisclosed to prevent gaming. This decision fixes how much of that data actually reaches the provider, and in what form — a question Q47-1 left open.
 
 ## Options Considered
 
 | Option | Pros | Cons |
 | --- | --- | --- |
-| A general "you're helping fight data-center energy waste" claim | Simple, emotionally resonant copy | Directly contradicted by Paper 44's own finding — repeats the category of claim the paper was written to correct |
-| **A narrower claim: avoided new-hardware manufacturing and avoided new dedicated-cooling construction, specifically** | Defensible against the best available evidence; does not depend on which way current-year hyperscaler energy trends are moving | Requires a separate, currently-unsourced embodied-carbon-per-unit figure before any specific number can be shown (Q44-1) — cannot ship a precise number yet, only the qualitative claim |
+| Full opacity — show only the final payout amount | Simplest to build; scoring logic fully protected from gaming | Directly reproduces the opacity Paper 47 identifies as the mechanism of driver distrust |
+| Full disclosure — show the exact reliability-score formula and weights | Maximum transparency | Makes the score straightforwardly gameable, undermining the audit/reliability system's own purpose |
+| **Disclose gross amount, multiplier applied, and a plain-language reason category (e.g., "reliability score dropped below 95% this period") — withhold the exact formula and weights** | Directly answers "why was my payout smaller," using data already captured by the ADR-016 addendum, without exposing the mechanics a bad actor would need to game the score | Requires maintaining a mapping from internal score thresholds to plain-language reason categories, kept in sync as scoring logic evolves |
 
 ## Decision
 
-Impact Analytics copy is scoped to the claim that using existing idle hardware avoids the embodied carbon and material cost of manufacturing new dedicated storage hardware and building new purpose-built cooling infrastructure — not a general claim about data-center energy waste or growth. No specific quantitative figure (grams of CO2, kg of hardware) ships until a bottom-up, per-unit embodied-carbon source is identified and verified (tracked as Q44-1); until then, the feature ships with qualitative language only.
+The Provider app's earnings screen shows, for any release where the multiplier was below 100%: the gross amount, the amount actually released, and a plain-language reason category drawn from a small, fixed set (e.g., "reliability score below threshold," "uptime below threshold" — exact set to be defined alongside the scoring implementation). The underlying formula, exact score, and exact thresholds are not disclosed. This is rendered through the same IC §14 copy contract used for error/status messaging, not a separate ad hoc earnings-specific text system.
 
 ## Consequences
 
-**Positive:** the product's sustainability messaging is defensible against the best current evidence rather than repeating a debunked narrative; avoids a credibility risk if a user or journalist checks the claim against Paper 44 or similar sources.
+**Positive:** directly answers the "why was my payout smaller" question using data the ledger already captures (ADR-016 addendum), without exposing gameable scoring internals; consistent with the existing error/status copy infrastructure rather than a new parallel system.
 
-**Negative:** the Impact Analytics feature cannot show a specific number at launch — only qualitative framing — until the embodied-carbon sourcing work is done.
+**Negative:** the reason-category mapping is a new piece of state to define and maintain, separate from both the raw score computation and the copy contract, and must be kept honest as scoring logic changes.
 
-**Open constraints:** Q44-1 (a defensible per-unit embodied-carbon figure) must be resolved before any quantitative version of this feature ships.
+**Open constraints:** the exact set of reason categories is not yet defined — this ADR fixes the disclosure *policy* (amounts + category, not formula), not the final category list, which should be defined alongside the scoring/reliability implementation itself.
 
 ## References
 
-- Paper 44 — Recalibrating Global Data Center Energy-Use Estimates (Masanet et al., Science 2020)
+- Paper 47 — Algorithmic Labor and Information Asymmetries: A Case Study of Uber's Drivers (Rosenblat & Stark, IJoC 2016)
+- ADR-016 addendum — Gross Amount and Release Multiplier on RELEASE Events (supplies the data this ADR governs disclosure of)

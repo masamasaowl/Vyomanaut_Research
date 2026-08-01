@@ -815,6 +815,13 @@ These require a business or product decision before private beta opens.
 **Raised by:** Paper 47 (Rosenblat & Stark)
 **Status:** open
 **Blocked on:** the forthcoming Impact Analytics / earnings-transparency design. Directly related to the already-accepted ADR-016 addendum (gross/multiplier/withheld columns), which supplies the data this decision would act on, but does not itself decide how much of the formula to show
+
+### Q48-1 — Is the fiat/UPI advantage over crypto-token wallets durable, or could improved wallet UX narrow this gap over time?
+
+Raised by: Paper 48 (Voskobojnikov et al., crypto wallet UX)
+Status: open 
+Blocked on: nothing actionable now — flagged as a watch item. The crypto industry's own 2025 account-abstraction efforts (e.g., EIP-7702) are attempting to close exactly this gap; revisit if wallet UX changes materially before any ADR treats the fiat/UPI advantage as permanent rather than current
+
 ---
 
 ### 10.2 Engineering Open Questions — Telemetry
