@@ -1311,34 +1311,11 @@ Row security policies enforce Invariants 1 and 2 at the database engine level,
 independent of application code. Enable row-level security on both tables and
 grant the application role `INSERT` only.
 
-DOC SYNC NOTE (Milestone 7 corrections session): this section previously
-showed only three policies (`audit_receipts_insert_only`,
-`audit_receipts_phase2_update`, `audit_receipts_gc_abandon`) and predated
-ADR-032 (`FORCE ROW LEVEL SECURITY` + the `_app_select`/`_gc_select` SELECT
-policies) and ADR-033 (`audit_receipt_nonces`, the global replay-protection
-guard table). Code had already shipped both in `migrations/generator.go`;
-this section is now brought back in sync with it, plus the new
-`audit_receipts_record_response` policy this session adds (see below).
-
 ```sql
 -- ────────────────────────────────────────────────────────────────────────────
 -- audit_receipts — INSERT only (Invariant 1)
 -- ────────────────────────────────────────────────────────────────────────────
 ALTER TABLE audit_receipts ENABLE ROW LEVEL SECURITY;
--- FORCE so the policies apply even to a role that OWNS the table. Without
--- this, an owner (or superuser) silently bypasses append-only enforcement.
--- (ADR-032)
-ALTER TABLE audit_receipts FORCE ROW LEVEL SECURITY;
-
--- SELECT: the request path must read receipts (own-receipt lookups, and the
--- row read that every UPDATE's WHERE clause performs under FORCE RLS —
--- without a SELECT policy, an UPDATE silently matches zero rows regardless
--- of the target row's actual state). (ADR-032)
-CREATE POLICY audit_receipts_app_select
-    ON audit_receipts
-    FOR SELECT
-    TO vyomanaut_app         -- the microservice's Postgres role
-    USING (TRUE);
 
 -- Allow the microservice application role to insert new rows.
 CREATE POLICY audit_receipts_insert_only
@@ -1362,31 +1339,6 @@ CREATE POLICY audit_receipts_phase2_update
         service_countersign_ts IS NOT NULL
     );
 
--- Milestone 7 corrections session (Option B, three-phase write): persists
--- response_hash, provider_sig, response_latency_ms, and jit_flag onto a
--- still-PENDING row the instant a provider's signed response is validated —
--- BEFORE audit_receipts_phase2_update above adjudicates PASS/FAIL/TIMEOUT.
--- This is a SEPARATE PERMISSIVE policy, not an edit to
--- audit_receipts_phase2_update above: PostgreSQL ORs the USING/WITH CHECK
--- clauses of multiple PERMISSIVE policies for the same role and command, so
--- the two policies together cover exactly the two UPDATE shapes vyomanaut_app
--- performs on this table — audit_result staying NULL (this policy) or
--- becoming terminal (the policy above) — and nothing else.
-CREATE POLICY audit_receipts_record_response
-    ON audit_receipts
-    FOR UPDATE
-    TO vyomanaut_app
-    USING (
-        audit_result IS NULL AND
-        abandoned_at IS NULL AND
-        response_hash IS NULL
-    )
-    WITH CHECK (
-        audit_result   IS NULL AND
-        response_hash  IS NOT NULL AND
-        provider_sig   IS NOT NULL
-    );
-
 -- Allow the GC process to mark PENDING rows as abandoned after 48h.
 CREATE POLICY audit_receipts_gc_abandon
     ON audit_receipts
@@ -1402,45 +1354,7 @@ CREATE POLICY audit_receipts_gc_abandon
         audit_result IS NULL      -- GC never sets the result; only abandoned_at
     );
 
--- SELECT for the GC role: the abandon UPDATE's own USING/WHERE clause must
--- be able to read the stale PENDING rows it targets under FORCE RLS.
--- (ADR-032)
-CREATE POLICY audit_receipts_gc_select
-    ON audit_receipts
-    FOR SELECT
-    TO vyomanaut_gc
-    USING (TRUE);
-
 -- No DELETE policy is created. Any DELETE attempt returns permission denied.
-
--- ────────────────────────────────────────────────────────────────────────────
--- audit_receipt_nonces — global replay-protection guard (Invariant 5, ADR-033)
--- ────────────────────────────────────────────────────────────────────────────
--- A partitioned audit_receipts cannot enforce global uniqueness on
--- challenge_nonce alone (the unique key must include the partition key —
--- ADR-033). This small, non-partitioned table holds that global guarantee:
--- the microservice INSERTs the nonce here in the SAME transaction as the
--- receipt (see WriteReceiptPhase1, IC §6). A duplicate nonce raises a PK
--- violation and aborts the whole write — the replay is rejected.
-ALTER TABLE audit_receipt_nonces ENABLE ROW LEVEL SECURITY;
--- FORCE + insert-only means a compromised app credential cannot delete
--- guard rows to enable a replay; only the migrator (out-of-band, BYPASSRLS)
--- prunes expired nonces.
-ALTER TABLE audit_receipt_nonces FORCE ROW LEVEL SECURITY;
-
-CREATE POLICY audit_receipt_nonces_app_select
-    ON audit_receipt_nonces
-    FOR SELECT
-    TO vyomanaut_app
-    USING (TRUE);
-
-CREATE POLICY audit_receipt_nonces_insert_only
-    ON audit_receipt_nonces
-    FOR INSERT
-    TO vyomanaut_app
-    WITH CHECK (TRUE);
-
--- No UPDATE or DELETE policy. A nonce, once recorded, is immutable for the app.
 
 -- ────────────────────────────────────────────────────────────────────────────
 -- escrow_events — INSERT only (Invariant 2)
@@ -1476,6 +1390,14 @@ audit receipts is countersigned. They are read optimisations; the underlying tab
 are always the source of truth. Background task throttling applies: refresh is
 suspended when foreground DB read latency at p99 approaches 50 ms (ADR-025).
 
+DOC SYNC NOTE (Milestone 8 corrections session): the SQL below is now an exact
+copy of `migrations/generator.go`'s `mv_provider_scores` definition, including
+`scores_as_of` (previously only mentioned as a trailing NOTE below the SQL
+rather than actually shown in it) and the new ARCH §20 JIT weight-penalty
+logic (`jit_penalized`), which mv_provider_scores did not implement at all
+before this session even though `audit_receipts.jit_flag` has been written
+since the Milestone 7 corrections session.
+
 ```sql
 -- ── Three-window reliability score per provider ───────────────────────────────
 -- Used by: scoring package, release multiplier computation, assignment service.
@@ -1484,8 +1406,34 @@ suspended when foreground DB read latency at p99 approaches 50 ms (ADR-025).
 -- for release multiplier computation (ADR-024). Stale scores produce wrong payments.
 -- The background task scheduler must refresh this view after every receipt batch
 -- and must not defer refresh beyond 60 minutes under background throttling.
+--
+-- ARCH §20 (Milestone 8 corrections session): "Three or more JIT flags from
+-- the same provider within a rolling 7-day window triggers a 0.5x weight
+-- penalty on that provider's audit passes in the 24h scoring window for 30
+-- days." jit_penalized below implements this as a stateless "did a
+-- qualifying 7-day window occur at any point in the last 30 days" check,
+-- logically equivalent to a 30-day-expiring flag, without needing any
+-- persisted state beyond audit_receipts itself — this view is dropped and
+-- recreated from scratch on every microservice restart, so no other design
+-- would stay consistent with that. Only the 24h window is weighted; 7d/30d
+-- are unaffected, per ARCH §20's own wording.
 
 CREATE MATERIALIZED VIEW mv_provider_scores AS
+WITH jit_penalized AS (
+    SELECT DISTINCT ar.provider_id
+    FROM audit_receipts ar
+    WHERE ar.jit_flag = TRUE
+      AND ar.abandoned_at IS NULL
+      AND ar.server_challenge_ts >= NOW() - INTERVAL '30 days'
+      AND (
+          SELECT COUNT(*)
+          FROM audit_receipts ar2
+          WHERE ar2.provider_id = ar.provider_id
+            AND ar2.jit_flag = TRUE
+            AND ar2.abandoned_at IS NULL
+            AND ar2.server_challenge_ts BETWEEN ar.server_challenge_ts - INTERVAL '7 days' AND ar.server_challenge_ts
+      ) >= 3
+)
 SELECT
     provider_id,
     score_24h,
@@ -1496,44 +1444,53 @@ SELECT
         COALESCE(score_24h, 0) * 0.5 +
         COALESCE(score_7d,  0) * 0.3 +
         COALESCE(score_30d, 0) * 0.2
-    ) AS score_composite
+    ) AS score_composite,
+    NOW() AS scores_as_of  -- consumers must check age before using for payment decisions
 FROM (
     SELECT
-        provider_id,
+        sub.provider_id,
 
-        -- 24-hour window (highest weight: 0.5)
-        SUM(CASE WHEN server_challenge_ts >= NOW() - INTERVAL '24 hours'
-                 AND audit_result = 'PASS' THEN 1 ELSE 0 END)::FLOAT
-        / NULLIF(SUM(CASE WHEN server_challenge_ts >= NOW() - INTERVAL '24 hours'
-                          AND audit_result IS NOT NULL THEN 1 ELSE 0 END), 0)
+        -- 24-hour window (highest weight: 0.5). ARCH §20: pass_24h is
+        -- weighted 0.5x ONLY when this provider is in jit_penalized above.
+        (sub.pass_24h * (CASE WHEN jp.provider_id IS NOT NULL THEN 0.5 ELSE 1.0 END))
+        / NULLIF(sub.total_24h, 0)
         AS score_24h,
-        
-        -- 7-day window (weight: 0.3)
-        SUM(CASE WHEN server_challenge_ts >= NOW() - INTERVAL '7 days'
-                 AND audit_result = 'PASS' THEN 1 ELSE 0 END)::FLOAT
-        / NULLIF(SUM(CASE WHEN server_challenge_ts >= NOW() - INTERVAL '7 days'
-                          AND audit_result IS NOT NULL THEN 1 ELSE 0 END), 0)
-        AS score_7d,
 
-        -- 30-day window (weight: 0.2)
-        SUM(CASE WHEN server_challenge_ts >= NOW() - INTERVAL '30 days'
-                 AND audit_result = 'PASS' THEN 1 ELSE 0 END)::FLOAT
-        / NULLIF(SUM(CASE WHEN server_challenge_ts >= NOW() - INTERVAL '30 days'
-                          AND audit_result IS NOT NULL THEN 1 ELSE 0 END), 0)
-        AS score_30d
+        -- 7-day window (weight: 0.3) — unaffected by the JIT penalty.
+        sub.pass_7d::FLOAT / NULLIF(sub.total_7d, 0) AS score_7d,
 
-    FROM audit_receipts
-    WHERE abandoned_at IS NULL
-    GROUP BY provider_id
-) sub;
+        -- 30-day window (weight: 0.2) — unaffected by the JIT penalty.
+        sub.pass_30d::FLOAT / NULLIF(sub.total_30d, 0) AS score_30d
 
--- NOTE: The interval literals ('24 hours', '7 days', '30 days') in this view
--- are generated at microservice startup from NetworkProfile.ScoreWindow{Short,Medium,Long},
--- not hardcoded here. The view is DROPPED and RECREATED on every microservice restart.
--- In VYOMANAUT_MODE=demo the intervals are '2 minutes', '6 minutes', '20 minutes'.
--- This DDL shows the production values for reference only. (ADR-031)
--- Additionally: include NOW() AS scores_as_of in the SELECT so consumers can verify
--- the view age before using scores for payment decisions.
+    FROM (
+        SELECT
+            provider_id,
+            SUM(CASE WHEN server_challenge_ts >= NOW() - INTERVAL '24 hours'
+                    AND audit_result = 'PASS' THEN 1 ELSE 0 END) AS pass_24h,
+            SUM(CASE WHEN server_challenge_ts >= NOW() - INTERVAL '24 hours'
+                    AND audit_result IS NOT NULL THEN 1 ELSE 0 END) AS total_24h,
+            SUM(CASE WHEN server_challenge_ts >= NOW() - INTERVAL '7 days'
+                    AND audit_result = 'PASS' THEN 1 ELSE 0 END) AS pass_7d,
+            SUM(CASE WHEN server_challenge_ts >= NOW() - INTERVAL '7 days'
+                    AND audit_result IS NOT NULL THEN 1 ELSE 0 END) AS total_7d,
+            SUM(CASE WHEN server_challenge_ts >= NOW() - INTERVAL '30 days'
+                    AND audit_result = 'PASS' THEN 1 ELSE 0 END) AS pass_30d,
+            SUM(CASE WHEN server_challenge_ts >= NOW() - INTERVAL '30 days'
+                    AND audit_result IS NOT NULL THEN 1 ELSE 0 END) AS total_30d
+        FROM audit_receipts
+        WHERE abandoned_at IS NULL
+        GROUP BY provider_id
+    ) sub
+    LEFT JOIN jit_penalized jp ON jp.provider_id = sub.provider_id
+) scores;
+
+-- NOTE: The interval literals ('24 hours', '7 days', '30 days', and the two
+-- '30 days'/'7 days' literals inside jit_penalized) in this view are
+-- generated at microservice startup from NetworkProfile.ScoreWindow{Short,
+-- Medium,Long}, not hardcoded here. The view is DROPPED and RECREATED on
+-- every microservice restart. In VYOMANAUT_MODE=demo the intervals are
+-- '2 minutes', '6 minutes', '20 minutes'. This DDL shows the production
+-- values for reference only. (ADR-031)
 
 CREATE UNIQUE INDEX ON mv_provider_scores (provider_id);
 -- Required for concurrent refresh without locking.
