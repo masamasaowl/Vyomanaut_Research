@@ -2,7 +2,7 @@
 
 *A positioning and user-experience foundation document. Stands alongside `architecture.md`, `requirements.md`, and the other core system-design docs. This is not a spec and not an ADR — it is the thinking those documents and future ADRs should be built on.*
 
-*Out of scope, on purpose: the desktop shell framework (Electron/Wails/Tauri/etc.) and any milestone plan. Both come after this document is agreed.*
+*Companion document: `desktop-application-foundations.md` covers the desktop shell technology and other engineering primitives. Milestones are still out of scope for both documents — those come once the foundations are agreed.*
 
 ---
 
@@ -35,7 +35,7 @@ This is the whole pitch. Everything below exists to make sure we build it for th
 Storage is a 25-year-old industry with many well-defended corners. We looked at all of them. Vyomanaut competes in exactly one.
 
 | Category | Who's there | Why we are not competing here |
-|---|---|---|
+| --- | --- | --- |
 | **Consumer cloud storage** (Google Drive, Dropbox, iCloud, OneDrive) | ~$180–200B market. Dominated by ecosystem lock-in — people stay because of Gmail, Photos, Office, or their iPhone, not because of the storage itself. | We can't out-integrate an operating system or an office suite. This market isn't won on storage alone. |
 | **Enterprise object storage** (S3, Azure Blob, Google Cloud Storage, Cloudflare R2) | The default for anything a company builds on. Competes on uptime guarantees, compliance certificates, and being next to the compute that uses the data. | Needs guaranteed uptime and formal compliance. A network of home PCs that switch off at night cannot promise that, and shouldn't pretend to. |
 | **Block storage** (AWS EBS, Azure Managed Disks) | Acts as a raw, low-latency hard disk for a single server or database. | Wrong shape of problem entirely — this is millisecond-level, single-machine storage. We are file storage, not disk storage. |
@@ -67,24 +67,17 @@ We are not trying to out-Storj Storj. We are not chasing the NAS/home-server cro
 
 Individuals, small businesses, and anyone who wants affordable, private file storage without trusting one big company with it. This side of the product is well understood and not controversial — consumer storage apps already prove this audience is reachable with the right app.
 
-### 5.2 Providers — this is the persona that needs real thought
+### 5.2 Providers — the audience is real, and the product should stay agnostic about how it reaches them
 
-The instruction driving this document is clear: don't compete for the NAS crowd, go after the much bigger population of plain desktop and PC owners — starting with universities, offices, hospitals, and especially engineering students. Here is what the research says about that plan, including the parts that need to be handled carefully rather than assumed.
+The instruction driving this document is clear: don't compete for the NAS crowd, go after the much bigger population of plain desktop and PC owners — starting with universities, offices, hospitals, and especially engineering students. The product itself should not bet on any one of these being the way in. It should work equally well for one student installing it on their own PC, and for an IT department that decides to roll it out across a lab — and be good enough that either path is viable whenever the business decides to pursue it. Building well doesn't require picking a lane first; business development happens after, and a strong enough product earns its way into whichever market suits it best.
 
-**It's a real, proven idea — just not a new one.** Turning idle desktops across an institution into a shared resource is exactly what university computing has done for over 30 years:
+That said, two facts from researching this space are worth knowing now, because they shape what "works for anyone" actually requires of the app itself — not because they require choosing a market up front:
 
-- **HTCondor**, built at the University of Wisconsin in the 1980s, has been harvesting idle lab and office desktops across "thousands of campuses, labs, and organizations" ever since — precisely the model we're proposing, just for compute instead of storage.
-- **BOINC** (SETI@home and similar projects) proved individuals will donate idle machine resources at huge scale — millions of hosts — when the ask is simple and the cause feels worthwhile.
+**Turning idle desktops into a shared resource is a real, 30-year-proven idea.** HTCondor, built at the University of Wisconsin in the 1980s, has been harvesting idle lab and office desktops across "thousands of campuses, labs, and organizations" ever since. BOINC (SETI@home and similar) proved individuals will donate idle machine resources at huge scale — millions of hosts — when the ask is simple. Both models exist today, side by side, for the same underlying idea; the app should be equally at home being installed one machine at a time or handed to an IT administrator to roll out at scale.
 
-So the instinct is sound. Two things from that same history need to be carried over honestly, not skipped:
+**Institutional IT policy can be a real wall, and the app should be built to survive scrutiny either way.** Actual university IT policies commonly and explicitly ban peer-to-peer software by name (NYU's does, in exactly those words). This doesn't change what we build — it means the app should default to asking for exactly the permissions it needs and nothing more, explain itself clearly if a security team ever looks at it, and never assume it's welcome on a machine it didn't ask permission to run on. That's just good behavior for any desktop app, and it happens to also be what keeps the institutional door open for later.
 
-**First: "students" and "institutions" are two different sales motions, not one.** HTCondor's campus deployments are installed by the university's own IT or research-computing staff, machine-wide, with permission. BOINC's volunteers install it themselves, one machine at a time, with no one's permission needed. Vyomanaut needs to pick which motion it's running for universities/offices/hospitals — a slower, IT-approved rollout across many machines at once, or a faster, one-student-at-a-time install with no institutional backing. These lead to different first versions of the app and different first conversations we have. This should be a deliberate choice, not something we back into.
-
-**Second: institutional IT policy is a real wall, not a formality.** We looked at actual university IT policies. They commonly and explicitly ban exactly this category of software. NYU's policy bans "peer-to-peer file sharing software" by name. Other universities require every piece of lab software to be pre-approved and security-reviewed before it's installed. This doesn't mean the plan is wrong — it means the institutional route needs an actual conversation with an IT department, not just a download link, and the individual/student route needs to default to personally-owned machines, not the university's own lab PCs, unless we have that conversation first.
-
-**Third: engineering students mostly carry laptops, not desktops.** This matters more than it sounds like it should. A laptop is unplugged, moved between hostel, home, and classroom, and usually has far less spare disk space than a desktop. Vyomanaut needs a machine that's on, plugged in, and connected for long, predictable stretches — a desktop's whole reason for being. Engineering students are still exactly the right *audience* — young, tech-comfortable, exactly the "forward-thinking mindset" the brief calls for — but the best *device* target within that audience is the desktop lined up in their college's own computer lab, not the laptop in their bag. That again points back to needing an institutional conversation, not just an app.
-
-**The honest summary:** the target is right — plain desktop and PC owners, at real scale, via universities/offices/hospitals and the students inside them — but reaching it will need a real relationship with a handful of institutions early on, not just a polished download page. That's a go-to-market decision, not a UX one, but the UX (and the first version of the app) should be built with it in mind.
+One genuine device-level fact worth carrying into design: engineering students mostly carry laptops, not desktops, and a laptop that moves between hostel, home, and classroom on battery power makes a worse fit for a service that wants to be on, plugged in, and connected for long stretches — a desktop's whole reason for being. This isn't a reason to avoid students as an audience; it's a reason the app should read the machine it's on (plugged in vs. on battery, for instance) and be honest with the person about what that means for them, rather than pretending every device is equally suited.
 
 ---
 
@@ -106,8 +99,8 @@ We looked closely at four products that already do some version of "a background
 Concretely:
 
 - The app is a real, installed, native-feeling application — not a web page opened in a browser tab.
-- It looks and feels like clean, modern macOS software: minimal, uncluttered, confident use of type and whitespace, no dense settings screens dressed up as a "dashboard."
-- **macOS is the first platform we build for and hold to this bar.** Windows and Linux follow, matching it as closely as each platform allows — a web-based interface can be used to help reach Windows/Linux faster where it doesn't compromise the feel of the app, but macOS is where "done right" is defined.
+- It looks and feels like clean, modern, premium software: minimal, uncluttered, confident use of type and whitespace, no dense settings screens dressed up as a "dashboard."
+- **Windows is the first platform we build for and ship on.** Most Indian desktops — in homes, in offices, in university labs — run Windows, and the product needs to be ready to test and adopt the moment it launches, on the machines people actually have. macOS and Linux follow, matching the same design bar as closely as each platform allows.
 - Every screen assumes the person using it has never heard of erasure coding, peer-to-peer networks, or zero-knowledge encryption, and never needs to.
 
 ## 8. The experience: "Netflix," not "Honeygain"
@@ -126,8 +119,7 @@ This is also, deliberately, the opposite of the Honeygain model: those apps work
 
 ## 9. What still needs deciding (not answered here, on purpose)
 
-- **The desktop shell technology** (how the app is actually built) — deliberately left open. This choice affects how much creative and engineering freedom we keep, and shouldn't be locked in before the rest of this document is agreed.
-- **Which go-to-market motion we run first for providers** — institution-led (universities/offices/hospitals, IT-approved, high machine count per deal) versus individual-led (one student or PC owner at a time, no institutional approval needed). See §5.2 — this changes what the first version of the provider app needs to do.
-- **How we start institutional conversations** (universities, offices, hospitals) given the real IT-policy barrier in §5.2 — this is a business development question as much as a product one, and should be looked at before we assume lab machines as a v1 target.
+- **The desktop shell technology and the other engineering primitives it implies** — decided separately, in `desktop-application-foundations.md`, so that decision gets the dedicated attention it needs rather than a paragraph here.
+- **How and when we approach institutions** (universities, offices, hospitals) as a go-to-market motion — a business-development question, deliberately not a product one (§5.2). The product is built to work either way; this is about timing and outreach, not design.
 
 Everything else in this document — the problem, the solution, the market we're in, the market we're not in, who we're building for, and the design bar we're holding ourselves to — is intended to be settled.
