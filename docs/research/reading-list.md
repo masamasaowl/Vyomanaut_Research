@@ -115,17 +115,19 @@ Triggered by the decision to design a dedicated desktop application (`ux-finding
 | 45 | Wails and Electron desktop shell documentation and issue trackers | ✅ Paper 45 | Shell technology decision (`desktop-application-foundations.md` §1) |
 | 46 | Storj node operator documentation and community forum | ✅ Paper 46 | Provider persona correction (`ux-finding.md` §4.2) |
 | 47 | Rosenblat & Stark — Algorithmic Labor and Information Asymmetries: A Case Study of Uber's Drivers (IJoC 2016) | ✅ Paper 47 | Earnings-transparency design consuming the ADR-016 addendum; provider-facing tone/positioning |
+| 48 | Voskobojnikov et al. — The U in Crypto Stands for Usable: An Empirical Study of User Experience with Mobile Cryptocurrency Wallets (CHI 2021) | ✅ Paper 48 | Rigorously grounds the fiat/UPI differentiation claim (`ux-finding.md` §4); independently confirms the mnemonic-backup and vetting-period-visibility priorities |
 
 **Not yet covered, candidates for continuing Phase 7:**
 
 | Candidate | Why it would help |
 | --- | --- |
-| A rigorous, peer-reviewed source on P2P/DePIN adoption barriers specific to crypto-token economics (beyond the informal review already in `ux-finding.md` §4) | Would upgrade the "crypto tokens confuse mainstream users" claim from an informally-reviewed finding to a properly cited one before it's used to justify the fiat/UPI differentiation in an ADR |
 | HCI/CSCW literature on volunteer-computing motivation beyond Anderson's own account (e.g. Nov, Anderson & Arazy on citizen-science participation) | Would deepen the Impact Analytics design beyond BOINC's own single-paper account of what keeps participants engaged |
 | A primary source on WebKitGTK's maturity/quality relative to Chromium, if and when Linux support is scoped | Not needed for the Windows-first decision already made, but should be read before any Linux-specific native-shell ADR is drafted |
 | A follow-up empirical study on gig-worker trust after platforms added more disclosure (post-2016), to check whether Paper 47's findings still hold once platforms respond | Would confirm whether the earnings-transparency design informed by Paper 47 is calibrated correctly, or whether disclosure alone was later shown to be insufficient |
 
-After Phase 7's core six papers, the shell-technology and provider-persona decisions in `ux-finding.md` / `desktop-application-foundations.md` are considered adequately grounded to proceed to formal ADRs, per the plan agreed for this phase of work.
+Recheck (this pass): reviewed Phases 1–6 (Papers 1–41) for anything directly UX-relevant beyond what was already cited. Nothing in the existing set addresses interface/interaction design directly — the closest adjacent material is Paper 24 (EigenTrust) and the Phase 2C reputation-aggregation sources, which bear on Q47-1 (how much of the scoring formula to disclose) from the algorithm side, not the UX side. No changes made to Phases 1–6; noted here so this recheck doesn't need repeating.
+
+After Phase 7's seven papers, the shell-technology, provider-persona, and fiat/UPI differentiation claims in `ux-finding.md` / `desktop-application-foundations.md` are considered adequately grounded to proceed to formal ADRs, per the plan agreed for this phase of work.
 
 ---
 
