@@ -1299,86 +1299,36 @@ func ValidateResponse(challengeNonce [33]byte, responseHash [32]byte,
     providerSig [64]byte, providerPubKey [32]byte) error
 
 // WriteReceiptPhase1 performs the crash-safe Phase 1 INSERT to audit_receipts.
-// Inserts a PENDING row (audit_result = NULL) at CHALLENGE DISPATCH time —
-// before any provider response exists. ReceiptFields carries no provider
-// signature (an earlier revision of this doc said it did; that was
-// incorrect — see the PHASE TIMING NOTE in receipt.go for the full
-// reasoning). Returns the receipt_id (UUIDv7) assigned to the row.
-// Also INSERTs into audit_receipt_nonces, in the SAME transaction, as the
-// global replay-protection guard (Milestone 7 corrections session; DM §4.7,
-// ADR-033) — a partitioned audit_receipts cannot enforce global uniqueness
-// on challenge_nonce alone.
-// (ADR-015 §Crash-safe receipt writing, ADR-033)
+// Inserts a PENDING row (audit_result = NULL) with the provider signature.
+// Returns the receipt_id (UUIDv7) assigned to the row.
+// (ADR-015 §Crash-safe receipt writing)
 //
 // Pre-conditions:
 //   - All required receipt fields are non-zero
 //   - The database connection is open
 // Post-conditions (on nil error):
 //   - A row with audit_result = NULL exists in audit_receipts
-//   - A matching row exists in audit_receipt_nonces
-//   - Both rows are durable (WAL-flushed) before this function returns
-// Error semantics:
-//   - ErrReplayDetected: challenge_nonce was already used by a prior receipt
-//     — the whole transaction is rolled back, nothing is written.
-//   - Other database errors: returned; caller must not proceed to
-//     WriteReceiptRecordResponse/WriteReceiptPhase2 if Phase 1 fails.
+//   - The row is durable (WAL-flushed) before this function returns
+// Error semantics: database errors are returned; caller must not proceed with
+//   Phase 2 if Phase 1 fails.
 // Goroutine-safe: yes (uses connection pool).
 func WriteReceiptPhase1(ctx context.Context, db *sql.DB, fields ReceiptFields) (receiptID uuid.UUID, err error)
 
-// WriteReceiptRecordResponse performs the middle phase of the three-phase
-// write (Option B, Milestone 7 corrections session): persists
-// response_hash, provider_sig, response_latency_ms, and jit_flag onto a
-// still-PENDING row the instant a provider's signed response is validated
-// (ValidateResponse) — before WriteReceiptPhase2 adjudicates
-// PASS/FAIL/TIMEOUT. jit_flag is computed here via
-// EvaluateJIT(responseLatencyMs, p95ThroughputKbps); p95ThroughputKbps is
-// the caller's responsibility to supply, from the same providers row the
-// EWMA update below already requires reading after every response.
-// (ADR-014 Defence 3, ADR-015)
-//
-// Callers MUST call this before WriteReceiptPhase2 for any PASS or FAIL
-// result — see WriteReceiptPhase2's own pre-conditions below.
-//
-// Pre-conditions:
-//   - receiptID identifies an existing PENDING row from WriteReceiptPhase1
-//   - responseLatencyMs >= 0
-// Post-conditions (on nil error):
-//   - response_hash, provider_sig, response_latency_ms, and jit_flag are
-//     set; audit_result is still NULL
-// Error semantics:
-//   - ErrResponseAlreadyRecorded: response_hash was already non-NULL
-//     (idempotent retry), or the row is already abandoned or final.
-//   - Other database errors: returned to caller.
-// Goroutine-safe: yes.
-func WriteReceiptRecordResponse(ctx context.Context, db *sql.DB,
-    receiptID uuid.UUID, responseHash [32]byte, providerSig [64]byte,
-    responseLatencyMs int, p95ThroughputKbps *float64) error
-
 // WriteReceiptPhase2 performs the crash-safe Phase 2 UPDATE on audit_receipts.
 // Sets audit_result, service_sig, and service_countersign_ts atomically.
-// Unchanged in shape by the move to a three-phase write — still only ever
-// touches these three columns.
 // (ADR-015 §Crash-safe receipt writing, Invariant 1 in data-model.md)
 //
 // Pre-conditions:
 //   - receiptID must identify an existing PENDING row (audit_result IS NULL)
 //   - result must be PASS, FAIL, or TIMEOUT (not NULL)
 //   - len(serviceSig) == 64
-//   - for PASS/FAIL: WriteReceiptRecordResponse has already succeeded for
-//     this receiptID (DM §4.7's audit_receipts_response_consistency CHECK
-//     constraint requires response_hash/provider_sig to be non-NULL for
-//     PASS/FAIL; this function has no parameter for either and relies on
-//     WriteReceiptRecordResponse to have populated them first). A genuine
-//     TIMEOUT never calls WriteReceiptRecordResponse at all.
 // Post-conditions (on nil error):
 //   - The row is updated; audit_result is no longer NULL
 //   - The row security policy permits this specific NULL → terminal transition
 // Error semantics:
 //   - ErrReceiptAlreadyFinal: the row already has a non-NULL audit_result (idempotent; caller
 //     should treat this as success and return the existing service_sig)
-//   - Other database errors: returned to caller — including the
-//     response-consistency CHECK-constraint violation described above, for
-//     a PASS/FAIL call that skipped WriteReceiptRecordResponse.
+//   - Other database errors: return to caller.
 // Goroutine-safe: yes.
 func WriteReceiptPhase2(ctx context.Context, db *sql.DB,
     receiptID uuid.UUID, result AuditResult,
@@ -1898,28 +1848,13 @@ This `table enforces Invariant 1. The row security policy in
 [`data-model.md §6`](./data-model.md#6-row-security-policies) implements these restrictions at
 the database level, independent of application code.
 
-Three-phase write (Milestone 7 corrections session, Option B — previously
-two-phase; see IC §5.5):
-
 | Operation | Permitted by | Condition |
 | --- | --- | --- |
-| INSERT | `vyomanaut_app` | Phase 1 (dispatch): `audit_result = NULL`. `provider_sig` is NOT populated at this point — dispatch precedes any provider response (see IC §5.5's WriteReceiptPhase1). Also INSERTs a matching row into `audit_receipt_nonces`, in the SAME transaction (ADR-033, global replay protection) |
-| UPDATE `response_hash`, `provider_sig`, `response_latency_ms`, `jit_flag` | `vyomanaut_app` | Record-response step only (`WriteReceiptRecordResponse`); `WHERE audit_result IS NULL AND abandoned_at IS NULL AND response_hash IS NULL`; `audit_result` must remain `NULL` |
-| UPDATE `audit_result`, `service_sig`, `service_countersign_ts` | `vyomanaut_app` | Phase 2 (adjudicate, `WriteReceiptPhase2`) only; `WHERE audit_result IS NULL AND abandoned_at IS NULL`; `audit_result` must be `PASS`, `FAIL`, or `TIMEOUT` — never re-set to NULL. For `PASS`/`FAIL`, the record-response step above must already have run (DM §4.7 `audit_receipts_response_consistency` CHECK constraint) |
+| INSERT | `vyomanaut_app` | Phase 1 of the two-phase write: `audit_result = NULL`, `provider_sig` populated |
+| UPDATE `audit_result`, `service_sig`, `service_countersign_ts`, `jit_flag` | `vyomanaut_app` | Phase 2 of the two-phase write only; `WHERE audit_result IS NULL AND abandoned_at IS NULL`; `audit_result` must be `PASS`, `FAIL`, or `TIMEOUT` — never re-set to NULL |
 | UPDATE `abandoned_at` | `vyomanaut_gc` | GC process only; `WHERE audit_result IS NULL AND abandoned_at IS NULL AND server_challenge_ts < NOW() - INTERVAL '48 hours'`; sets to `NOW()` and never to NULL |
 | UPDATE any other column | **Prohibited** | All other columns are immutable after INSERT |
 | DELETE | **Prohibited for all roles** | No deletion ever. Invariant 1. |
-
-### `audit_receipt_nonces`
-
-This table holds the global replay-protection guarantee ADR-033 introduces —
-`audit_receipts` alone cannot enforce it once partitioned (DM §6).
-
-| Operation | Permitted by | Condition |
-| --- | --- | --- |
-| INSERT | `vyomanaut_app` | Same transaction as the corresponding `audit_receipts` Phase 1 INSERT, never on its own. A `PRIMARY KEY` violation on `challenge_nonce` means a replayed nonce; the whole transaction rolls back |
-| UPDATE | **Prohibited for all roles** | A nonce, once recorded, is immutable for the app |
-| DELETE | **Prohibited for `vyomanaut_app`** | Pruning of expired nonces is performed out-of-band by the migrator role (`BYPASSRLS`), never by the application |
 
 ### `escrow_events`
 
@@ -2152,14 +2087,17 @@ The following import directions are **prohibited**. A PR that introduces any pro
 | `internal/crypto` | Any other `internal/` package. This package is purely functional — no shared state, no I/O, no dependency on the data layer. Any utility needed here (e.g. byte comparison) uses the standard library only. |
 | `internal/erasure` | Any other `internal/` package. RS encoding takes bytes in and produces bytes out. It has no knowledge of the storage engine, the network, or the payment system. |
 | `internal/storage` | `internal/payment`, `internal/scoring`, `internal/repair`. The storage engine is unaware of economics or network topology. |
-| `internal/payment` | `internal/repair`, `internal/p2p`. The payment system does not initiate repair or open network connections. It receives instructions from the microservice entrypoint. |
+| `internal/payment` | `internal/repair`, `internal/p2p`. The payment system does not initiate repair or open network connections. It receives instructions from the microservice entrypoint. `internal/scoring` is a deliberate EXCEPTION, not an omission — see below. |
 | `internal/scoring` | `internal/repair`, `internal/payment`. Score computation is read-only against the audit receipt history. It does not trigger repairs or move money. |
+| `internal/repair` | `internal/scoring`, `internal/payment`, `internal/p2p`, `internal/audit`. Repair triggers physical re-replication; it must not read scores, move money, open network connections, or touch audit state directly — it acts only on assignment/departure signals the microservice entrypoint hands it. (Milestone 8 corrections session: this row was missing entirely; `internal/repair`'s own restrictions existed only implicitly, via the closing paragraph below and `.golangci.yml`'s `repair` depguard entry, neither of which is this table.) |
 | `internal/audit` | `internal/scoring`, `internal/repair`, `internal/payment`. The audit package handles challenge generation and receipt writing only. Score updates and repair triggers are the caller's responsibility (the microservice entrypoint orchestrates these after the audit result is written). |
 | Any `internal/client/*` | `cmd/`. Client packages are imported by the CLI entrypoint; they do not import the CLI. |
 
-The permitted dependency graph flows in one direction: `cmd/*` → `internal/client/*` → (`internal/crypto`, `internal/erasure`, `internal/p2p`) → no further `internal/` imports. The microservice entrypoint wires `internal/audit`, `internal/scoring`, `internal/repair`, and `internal/payment` together; none of these four packages imports any of the others directly.
+**The one explicit exception: `internal/payment` → `internal/scoring`.** Milestone 10's release-multiplier computation (`internal/payment/release.go`) reads a provider's score via `scoring.GetScoreFromPrimary` to apply FR-049's release-multiplier table — a one-way, side-effect-free read with no cycle risk (`internal/scoring` itself is barred from importing `internal/payment`, so no cycle can form through this edge). This is the ONLY permitted cross-import among `internal/audit`, `internal/scoring`, `internal/repair`, and `internal/payment` — see the closing paragraph below. `internal/repair` was considered for the same treatment and deliberately declined: nothing in `internal/repair`'s own logic needs a score, and granting it read access here would blur the "repair acts only on signals it's handed" boundary the row above states.
 
-**Enforcement.** `go build ./...` catches circular imports. `go vet ./...` with the import-graph analyser catches prohibited non-circular imports. Both are CI required checks. A PR that disables or modifies the import-graph check must be rejected.
+The permitted dependency graph flows in one direction: `cmd/*` → `internal/client/*` → (`internal/crypto`, `internal/erasure`, `internal/p2p`) → no further `internal/` imports. The microservice entrypoint wires `internal/audit`, `internal/scoring`, `internal/repair`, and `internal/payment` together; none of these four packages imports any of the others directly, with the single exception of `internal/payment` → `internal/scoring` documented above.
+
+**Enforcement.** The actual mechanism is `golangci-lint`'s `depguard` linter (`.golangci.yml`), configured with a per-package explicit allow-list — every package's `allow` entry is this table's positive-space complement, and any import outside it fails CI. (Milestone 8 corrections session: an earlier revision of this paragraph attributed enforcement to "`go vet ./...` with the import-graph analyser" — `go vet` has no such analyser; that claim did not match anything actually running in CI.) `go build ./...` independently catches circular imports, as a property of the Go compiler, not specific to this table. Both `golangci-lint run` and `go build ./...` are CI required checks. A PR that disables or modifies the `depguard` configuration must be rejected.
 
 ---
 
