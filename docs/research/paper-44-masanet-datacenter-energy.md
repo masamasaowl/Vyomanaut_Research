@@ -10,7 +10,7 @@
 
 ## Problem Solved
 
-Your Impact Analytics plan (`ux-finding.md` §8) needs a specific, checkable environmental claim, not a generic "data centers are bad for the planet" narrative. Several widely-cited estimates claimed global data-center energy use was doubling every few years; this paper is a bottom-up recalibration showing that claim was methodologically weak. It is the correct primary source for grounding — or correcting — whatever number your app eventually shows a provider.
+Your Impact Analytics plan (`ux-decisions.md` §8) needs a specific, checkable environmental claim, not a generic "data centers are bad for the planet" narrative. Several widely-cited estimates claimed global data-center energy use was doubling every few years; this paper is a bottom-up recalibration showing that claim was methodologically weak. It is the correct primary source for grounding — or correcting — whatever number your app eventually shows a provider.
 
 ---
 
@@ -36,7 +36,7 @@ Your Impact Analytics plan (`ux-finding.md` §8) needs a specific, checkable env
 
 ## Decisions Influenced
 
-- **Impact Analytics claim (not yet an ADR — forthcoming, per `ux-finding.md` §8)** `CLAIM NARROWED`
+- **Impact Analytics claim (`ux-decisions.md` §8; formalized in ADR-044)** `CLAIM NARROWED`
   Your provider app's environmental-impact numbers should be framed specifically around avoided new-hardware manufacturing and avoided new dedicated-cooling construction, not a general claim about data-center energy waste or growth.
   *Because:* this paper is the primary rigorous source showing the general "data centers are an exploding energy problem" framing was already a largely-debunked claim as of 2020 — using it risks your own sustainability messaging repeating exactly the category of error this paper was written to correct.
 

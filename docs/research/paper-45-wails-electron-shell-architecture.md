@@ -4,7 +4,7 @@
 **Venue / Year:** Official project documentation and GitHub issue trackers (wails.io, v3.wails.io, github.com/wailsapp/wails) | retrieved 2026, Wails v3 changelog entries current to within the prior month
 **Citations:** not applicable — documentation and issue-tracker sources, not an academic paper
 **Topics:** #20, #22
-**ADRs produced:** none yet — primary basis for the shell-technology decision recorded in `desktop-application-foundations.md` §1
+**ADRs produced:** none yet — primary basis for the shell-technology decision recorded in `ux-decisions.md` §9.1
 
 ---
 
@@ -42,11 +42,11 @@ Your GUI mandate requires a real, native-feeling application on Windows first, m
 
 ## Decisions Influenced
 
-- **Shell technology decision (`desktop-application-foundations.md` §1)** `PRIMARY BASIS`
+- **Shell technology decision (`ux-decisions.md` §9.1)** `PRIMARY BASIS`
   Wails v2 now, migrating to v3 once stable.
   *Because:* every argument for Electron examined here is either inapplicable to your starting position (no existing server-language separation) or neutralized by the Windows-first decision — Windows' WebView2 is Chromium-family, the same engine family Electron bundles, and the tray workaround is specifically Windows-confirmed.
 
-- **Windows packaging and code-signing plan (`desktop-application-foundations.md` §5)** `CONFIRMED FEASIBLE`
+- **Windows packaging and code-signing plan (`ux-decisions.md` §9.4)** `CONFIRMED FEASIBLE`
   The NSIS + WebView2-bootstrap + CI-action pipeline is documented, current, and already used in production by other Wails projects.
   *Because:* `wails build -nsis` and the official GitHub Actions tooling remove this from the list of open engineering risks for the upcoming build milestones.
 

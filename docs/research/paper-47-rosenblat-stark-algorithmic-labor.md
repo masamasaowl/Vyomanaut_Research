@@ -30,7 +30,7 @@ Your provider is paid, rated on a reliability score, and subject to a payout mul
   → You are not starting from Uber's position of not having the data. The open question this paper sharpens is not "can we be transparent" but "how much of the reliability-score formula should be disclosed," given full disclosure risks gaming exactly as full opacity risks the distrust this paper documents. See Q47-1.
 
 - **Uber pairs indirect algorithmic control with "entrepreneur"/"independence" rhetoric that the paper finds contradicts drivers' actual experience of being managed**
-  ≠ **your `ux-finding.md` positioning already avoids an "independence"/"be your own boss" framing, describing providers plainly as paid participants in a marketplace with real rules (vetting, audits, reliability scoring)**
+  ≠ **your `ux-decisions.md` positioning already avoids an "independence"/"be your own boss" framing, describing providers plainly as paid participants in a marketplace with real rules (vetting, audits, reliability scoring)**
   → This is a difference worth preserving deliberately, not by accident — the paper's central finding is that the gap between rhetoric and actual control, not the control itself, is what erodes trust.
 
 - **Uber's drivers experience unpredictable earnings with no advance visibility into demand/pricing logic**
@@ -45,7 +45,7 @@ Your provider is paid, rated on a reliability score, and subject to a payout mul
   The Provider app's earnings screen should explain a reduced payout in plain terms ("your reliability score dropped below 95%, so ₹X was withheld and will roll into next month") rather than showing only a final number.
   *Because:* this paper documents, empirically, that opaque algorithmic earnings calculation — even when the platform is not acting maliciously — produces sustained driver distrust and defensive forum-based reverse-engineering. The data to avoid this (gross amount, multiplier applied) already exists per the ADR-016 addendum; not using it to explain the number would forfeit evidence-backed trust for no engineering reason.
 
-- **Provider-facing tone/positioning (not yet an ADR — forthcoming, extends `ux-finding.md` §5)**
+- **Provider-facing tone/positioning (not yet an ADR — forthcoming, extends `ux-decisions.md` §5)**
   Continue to describe providers plainly as paid marketplace participants subject to real, disclosed rules, not as "independent entrepreneurs running their own micro-business."
   *Because:* the paper's central finding is that rhetoric promising more independence than the system actually grants is itself the trust-eroding mechanism — a risk avoided by not making that promise in the first place, rather than by managing the gap after the fact.
 

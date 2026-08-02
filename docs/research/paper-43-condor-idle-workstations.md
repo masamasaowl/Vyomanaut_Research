@@ -36,7 +36,7 @@ In 1988, a university or company already had more idle workstation capacity, in 
 
 - **Condor pools are deployed and administered top-down by an institution's own IT/research-computing staff**
   ≠ **you have not yet decided whether your institutional route is IT-deployed or individually opted into on institutionally-owned machines**
-  → Per `ux-finding.md` §5.2, this is a deliberate, still-open business-development choice, not one this paper settles for you.
+  → Per `ux-decisions.md` §5.2, this is a deliberate, still-open business-development choice, not one this paper settles for you.
 
 ---
 
@@ -46,7 +46,7 @@ In 1988, a university or company already had more idle workstation capacity, in 
   A second, independent, 36-years-earlier precedent for the same owner-always-wins idle-detection principle already encoded in ADR-009 — this time from an institutional-compute context rather than BOINC's individual-volunteer one.
   *Because:* the paper documents this as the design that made Condor viable in practice, not an incidental detail.
 
-- **Provider-audience-segmentation decision (not yet an ADR — forthcoming, per `ux-finding.md` §5.2)**
+- **Provider-audience-segmentation decision (not yet an ADR — forthcoming, per `ux-decisions.md` §5.2)**
   Condor is the primary historical evidence that an institution-led, IT-administered rollout of idle-desktop harvesting is a real, mature model — separate from and requiring different first steps than an individual opt-in model (Paper 42).
   *Because:* Condor pools have always been organizationally deployed, continuously since 1988, and continue today as HTCondor "at thousands of campuses, labs, and organizations."
 
