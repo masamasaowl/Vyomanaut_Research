@@ -34,4 +34,4 @@ The desktop app's UI calls backend logic through Wails' in-process bindings — 
 ## References
 
 - Paper 45 — Wails and Electron desktop shell documentation and issue trackers
-- `desktop-application-foundations.md` §2
+- `ux-decisions.md` §9.2

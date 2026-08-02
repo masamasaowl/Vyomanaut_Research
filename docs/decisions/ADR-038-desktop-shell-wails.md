@@ -10,7 +10,7 @@
 
 ## Context
 
-The GUI mandate (`ux-finding.md` §7) requires a native-feeling desktop app on Windows first, matching the design bar of Docker Desktop and MongoDB Compass — both Electron apps. Vyomanaut's backend is already 100% Go (crypto, P2P, erasure, audit, payment, REST API all built through M11). The shell choice determines whether that backend is driven directly or through a second language/runtime, and was deliberately left undecided until this research phase completed.
+The GUI mandate (`ux-decisions.md` §7) requires a native-feeling desktop app on Windows first, matching the design bar of Docker Desktop and MongoDB Compass — both Electron apps. Vyomanaut's backend is already 100% Go (crypto, P2P, erasure, audit, payment, REST API all built through M11). The shell choice determines whether that backend is driven directly or through a second language/runtime, and was deliberately left undecided until this research phase completed.
 
 ## Options Considered
 
@@ -35,4 +35,4 @@ Build both desktop apps (Data Owner, Provider) with Wails v2, binding directly t
 ## References
 
 - Paper 45 — Wails and Electron desktop shell documentation and issue trackers
-- `desktop-application-foundations.md` §1 (original decision write-up this ADR formalizes)
+- `ux-decisions.md` §9.1 (original decision write-up this ADR formalizes)

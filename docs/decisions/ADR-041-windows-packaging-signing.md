@@ -10,7 +10,7 @@
 
 ## Context
 
-`ux-finding.md` §4.2/§7 requires the product to be "ready to test and integrate immediately after launch," on Windows first. An unsigned installer is flagged by Windows and antivirus tools by default — Paper 45 confirms this is described as normal specifically for new Electron apps, and applies equally to any new, unsigned Windows installer regardless of shell technology. This decision fixes the packaging and signing pipeline before the first build ships to anyone outside the team.
+`ux-decisions.md` §4/§7 requires the product to be "ready to test and integrate immediately after launch," on Windows first. An unsigned installer is flagged by Windows and antivirus tools by default — Paper 45 confirms this is described as normal specifically for new Electron apps, and applies equally to any new, unsigned Windows installer regardless of shell technology. This decision fixes the packaging and signing pipeline before the first build ships to anyone outside the team.
 
 ## Options Considered
 
@@ -30,9 +30,9 @@ Package Windows releases with Wails' built-in NSIS installer target, which also 
 
 **Negative:** Azure Trusted Signing has its own account/setup overhead, and SmartScreen reputation still needs to build up over the first period of releases regardless of signing.
 
-**Open constraints:** macOS notarization and Linux packaging are explicitly out of scope for this ADR — each is its own decision when those platforms are scoped (`ux-finding.md` §7).
+**Open constraints:** macOS notarization and Linux packaging are explicitly out of scope for this ADR — each is its own decision when those platforms are scoped (`ux-decisions.md` §7).
 
 ## References
 
 - Paper 45 — Wails and Electron desktop shell documentation and issue trackers
-- `desktop-application-foundations.md` §5
+- `ux-decisions.md` §9.4

@@ -10,7 +10,7 @@
 
 ## Context
 
-`ux-finding.md` §7's navigation model makes the tray the Provider app's primary interface for routine use (status glance, pause, quit), matching the Tailscale precedent reviewed earlier. Wails v2 (ADR-038) has no built-in tray API — a long-standing, explicitly acknowledged gap. A documented community workaround exists and is specifically confirmed working on Windows, the platform this ships on first.
+`ux-decisions.md` §7's navigation model makes the tray the Provider app's primary interface for routine use (status glance, pause, quit), matching the Tailscale precedent reviewed earlier. Wails v2 (ADR-038) has no built-in tray API — a long-standing, explicitly acknowledged gap. A documented community workaround exists and is specifically confirmed working on Windows, the platform this ships on first.
 
 ## Options Considered
 
@@ -34,4 +34,4 @@ Implement the Provider app's tray using a dedicated tray library running in its 
 ## References
 
 - Paper 45 — Wails and Electron desktop shell documentation and issue trackers
-- `desktop-application-foundations.md` §4
+- `ux-decisions.md` §9.3
