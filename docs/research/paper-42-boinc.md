@@ -45,7 +45,7 @@ By 2004, most of the world's computing and storage capacity had moved into hundr
   Your desktop-only, idle- and AC-power-gated, resource-budgeted background execution policy is exactly what BOINC's participant-preference model (§3.4: control over input-activity gating, active hours, disk, and bandwidth) converged on independently, 20 years earlier and at far larger scale.
   *Because:* a resource-harvesting daemon that visibly competes with the owner's own use of their machine does not survive contact with real users — this is Anderson's finding, not just your own design assumption.
 
-- **Impact Analytics (not yet an ADR — forthcoming, per `ux-finding.md` §8)**
+- **Impact Analytics (`ux-decisions.md` §8; formalized in ADR-044)**
   Your provider app's home screen should show frequently-updating, tangible progress — not just a monthly payout figure.
   *Because:* Anderson reports (§3.5) that participants "demand immediate gratification; they want to see their credit totals increase at least daily," and built BOINC's trickle-message mechanism specifically to solve this for workunits lasting months.
 
@@ -54,7 +54,7 @@ By 2004, most of the world's computing and storage capacity had moved into hundr
 ## Disagreements
 
 - **Anderson's 2004 projection of ~1 billion Internet-connected PCs by 2015, implying continued PC-centric growth:** directionally correct on device count, but did not anticipate the shift of ordinary consumer computing toward mobile devices rather than PCs specifically.
-  *Implication for us:* do not treat "PC owner" and "internet user" as interchangeable population figures at any future date — see the India device-ownership data behind `ux-finding.md` §4.2, where PC ownership among internet users is falling, not rising.
+  *Implication for us:* do not treat "PC owner" and "internet user" as interchangeable population figures at any future date — see the India device-ownership data behind `ux-decisions.md` §4, where PC ownership among internet users is falling, not rising.
 
 ---
 
