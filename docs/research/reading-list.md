@@ -105,17 +105,17 @@ After reading Phase 5, ADR-024 can be written and the pricing model finalised.
 
 ## Phase 7 — User-facing application: precedent, audience, and shell architecture 🆕 In progress
 
-Triggered by the decision to design a dedicated desktop application (`ux-finding.md`, `desktop-application-foundations.md`). These sources ground the market positioning, provider-persona correction, and shell-technology decision in primary and documentary evidence rather than informal research alone.
+Triggered by the decision to design a dedicated desktop application (`ux-decisions.md`, formerly `ux-finding.md` and `desktop-application-foundations.md`, merged and retired — see Paper 49/50 note below). These sources ground the market positioning, provider-persona correction, and shell-technology decision in primary and documentary evidence rather than informal research alone.
 
 | # | Paper | Status | Feeds |
 | --- | --- | --- | --- |
 | 42 | Anderson — BOINC: A System for Public-Resource Computing and Storage (GRID 2004) | ✅ Paper 42 | ADR-009 confirmation; Impact Analytics design; provider-audience-segmentation framing |
 | 43 | Litzkow, Livny & Mutka — Condor: A Hunter of Idle Workstations (ICDCS 1988) | ✅ Paper 43 | Institutional/IT-led rollout precedent; app least-privilege caution |
 | 44 | Masanet et al. — Recalibrating Global Data Center Energy-Use Estimates (Science 2020) | ✅ Paper 44 | Impact Analytics claim — narrows the environmental pitch to avoided new-hardware manufacturing, not general "data centers are wasteful" framing |
-| 45 | Wails and Electron desktop shell documentation and issue trackers | ✅ Paper 45 | Shell technology decision (`desktop-application-foundations.md` §1) |
-| 46 | Storj node operator documentation and community forum | ✅ Paper 46 | Provider persona correction (`ux-finding.md` §4.2) |
+| 45 | Wails and Electron desktop shell documentation and issue trackers | ✅ Paper 45 | Shell technology decision (`ux-decisions.md` §9.1) |
+| 46 | Storj node operator documentation and community forum | ✅ Paper 46 | Provider persona correction (`ux-decisions.md` §4) |
 | 47 | Rosenblat & Stark — Algorithmic Labor and Information Asymmetries: A Case Study of Uber's Drivers (IJoC 2016) | ✅ Paper 47 | Earnings-transparency design consuming the ADR-016 addendum; provider-facing tone/positioning |
-| 48 | Voskobojnikov et al. — The U in Crypto Stands for Usable: An Empirical Study of User Experience with Mobile Cryptocurrency Wallets (CHI 2021) | ✅ Paper 48 | Rigorously grounds the fiat/UPI differentiation claim (`ux-finding.md` §4); independently confirms the mnemonic-backup and vetting-period-visibility priorities |
+| 48 | Voskobojnikov et al. — The U in Crypto Stands for Usable: An Empirical Study of User Experience with Mobile Cryptocurrency Wallets (CHI 2021) | ✅ Paper 48 | Rigorously grounds the fiat/UPI differentiation claim (`ux-decisions.md` §4); independently confirms the mnemonic-backup and vetting-period-visibility priorities |
 
 **Not yet covered, candidates for continuing Phase 7:**
 
@@ -127,7 +127,20 @@ Triggered by the decision to design a dedicated desktop application (`ux-finding
 
 Recheck (this pass): reviewed Phases 1–6 (Papers 1–41) for anything directly UX-relevant beyond what was already cited. Nothing in the existing set addresses interface/interaction design directly — the closest adjacent material is Paper 24 (EigenTrust) and the Phase 2C reputation-aggregation sources, which bear on Q47-1 (how much of the scoring formula to disclose) from the algorithm side, not the UX side. No changes made to Phases 1–6; noted here so this recheck doesn't need repeating.
 
-After Phase 7's seven papers, the shell-technology, provider-persona, and fiat/UPI differentiation claims in `ux-finding.md` / `desktop-application-foundations.md` are considered adequately grounded to proceed to formal ADRs, per the plan agreed for this phase of work.
+After Phase 7's seven papers, the shell-technology, provider-persona, and fiat/UPI differentiation claims in `ux-decisions.md` (merging what was `ux-finding.md` and `desktop-application-foundations.md`) are considered adequately grounded to proceed to formal ADRs, per the plan agreed for this phase of work.
+
+---
+
+## Phase 8 — Windows build risk: provider storage engine and daemon autostart ✅ Closed
+
+Triggered by a fresh review of the two desktop apps' actual build process on Windows, after Phase 7's ADRs (38–45) were formed. Two gaps surfaced that no prior research phase had evaluated: whether the provider storage engine's CGo dependency (ADR-023) actually builds on Windows, and whether the daemon's auto-start requirement (FR-031) is compatible with the privilege and tray decisions Phase 7 had just made.
+
+| # | Paper | Status | Feeds |
+| --- | --- | --- | --- |
+| 49 | BadgerDB — documentation, source, and production track record (dgraph-io/badger) | ✅ Paper 49 | ADR-046 (Windows provider storage engine); addendum to ADR-023 |
+| 50 | Windows background-app autostart — official documentation and production precedent (Task Scheduler, UWP/MSIX `StartupTask`, Tailscale/Dropbox client architecture) | ✅ Paper 50 | ADR-047 (Windows daemon autostart mechanism); corrects the Tailscale-precedent framing in `ux-decisions.md` §6 |
+
+Both papers close out with a decided ADR; Q49-1 (whether BadgerDB's advantage over RocksDB at 256 KB values holds on Linux/macOS too, and would justify unifying on one engine) is the only item carried forward open — tracked in `requirements.md` §10.1 and `ux-decisions.md` §11, not blocking.
 
 ---
 
