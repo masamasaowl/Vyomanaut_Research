@@ -3,7 +3,7 @@
 **Status:** Accepted
 **Topic:** #16 Provider-Side Storage Engine
 **Supersedes:** —
-**Superseded by:** —
+**Superseded by:** [ADR-046](./ADR-046-badgerdb-windows-storage-engine.md) — **Windows target only.** The WiscKey design and reasoning below, and the Linux/macOS implementation, are unchanged and remain Accepted.
 **Research source:** Paper 27, 26, 25, 32, 34
 
 ---
@@ -214,3 +214,9 @@ flag in /sys/block/{dev}/queue/rotational on Linux) and sets the rate limiter ac
 - [ADR-009](ADR-009-background-execution.md): ≤5% CPU background budget
 - [ADR-014](ADR-014-adversarial-defences.md): 20% ASN cap bounds within-provider burst failure impact at network level
 - [ADR-017](ADR-017-audit-receipt-schema.md): audit receipt schema; response_latency_ms field
+
+## Addendum — Windows Target Superseded by ADR-046
+
+*Appended following the Windows build-risk review (Paper 49). Filed as an addendum here rather than only in ADR-046, so a reader of this ADR sees the scope change without needing to already know ADR-046 exists.*
+
+`grocksdb` (this ADR's RocksDB binding) has no CI-validated Windows build path, and upstream RocksDB's own Windows support is MSVC-only — incompatible with the MinGW-family compiler Go's CGo toolchain conventionally expects on Windows, per Paper 49. [ADR-046](./ADR-046-badgerdb-windows-storage-engine.md) resolves this by using BadgerDB, a CGo-free implementation of the same WiscKey design this ADR specifies, for Windows builds only. Everything above — the WiscKey decision, the write-amplification reasoning, the vLog/RocksDB design, the HDD compaction benchmark protocol — remains Accepted and unchanged for Linux and macOS. Nothing here was wrong; the Windows CGo/toolchain gap simply was not evaluated when this ADR was written, because Windows was not yet the confirmed first-ship platform.

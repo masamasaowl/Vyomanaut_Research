@@ -10,13 +10,13 @@
 
 ## Context
 
-Storj's own node-operator documentation requires manual port forwarding and recommends a dynamic-DNS service for operators without a static IP — steps that, per Paper 46, select for a technical home-lab operator base regardless of how the product is marketed. The provider persona in `ux-finding.md` §4.2 explicitly targets a less technical operator than Storj's actual base. This is only achievable if Vyomanaut's setup flow does not require the same manual networking steps.
+Storj's own node-operator documentation requires manual port forwarding and recommends a dynamic-DNS service for operators without a static IP — steps that, per Paper 46, select for a technical home-lab operator base regardless of how the product is marketed. The provider persona in `ux-decisions.md` §4 explicitly targets a less technical operator than Storj's actual base. This is only achievable if Vyomanaut's setup flow does not require the same manual networking steps.
 
 ## Options Considered
 
 | Option | Pros | Cons |
 | --- | --- | --- |
-| Follow Storj's precedent: require manual port-forwarding and recommend dynamic DNS | Simpler daemon-side networking logic | Directly reproduces the exact setup complexity Paper 46 identifies as selecting for a technical operator base — undermines the persona goal in `ux-finding.md` §4.2 before the app is even built |
+| Follow Storj's precedent: require manual port-forwarding and recommend dynamic DNS | Simpler daemon-side networking logic | Directly reproduces the exact setup complexity Paper 46 identifies as selecting for a technical operator base — undermines the persona goal in `ux-decisions.md` §4 before the app is even built |
 | **Transparent NAT traversal handled entirely by the daemon, no manual networking configuration exposed in setup** | Matches the "prosumer, not home-lab" persona; consistent with the existing `internal/p2p/nat.go` NAT-traversal work already in the codebase | Requires the setup flow to honestly communicate on the rare occasion NAT traversal fails (symmetric NAT, restrictive institutional firewalls) rather than presenting a false "you're all set" |
 
 ## Decision

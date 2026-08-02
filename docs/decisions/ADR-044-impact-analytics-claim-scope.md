@@ -10,7 +10,7 @@
 
 ## Context
 
-`ux-finding.md` §8 commits to an "Impact Analytics" feature showing providers a defensible environmental claim. Paper 44 (Science, 2020) found that global data-center electricity use stayed roughly flat from 2010–2018 despite a 550% workload increase, directly undercutting the popular "data centers are an exploding energy problem" framing several informal sustainability pitches rely on. This decision fixes the scope of the claim before any copy or number is written.
+`ux-decisions.md` §8 commits to an "Impact Analytics" feature showing providers a defensible environmental claim. Paper 44 (Science, 2020) found that global data-center electricity use stayed roughly flat from 2010–2018 despite a 550% workload increase, directly undercutting the popular "data centers are an exploding energy problem" framing several informal sustainability pitches rely on. This decision fixes the scope of the claim before any copy or number is written.
 
 ## Options Considered
 
