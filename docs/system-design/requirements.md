@@ -216,7 +216,7 @@ first quarter post-launch). Every P0 requirement is a launch blocker.
 | FR-028 | The daemon must respond to audit challenges by reading the specified chunk from the vLog, verifying its SHA-256 content hash, computing SHA-256(chunk_data ‖ challenge_nonce), and returning a signed receipt — all within the per-provider deadline of (256 KB / p95_throughput_kbps) × 1.5. | P0 | ADR-002, ADR-014 |
 | FR-029 | The daemon must expose a local status interface (CLI or tray icon) showing: daemon health, number of stored chunks, last audit result, current reliability score, and pending earnings. | P1 | PR-02 |
 | FR-030 | The daemon must honour a provider-set storage cap: if accepting a new chunk assignment would exceed the cap, the daemon must decline the assignment and inform the microservice. | P1 | PR-05 |
-| FR-031 | The daemon must auto-start on OS boot using the platform-appropriate mechanism (Windows Service, macOS LaunchDaemon, Linux systemd unit) with no manual configuration by the provider. | P0 | ADR-009; reliability of provider uptime |
+| FR-031 | The daemon must auto-start on user logon using the platform-appropriate **per-user** mechanism (Windows: Task Scheduler logon trigger, not a Windows Service; macOS: LaunchAgent, not a LaunchDaemon; Linux: systemd *user* unit, not a system unit) with no manual configuration and no elevated/administrator privilege required by the provider at any point. | P0 | ADR-009; ADR-042; ADR-047; reliability of provider uptime |
 
 ### 4.7 Provider — Exit and Departure
 
@@ -774,7 +774,7 @@ These require a business or product decision before private beta opens.
 
 **Raised by:** Paper 42 (BOINC)
 **Status:** open
-**Blocked on:** the Impact Analytics design (`ux-finding.md` §8) — real money may change whether ranking against other providers motivates or discourages participation. Not resolved by Paper 42, which only covers an unpaid context.
+**Blocked on:** the Impact Analytics design (`ux-decisions.md` §8) — real money may change whether ranking against other providers motivates or discourages participation. Not resolved by Paper 42, which only covers an unpaid context.
 
 ---
 
@@ -782,7 +782,7 @@ These require a business or product decision before private beta opens.
 
 **Raised by:** Paper 43 (Condor)
 **Status:** open
-**Blocked on:** the business-development decision in `ux-finding.md` §5.2. Neither Condor's IT-led model nor BOINC's individual-opt-in model (Paper 42) precedents a hybrid directly.
+**Blocked on:** the business-development decision in `ux-decisions.md` §5.2. Neither Condor's IT-led model nor BOINC's individual-opt-in model (Paper 42) precedents a hybrid directly.
 
 ---
 
@@ -813,14 +813,22 @@ These require a business or product decision before private beta opens.
 ### Q47-1 — How much of Vyomanaut's reliability-score/payout-multiplier formula should be disclosed to providers, given that full opacity risks the trust breakdown this paper documents, and full disclosure risks the score being gamed?
 
 **Raised by:** Paper 47 (Rosenblat & Stark)
-**Status:** open
-**Blocked on:** the forthcoming Impact Analytics / earnings-transparency design. Directly related to the already-accepted ADR-016 addendum (gross/multiplier/withheld columns), which supplies the data this decision would act on, but does not itself decide how much of the formula to show
+**Status:** resolved by ADR-045 — disclose gross amount, multiplier applied, and a plain-language reason category; withhold the exact formula and thresholds.
+**Blocked on:** — (the reason-category list itself remains to be finalised alongside the scoring implementation, per ADR-045's "Open constraints")
 
 ### Q48-1 — Is the fiat/UPI advantage over crypto-token wallets durable, or could improved wallet UX narrow this gap over time?
 
 Raised by: Paper 48 (Voskobojnikov et al., crypto wallet UX)
 Status: open 
 Blocked on: nothing actionable now — flagged as a watch item. The crypto industry's own 2025 account-abstraction efforts (e.g., EIP-7702) are attempting to close exactly this gap; revisit if wallet UX changes materially before any ADR treats the fiat/UPI advantage as permanent rather than current
+
+---
+
+### Q49-1 — Does BadgerDB's write/read throughput advantage over general-purpose RocksDB at 256 KB values hold on Vyomanaut's actual Linux/macOS provider hardware, to a degree that justifies retiring the RocksDB/vLog path everywhere rather than only on Windows?
+
+**Raised by:** Paper 49 (BadgerDB)
+**Status:** open
+**Blocked on:** empirical benchmarking against real provider hardware post-launch. Not blocking any current milestone — ADR-046 scopes BadgerDB to the Windows build only, where it resolves a build-blocking gap; the Linux/macOS RocksDB path (ADR-023) is unaffected and already CI-proven. This question is about whether to later retire a second, redundant engine implementation, not about unblocking a build.
 
 ---
 
