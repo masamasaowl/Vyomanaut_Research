@@ -3,7 +3,7 @@
 **Status:** Proposed
 **Topic:** #13 Escrow & Payment Basis (deposit flow)
 **Supersedes:** —
-**Superseded by:** —
+**Superseded by:** ADR-038 — context only (the premise that `cmd/client` has no planned GUI). The intent_url decision, schema, and construction logic below are not superseded — see the corrected Context and Client Behavior text below.
 **Research source:** requirements.md FR-006, FR-014; `docs/api/openapi.yaml` `DepositInitiateResponse`; ADR-011 (escrow-payments, Smart Collect VPA precedent); `internal/payment/razorpay.go`, `internal/payment/mock.go`, `Vyomanaut_V2` @ `55467523`
 
 ---
@@ -14,7 +14,7 @@
 
 This gap runs all the way down the stack, not just at the HTTP boundary: `RazorpayClient.CreateVirtualAccount` (`internal/payment/razorpay.go`) is declared to return `(vpa string, qrURL string, err error)` — the interface itself has no slot for an intent URI. `internal/payment/mock.go`'s demo-mode implementation mirrors the same two-value shape. There is no `upi://pay?...` string constructed, stored, or returned anywhere in `internal/payment` or `internal/api` (confirmed by search — no `upi://`, `intent_url`, or equivalent identifier exists in the current codebase).
 
-This matters beyond copy because V2's data-owner client (`cmd/client`, M15) is CLI-only — there is no planned GUI for data owners, and providers' own tray/GUI (`provider_ui_enabled`) is separately flagged off by default. A QR *image* is awkward for a CLI: a data owner running `cmd/client deposit` from a terminal — including headless/server scenarios, which the CLI-only design implies as a real usage mode — has no convenient way to view an image URL at all, let alone scan it with a phone camera pointed at a screen. FR-014's "deposit link" language reads as expecting something a CLI can print and a user can tap or paste, not an image.
+This matters beyond copy because V2 ships a Wails-based Data Owner GUI app (ADR-038) as the primary interface, with `cmd/client` retained underneath for power users and headless/scripted use — not the other way around, as earlier drafts of this ADR assumed. Both interfaces need `intent_url`: the GUI can render it as a tappable link (or inline QR, since a webview can display an image directly) while a CLI/headless session — still a real, supported usage mode — has no convenient way to view an image URL at all, let alone scan it. Either way, the underlying gap is unchanged: nothing in `internal/payment` or `internal/api` currently constructs or returns a plain-string deep link, and both interfaces need one.
 
 The correctness stakes are real, not cosmetic: a malformed UPI intent URI is a hard payment failure, and it would surface at the single highest-friction moment in the data-owner journey — topping up money before anything else in the product can be used. If the client independently re-derives the URI from the bare `vpa` (guessing at parameter names, amount encoding, transaction-reference format), a bug in that encoding is a client-side defect in a domain (payment parameter construction) the client has no other reason to own.
 
@@ -53,11 +53,10 @@ using the same `amountPaise`/`contractID` already passed into `CreateVirtualAcco
 
 ### 3. Client behavior
 
-`cmd/client deposit` prints `intent_url` as the primary, copyable/tappable output (most modern terminals render `OSC 8` hyperlinks; a plain string is still directly usable via copy-paste into a UPI app). The QR image URL remains available for a future GUI/mobile surface or a second-device scan, but is not the CLI's primary path.
-
+Both consumers render the same `intent_url` field, appropriate to their surface: the Wails Data Owner app (ADR-038) renders it as a tappable link and may additionally show the QR image inline, since a webview can display both natively. `cmd/client deposit` — retained for power users and headless/scripted use — prints `intent_url` as its primary, copyable output (most modern terminals render `OSC 8` hyperlinks; a plain string is still directly usable via copy-paste into a UPI app). Neither interface re-derives the URI itself; both consume the same server-constructed field.
 ## Alternatives considered
 
-- **A — Client constructs the UPI URI itself from `vpa` + amount already returned.** Rejected: duplicates payment-critical parameter encoding outside the package that owns payments, and the moment a second consumer exists (a future GUI, per the `provider_ui_enabled` precedent already reserved in `mvp.md`) the encoding logic would need to be kept in sync in two places — a single malformed-URI bug would need to be found and fixed twice.
+- **A — Client constructs the UPI URI itself from `vpa` + amount already returned.** Rejected: duplicates payment-critical parameter encoding outside the package that owns payments — and with both the Wails GUI (ADR-038) and `cmd/client` as real, concurrent consumers of this field, not one future hypothetical one, a single malformed-URI bug would need to be found and fixed in two places instead of one.
 - **B — Ship only the QR image; tell the CLI user to scan it with their phone.** Rejected: blocks the stated CLI-only, headless-capable usage mode outright — there may be no convenient way to view an image URL at all in that scenario, let alone scan it.
 - **C — Server returns `intent_url` as a plain string; QR stays as a secondary convenience.** Adopted.
 

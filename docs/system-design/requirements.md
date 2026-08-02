@@ -718,7 +718,7 @@ These target quarters are planning references, not commitments.
 | `upload_gate_enabled` | false | true | Enforces FR-053 readiness conditions |
 | `payment_releases_enabled` | false | true | Enables actual Razorpay payouts |
 | `sim_mode_allowed` | true | false | Allows `--sim-count` flag on daemon |
-| `provider_ui_enabled` | false | false | Enables provider local status interface tray app (P1 feature, replaces CLI-only mode) |
+| `provider_ui_enabled` | false | *(your call — see Purpose)* | Gates the Provider tray/GUI app becoming available as its Wails build milestone completes — not an optional P1 add-on: the GUI is the mandated primary interface for both apps (`ux-decisions.md` §7, ADR-038), CLI retained only for power users. Recommend flipping to `true` no later than Public Beta, given §7's "no CLI-only version for mainstream users" is unconditional — left as your call since it depends on exactly when the Wails milestone lands. |
 
 ### 9.3 Risk Factors and Mitigations
 
