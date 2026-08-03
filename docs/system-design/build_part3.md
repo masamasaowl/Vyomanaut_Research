@@ -782,6 +782,18 @@ GATE_RUNS_GREEN_ON_CURRENT_TREE:
 **Deliverable:** provider daemon with stream handlers for all four libp2p protocols, startup identity, heartbeat, and the corrected pre-install RAM check.
 **Reference:** IC §4.1, §4.2, §4.4.1, §4.5, §3.1, §4 (transport auth, 0-RTT, framing), §12/§12.2 (DHT), MVP §5.3/§8.3.
 
+**One Flag:** `cmd/provider/main.go` is currently the M0 stub (`fmt.Printf("[STARTUP]...mode=STUB")`) —
+Milestone 13's session that replaces it has not been executed against this repo yet.
+`ADR-038`/`ADR-047` both assume the tray process and the daemon logic are **the same
+process**, started in-process by a Task Scheduler logon trigger, with no service/companion
+split. That only works cleanly if Milestone 13 Session 13.1.1's eventual `main()` is
+written as a thin wrapper around an exported, context-cancelable entry point (e.g.
+`provider.StartDaemon(ctx context.Context, cfg Config) (*provider.Handle, error)` in an
+`internal/`-reachable location) rather than a `main()` that owns the whole process
+lifecycle inline. This costs nothing extra today — M13 hasn't been built yet — and avoids a
+forced refactor later, once a Wails app needs to call the exact same startup sequence
+in-process instead of `exec`-ing a separate binary.
+
 ---
 
 ### Phase 13.1 — Provider startup
@@ -1311,216 +1323,1111 @@ HANDLES_NEW_STATUS_CODES:
 
 ## Milestone 15 — Client SDK (`internal/client`)
 
-**Deliverable:** Upload orchestrator, retrieval orchestrator, account management, and
-file management. The client SDK does NOT import `cmd/` (IC §9).
+**Deliverable:** Account management, upload orchestrator, retrieval orchestrator, **and
+file management** (Phase 15.4 — new). The client SDK does NOT import `cmd/` (IC §9; see
+Design Correction A-2 for the corrected positive-space import list).
 
 **Reference:** IC §5.9 (`UploadOrchestrator` interface, ERRATA note, all sentinel errors),
-IC §4.1 (upload stream — client initiator side), MVP §8.2 (file inventory per package),
-IC §11 (forbidden: no business logic in cmd/)
+IC §4.1 (upload stream — client initiator side), IC §11 (forbidden: `json.Marshal` in any
+Ed25519 signing path — see A-6; no business logic in `cmd/`), `mvp.md` §8.2 (authoritative
+per-file inventory — every `FILES:` block below is copied from it verbatim, see A-7), `mvp.md`
+§8.3 (`cmd/client` subcommand table, corrected per A-5)
 
 ---
 
 ### Phase 15.1 — Account Management
 
-**Reference:** IC §5.1 (crypto primitives used here), MVP §8.2 (`internal/client/account/`)
+**Reference:** IC §5.1 (crypto primitives used here — `DeriveMasterSecret`,
+`DeriveKeystoreEncKey`, `MasterSecretToMnemonic`/`MnemonicToMasterSecret`,
+`SelectConfirmationWords`), `mvp.md` §8.2 (`internal/client/account/` file inventory)
 
-#### Session 15.1.1 — Implement registration and keystore
+#### Session 15.1.1 — Implement registration, mnemonic gate, keystore, and recovery
 
-**Task:** In `internal/client/account/register.go` and `keystore.go`:
+**PRECONDITIONS** — `internal/client/account/doc.go` stub exists (*"Registration, BIP-39
+mnemonic, Session key derivation, Keystore"*); `internal/crypto` (M2) and `internal/config`
+(M1) complete.
 
-- `Register()`: generate Ed25519 key pair, derive master secret via `DeriveMasterSecret`
-  with `profile.Argon2*` params (NOT hardcoded), display BIP-39 mnemonic, run
-  `SelectConfirmationWords()` gate if `!profile.SkipMnemonicConfirm`
-- Keystore: encrypt Ed25519 key + pointer file nonce counter under `DeriveKeystoreEncKey()`
-- Recovery paths: passphrase (re-derive master secret) and mnemonic (via
-  `MnemonicToMasterSecret`)
+**TASK:**
+
+1. `register.go` — `Register()`: generate an Ed25519 key pair; derive the master secret via
+   `crypto.DeriveMasterSecret(passphrase, ownerID, profile.Argon2Time, profile.Argon2Memory,
+   profile.Argon2Threads)` — **parameters always come from the active `NetworkProfile`, never
+   hardcoded** (IC §5.1's own caller-responsibility note, ADR-031).
+2. `mnemonic.go` — generate the 24-word BIP-39 phrase via `crypto.MasterSecretToMnemonic`;
+   display it; run `crypto.SelectConfirmationWords()` and gate on the two returned indices
+   **unless** `profile.SkipMnemonicConfirm == true` (demo mode) — the gate function is still
+   called in demo mode (IC §5.1's own note: *"this function may still be called; the caller
+   simply does not block on user input"*), only the blocking prompt is skipped.
+3. `master_secret.go` — the UI gate: holds the derived master secret in memory only,
+   never persisted, and is the single call site every other client package (`upload`,
+   `retrieve`, `manage`) receives it from as a parameter — no package below this one reads
+   `master_secret.go`'s internals directly.
+4. `keystore.go` — encrypt the Ed25519 key and the pointer-file AEAD nonce counter (IC §2.5's
+   monotone counter) under `crypto.DeriveKeystoreEncKey(masterSecret, ownerID)`.
+5. `recover.go` — two recovery paths: passphrase (re-run step 1's derivation) and mnemonic
+   (`crypto.MnemonicToMasterSecret(words)` — on `crypto.ErrInvalidMnemonic`, surface *"Invalid
+   recovery phrase — please check your words and try again"* without indicating which word
+   failed, per IC §5.1's explicit timing-oracle warning).
+**FILES** — `internal/client/account/register.go`, `master_secret.go`, `mnemonic.go`,
+`keystore.go`, `recover.go`, `account_test.go` (`mvp.md` §8.2 — see A-7)
+
+**VERIFY**
+
+```bash
+COMPILE:
+  $ go build ./internal/client/account/
+  EXPECT: exit 0
+ 
+IMPORT_CONSTRAINTS:                # IC §9 corrected (A-2): config+crypto only, no cmd/, no p2p/erasure needed here
+  $ grep -cE "Vyomanaut_V2/cmd|Vyomanaut_V2/internal/(p2p|erasure|storage|audit|scoring|repair|payment)" internal/client/account/*.go
+  EXPECT: 0
+ 
+ARGON2_PARAMS_FROM_PROFILE_NOT_HARDCODED:
+  $ grep -c "profile.Argon2Time\|profile.Argon2Memory\|profile.Argon2Threads" internal/client/account/register.go
+  EXPECT: >= 3
+  $ grep -cE "argon2Time\s*=\s*[0-9]|argon2Memory\s*=\s*[0-9]{4,}" internal/client/account/register.go
+  EXPECT: 0                        # no inline literal cost parameters
+ 
+CONFIRMATION_GATE_SKIPPED_ONLY_IN_DEMO:
+  $ grep -c "profile.SkipMnemonicConfirm" internal/client/account/mnemonic.go
+  EXPECT: >= 1
+  $ grep -c "SelectConfirmationWords(" internal/client/account/mnemonic.go
+  EXPECT: >= 1                     # called in both modes, per IC §5.1
+ 
+KEYSTORE_ENCRYPTS_ED25519_AND_NONCE_COUNTER:
+  $ grep -c "DeriveKeystoreEncKey" internal/client/account/keystore.go
+  EXPECT: >= 1
+  $ grep -cE "nonceCounter|noncCounter|pointerNonce" internal/client/account/keystore.go
+  EXPECT: >= 1
+ 
+RECOVERY_NEVER_LEAKS_WHICH_WORD_FAILED:   # NFR-class timing-oracle guard, IC §5.1
+  $ grep -nE "word\[|words\[[0-9]" internal/client/account/recover.go | grep -i "err\|invalid"
+  EXPECT: no matches
+  $ grep -c "ErrInvalidMnemonic" internal/client/account/recover.go
+  EXPECT: >= 1
+ 
+MASTER_SECRET_NEVER_WRITTEN_TO_DISK:
+  $ grep -cE "os.WriteFile|ioutil.WriteFile" internal/client/account/master_secret.go
+  EXPECT: 0
+ 
+UNIT_TESTS:
+  $ go test -v -run TestAccount ./internal/client/account/
+  EXPECT: exit 0; tests include:
+    TestRegisterUsesProfileArgon2Params           # fails if params are hardcoded
+    TestRegisterSkipsBlockingPromptInDemoOnly
+    TestRegisterStillCallsSelectConfirmationWordsInDemo
+    TestKeystoreRoundTripsEd25519KeyAndNonceCounter
+    TestRecoverFromPassphraseReproducesMasterSecret
+    TestRecoverFromMnemonicReproducesMasterSecret
+    TestRecoverInvalidMnemonicDoesNotIdentifyFailingWord
+ 
+VET:
+  $ go vet ./internal/client/account/
+  EXPECT: exit 0; zero output
+```
 
 ---
 
 ### Phase 15.2 — Upload Orchestrator
 
-**Reference:** IC §5.9 (`UploadOrchestrator` ERRATA note — capability tokens),
-IC §4.1 (chunk upload stream client side), IC §5.9 (session state for FR-060 resume), `OAS §components/schemas/PointerFilePlaintextSegment` for the pointer file struct layout when building the ciphertext payload passed to `POST /api/v1/file/register`.
+**Reference:** IC §5.9 (`UploadOrchestrator` ERRATA note — capability tokens; `ErrInsufficientEscrow`,
+`ErrNetworkNotReady`, `ErrUploadIncomplete`), IC §4.1 (chunk upload stream, client side — capability
+token verification steps, frame sizes, status codes), `mvp.md` §8.2 (file split), OAS
+`ShardAssignment.capability_token`, `SegmentAssignment`, `UploadAssignResponse`,
+`FileRegisterRequest` (owner_sig fixed per A-6), `PointerFilePlaintextSegment`
 
-#### Session 15.2.1 — Implement `UploadFile()` with capability token handling
+#### Session 15.2.1 — Implement `UploadFile()` with capability-token handling
 
-**Task:** In `internal/client/upload/orchestrator.go`, implement the upload lifecycle:
+**TASK:**
 
-1. Segment the file (padding to `DataShards × ShardSize` minimum)
-2. AONT encode each segment via `crypto.AONTEncodeSegment()`
-3. RS encode via `erasure.Engine.EncodeSegment()`
-4. Call `POST /api/v1/upload/assign` to get provider assignments AND capability tokens
-5. **ERRATA (IC §5.9):** Include each `capability_token` verbatim in the corresponding
-   `UploadRequest` frame. On `0x07 CAPABILITY_EXPIRED`: re-call the assignment endpoint
-   with the same `file_id` (idempotent — returns same providers with fresh tokens)
-6. Upload all shards in parallel (bounded goroutine pool)
-7. Register the encrypted pointer file with the microservice
-8. Persist session state for resume (FR-060): `file_id`, `chunk_ids`, `ack_status[TotalShards]`
+1. `orchestrator.go` — segment the file, padding to `profile.DataShards × profile.ShardSize`
+   minimum (never hardcode `16` or `262144` — read both from the active profile: demo uses
+   `DataShards=3`).
+2. AONT-encode each segment via `crypto.AONTEncodeSegment()`; RS-encode via
+   `erasure.Engine.EncodeSegment()`.
+3. `assign.go` — `POST /api/v1/upload/assign`; on HTTP 503 return `ErrNetworkNotReady`
+   (readiness gate closed); on HTTP 409 return `ErrInsufficientEscrow` (IC §5.9
+   pre-condition — 30-day escrow check enforced server-side).
+4. **ERRATA (IC §5.9), in `transfer.go`:** include each `capability_token` verbatim (hex,
+   144 chars per OAS `ShardAssignment.capability_token` pattern) in the corresponding
+   `UploadRequest` frame — never re-derive or reconstruct it client-side. On `0x07
+   CAPABILITY_EXPIRED`, re-call `assign.go`'s assignment request with the same `file_id`
+   (idempotent — same providers, fresh tokens).
+5. `transfer.go` — upload all shards in parallel (bounded goroutine pool); collect
+   `provider_sig` receipts.
+6. `pointer.go` — construct the `PointerFilePlaintextSegment` structure (OAS — informational
+   schema, never transmitted; client-side reference only), AEAD-encrypt it, and
+   `POST /api/v1/file/register`. Populate `display_name_ciphertext`/`_nonce`/`_tag` from the
+   locally-encrypted filename (FR-019) — key = `HKDF-SHA256(master_secret, salt=owner_id,
+   info="vyomanaut-filename-v1" ‖ file_id)`.
+7. **`owner_sig` construction — fixed-layout, per A-6, NOT canonical JSON:**
+   `owner_sig_input = SHA-256("vyomanaut-file-register-v1" ‖ file_id ‖
+   SHA-256(pointer_ciphertext) ‖ pointer_nonce ‖ pointer_tag ‖ original_size_bytes(8,BE) ‖
+   display_name_present(1) ‖ SHA-256(display_name_ciphertext‖display_name_nonce‖display_name_tag) ‖
+   schema_version(4,BE))`; `owner_sig = Ed25519_sign(...)`. This is the corrected replacement
+   for the OAS's current "canonical JSON, keys sorted" description — the OAS field
+   description is corrected in the same PR (A-6).
+8. `session.go` — persist session state for resume (FR-060): `file_id`, `chunk_ids`,
+   `ack_status[TotalShards]`, cleaned up only after step 6 succeeds.
+**FILES** — `internal/client/upload/orchestrator.go`, `session.go`, `assign.go`,
+`transfer.go`, `pointer.go`, `upload_test.go` (`mvp.md` §8.2 — see A-7)
 
-**Note:** The OAS `FileRegisterRequest` includes `display_name_ciphertext`, `display_name_nonce`, `display_name_tag` as optional fields (FR-019). Populate these from the client's locally-encrypted filename before calling `POST /api/v1/file/register`. Key derivation: `HKDF-SHA256(master_secret, salt=owner_id, info="vyomanaut-filename-v1" ‖ file_id`(OAS `FileRegisterRequest.properties.display_name_ciphertext` description).
+**VERIFY**
+
+```bash
+COMPILE:
+  $ go build ./internal/client/upload/
+  EXPECT: exit 0
+ 
+IMPORT_CONSTRAINTS:                # IC §9 corrected (A-2)
+  $ grep -c "Vyomanaut_V2/cmd" internal/client/upload/*.go
+  EXPECT: 0
+ 
+SEGMENTATION_USES_PROFILE_NOT_LITERALS:
+  $ grep -c "profile.DataShards\|profile.ShardSize" internal/client/upload/orchestrator.go
+  EXPECT: >= 2
+  $ grep -cE "\* 16\b|262144\b" internal/client/upload/orchestrator.go
+  EXPECT: 0
+ 
+CAPABILITY_TOKEN_INCLUDED_VERBATIM:
+  $ grep -c "capability_token\|CapabilityToken" internal/client/upload/transfer.go
+  EXPECT: >= 1
+  $ grep -cE "signing_input|reconstructToken|deriveToken" internal/client/upload/transfer.go
+  EXPECT: 0                        # client must never attempt to re-derive a token
+ 
+CAPABILITY_EXPIRED_TRIGGERS_IDEMPOTENT_REASSIGN:
+  $ grep -c "0x07\|CAPABILITY_EXPIRED" internal/client/upload/transfer.go
+  EXPECT: >= 1
+  $ grep -c "file_id" internal/client/upload/assign.go
+  EXPECT: >= 1
+ 
+ESCROW_AND_READINESS_ERRORS_MAPPED:
+  $ grep -c "409\|ErrInsufficientEscrow" internal/client/upload/assign.go
+  EXPECT: >= 1
+  $ grep -c "503\|ErrNetworkNotReady" internal/client/upload/assign.go
+  EXPECT: >= 1
+ 
+DISPLAY_NAME_POPULATED_WITH_CORRECT_HKDF_INFO:
+  $ grep -c "vyomanaut-filename-v1" internal/client/upload/pointer.go
+  EXPECT: >= 1
+  $ grep -c "display_name_ciphertext" internal/client/upload/pointer.go
+  EXPECT: >= 1
+ 
+OWNER_SIG_IS_FIXED_LAYOUT_NOT_JSON:              # A-6 — critical fix
+  $ grep -c "json.Marshal" internal/client/upload/pointer.go
+  EXPECT: 0
+  $ grep -c "vyomanaut-file-register-v1" internal/client/upload/pointer.go
+  EXPECT: >= 1
+  $ grep -c "sha256.Sum256" internal/client/upload/pointer.go
+  EXPECT: >= 2                     # ciphertext hash + display-name-block hash, at minimum
+ 
+SESSION_STATE_FIELDS_PRESENT_FR060:
+  $ grep -cE "file_id|chunk_ids|ack_status" internal/client/upload/session.go
+  EXPECT: >= 3
+  $ grep -c "TotalShards" internal/client/upload/session.go
+  EXPECT: >= 1
+ 
+SESSION_STATE_CLEANED_UP_ONLY_AFTER_REGISTER:
+  $ awk '/file\/register|FileRegisterRequest/{r=NR} /os.Remove|session.*[Cc]leanup|DeleteSessionState/{c=NR} END{print (r>0 && c>0 && r<c)?"PASS":"FAIL"}' internal/client/upload/orchestrator.go internal/client/upload/pointer.go internal/client/upload/session.go
+  EXPECT: PASS
+ 
+UNIT_TESTS:
+  $ go test -v -run TestUpload ./internal/client/upload/
+  EXPECT: exit 0; tests include:
+    TestUploadFileSegmentsPadUsingProfileNotLiterals
+    TestUploadIncludesCapabilityTokenVerbatimPerShard
+    TestUploadReassignsIdempotentlyOnCapabilityExpired
+    TestUploadMapsHTTP409ToErrInsufficientEscrow
+    TestUploadMapsHTTP503ToErrNetworkNotReady
+    TestUploadPopulatesDisplayNameCiphertextFromMasterSecret
+    TestOwnerSigUsesFixedByteLayoutNotJSON              # A-6
+    TestUploadPersistsSessionStateForResume
+    TestUploadCleansUpSessionStateOnlyAfterRegisterSucceeds
+ 
+VET:
+  $ go vet ./internal/client/upload/
+  EXPECT: exit 0; zero output
+```
 
 #### Session 15.2.2 — Implement `ResumeUpload()`
 
-**Task:** Load persisted session state, identify unacknowledged shards, re-upload only
-those (FR-060 — do not retransmit acknowledged shards, IC §5.9).
+**TASK:** Load persisted session state (`session.go`); identify unacknowledged shards from
+`ack_status[TotalShards]`; re-upload only those via `transfer.go` (FR-060 — never
+retransmit acknowledged shards, IC §5.9); on completion, follow the same pointer-registration
+and cleanup path as Session 15.2.1 step 6–8.
+
+**FILES** — `internal/client/upload/session.go` (edit — resume entry point), `orchestrator.go`
+(edit — `ResumeUpload()` per IC §5.9 signature)
+
+**VERIFY**
+
+```bash
+COMPILE:
+  $ go build ./internal/client/upload/
+  EXPECT: exit 0
+ 
+RESUME_SKIPS_ACKNOWLEDGED_SHARDS:
+  $ grep -c "ack_status\[" internal/client/upload/orchestrator.go internal/client/upload/session.go
+  EXPECT: >= 1
+  $ grep -cE "range.*ack_status|for.*acked" internal/client/upload/orchestrator.go
+  EXPECT: >= 1
+ 
+RESUME_REUSES_UPLOAD_TRANSFER_PATH:               # no duplicated transfer logic
+  $ grep -c "transfer\." internal/client/upload/orchestrator.go
+  EXPECT: >= 1
+ 
+UNIT_TESTS:
+  $ go test -v -run TestResumeUpload ./internal/client/upload/
+  EXPECT: exit 0; tests include:
+    TestResumeUploadRetransmitsOnlyUnacknowledgedShards
+    TestResumeUploadReusesExistingSessionID
+    TestResumeUploadCompletesRegistrationOnSuccess
+ 
+VET:
+  $ go vet ./internal/client/upload/
+  EXPECT: exit 0; zero output
+```
 
 ---
 
 ### Phase 15.3 — Retrieval Orchestrator
 
 **Reference:** IC §5.9 (`RetrieveFile`, `ErrPointerTagMismatch`, `ErrTooFewShards`,
-`ErrCanaryMismatch`), IC §5.1 (`DecryptPointerFile`, `AONTDecodePackage`), `OAS §components/schemas/PointerFilePlaintextSegment` while parsing the decrypted pointer file on retrieval.
+`ErrCanaryMismatch`), IC §5.1 (`DecryptPointerFile`, `AONTDecodePackage` — both with
+explicit "caller MUST NOT return any plaintext" contracts), `mvp.md` §8.2 (file split),
+OAS `PointerFilePlaintextSegment`, FR-016 (fastest-16 parallel-fetch-with-cancel), FR-018
+(canary enforcement)
 
 #### Session 15.3.1 — Implement `RetrieveFile()`
 
-**Task:** In `internal/client/retrieve/orchestrator.go`:
+**TASK:**
 
-1. Fetch pointer ciphertext from microservice
-2. Derive pointer key via `DerivePointerEncKey()`
-3. Call `DecryptPointerFile()` — on `ErrTagMismatch`, return `ErrPointerTagMismatch`
-   with no plaintext (IC §5.9)
-4. For each segment: dial providers in parallel, cancel after `DataShards` valid shards
-5. Verify each shard's content address before passing to RS decode
-6. RS decode via `erasure.Engine.DecodeSegment()`
-7. `AONTDecodePackage()` — on `ErrCanaryMismatch`: zero the buffer and return
-   `ErrCanaryMismatch` (IC §5.1, IC §5.9: "caller MUST NOT return any plaintext")
-8. Strip padding to `original_size_bytes`
-9. Concatenate segments in `segment_index` order
+1. `pointer.go` — fetch pointer ciphertext (`GET /api/v1/file/{file_id}/pointer`); derive
+   the pointer key via `crypto.DerivePointerEncKey()`; call `crypto.DecryptPointerFile()` —
+   on `crypto.ErrTagMismatch`, return `client.ErrPointerTagMismatch` **with no plaintext
+   returned under any circumstance** (IC §5.1, IC §5.9).
+2. `download.go` — for each segment: dial all `TotalShards` providers in parallel via
+   libp2p; cancel remaining dials once `profile.DataShards` valid responses are received
+   (FR-016's "fastest-responding, cancel-on-k" pattern — **never hardcode `16`**; demo mode
+   cancels at 3). Verify each shard's content address (`SHA-256(shard_data) == chunk_id`)
+   before it is handed to RS decode.
+3. `decode.go` — RS-decode via `erasure.Engine.DecodeSegment()`; `crypto.AONTDecodePackage()`
+   — on `crypto.ErrCanaryMismatch`: **zero the buffer and return `client.ErrCanaryMismatch`**
+   (IC §5.1, IC §5.9 — "caller MUST NOT return any plaintext"); strip padding to
+   `original_size_bytes`.
+4. `orchestrator.go` — concatenate segments in `segment_index` order; if fewer than
+   `profile.DataShards` providers are reachable for any segment after retry, return
+   `client.ErrTooFewShards`.
+**FILES** — `internal/client/retrieve/orchestrator.go`, `pointer.go`, `download.go`,
+`decode.go`, `retrieve_test.go` (`mvp.md` §8.2 — see A-7)
+
+**VERIFY**
+
+```bash
+COMPILE:
+  $ go build ./internal/client/retrieve/
+  EXPECT: exit 0
+ 
+IMPORT_CONSTRAINTS:
+  $ grep -c "Vyomanaut_V2/cmd" internal/client/retrieve/*.go
+  EXPECT: 0
+ 
+TAG_MISMATCH_RETURNS_NO_PLAINTEXT:                # order-sensitive — check happens before any use
+  $ awk '/DecryptPointerFile/{d=NR} /ErrPointerTagMismatch/{e=NR} END{print (d>0 && e>0)?"PASS":"FAIL"}' internal/client/retrieve/pointer.go
+  EXPECT: PASS
+  $ grep -A5 "ErrTagMismatch" internal/client/retrieve/pointer.go | grep -c "return.*plaintext\|return.*data,"
+  EXPECT: 0                         # the error branch must not return decrypted bytes
+ 
+CANCEL_AFTER_PROFILE_DATASHARDS_NOT_HARDCODED_16:
+  $ grep -c "profile.DataShards" internal/client/retrieve/download.go
+  EXPECT: >= 1
+  $ grep -cE "== 16\b|>= 16\b" internal/client/retrieve/download.go
+  EXPECT: 0
+ 
+CONTENT_ADDRESS_VERIFIED_BEFORE_RS_DECODE:
+  $ awk '/sha256.Sum256|SHA-256/{h=NR} /DecodeSegment/{d=NR} END{print (h>0 && d>0 && h<d)?"PASS":"FAIL"}' internal/client/retrieve/download.go internal/client/retrieve/decode.go
+  EXPECT: PASS
+ 
+CANARY_MISMATCH_ZEROES_BUFFER_BEFORE_RETURN:
+  $ grep -c "ErrCanaryMismatch" internal/client/retrieve/decode.go
+  EXPECT: >= 1
+  $ grep -B3 "ErrCanaryMismatch" internal/client/retrieve/decode.go | grep -cE "zero|clear|for.*range.*= 0"
+  EXPECT: >= 1
+ 
+TOO_FEW_SHARDS_SENTINEL_PRESENT:
+  $ grep -c "ErrTooFewShards" internal/client/retrieve/orchestrator.go
+  EXPECT: >= 1
+ 
+SEGMENTS_CONCATENATED_IN_INDEX_ORDER:
+  $ grep -cE "segment_index|SegmentIndex" internal/client/retrieve/orchestrator.go
+  EXPECT: >= 1
+  $ grep -c "sort\." internal/client/retrieve/orchestrator.go
+  EXPECT: >= 1
+ 
+UNIT_TESTS:
+  $ go test -v -run TestRetrieve ./internal/client/retrieve/
+  EXPECT: exit 0; tests include:
+    TestRetrieveTagMismatchReturnsNoPlaintext
+    TestRetrieveCancelsAfterProfileDataShardsValidResponses
+    TestRetrieveVerifiesContentAddressBeforeDecode
+    TestRetrieveCanaryMismatchZeroesBufferAndReturnsSentinel
+    TestRetrieveTooFewShardsReturnsSentinel
+    TestRetrieveConcatenatesSegmentsInOrder
+    TestRetrieveStripsPaddingToOriginalSizeBytes
+ 
+VET:
+  $ go vet ./internal/client/retrieve/
+  EXPECT: exit 0; zero output
+```
+
+---
+
+### Phase 15.4 — File & Account Management *(new phase — closes A-4/A-5)*
+
+**Reference:** `mvp.md` §8.2 (`internal/client/manage/**files.go, delete.go, escrow.go` —
+already specified, never built until now), `mvp.md` §8.3 (`ls`, `rm`, `balance`, `deposit`
+subcommands, `withdraw` added per A-5), OAS `GET /api/v1/owner/{owner_id}/files`,
+`DELETE /api/v1/file/{file_id}`, `GET /api/v1/owner/{owner_id}/balance`,
+`GET /api/v1/owner/{owner_id}/escrow`, `POST /api/v1/owner/deposit`,
+`POST /api/v1/owner/withdraw`, FR-019/FR-020/FR-021/FR-059, IC §14 (user-facing copy —
+pending merge per ADR-034; referenced here as "pending" not "authoritative today"),
+ADR-035 (`intent_url` — pending merge; see PRECONDITIONS below)
+
+#### Session 15.4.1 — Implement file list and delete (`ls`, `rm`)
+
+**TASK:**
+
+1. `files.go` — `GET /api/v1/owner/{owner_id}/files`; decrypt `display_name_ciphertext`
+   locally when present (same HKDF derivation as Session 15.2.1 step 6 — `info=
+   "vyomanaut-filename-v1"‖file_id`), else display `file_id`. Render the `availability`
+   enum (`OK`/`DEGRADED`/`CRITICAL`) through the **canonical label mapping from IC §14.2**
+   — never the raw enum string directly to the user. **PRECONDITION:** IC §14.2 is not yet
+   merged into `interface-contracts.md` (per prior session — filed locally as
+   `interface-contracts-section-14.md`, pending push). Until it merges, this session
+   implements the mapping call site as a named, swappable function
+   (`copy.AvailabilityLabel(status string) string`) with the three enum values as
+   placeholder pass-through strings, so merging §14.2 later is a one-file diff, not a
+   re-implementation.
+2. `delete.go` — `DELETE /api/v1/file/{file_id}`; surface `assignments_marked`,
+   `providers_notified`, `providers_pending` from the response (FR-020's own
+   pending-provider retry language — this is not an error state, it's expected steady-state
+   text). Treat HTTP 409 `FILE_ALREADY_DELETED` as an idempotent success on the client side
+   (the file is, from the data owner's point of view, in the state they asked for).
+**FILES** — `internal/client/manage/files.go`, `delete.go`, `manage_test.go` (`mvp.md` §8.2
+inventory has no explicit test file for this package — added here for consistency with
+every other package's convention, which always pairs implementation files with a `_test.go`)
+
+**VERIFY**
+
+```bash
+COMPILE:
+  $ go build ./internal/client/manage/
+  EXPECT: exit 0
+ 
+IMPORT_CONSTRAINTS:
+  $ grep -c "Vyomanaut_V2/cmd" internal/client/manage/*.go
+  EXPECT: 0
+ 
+DISPLAY_NAME_DECRYPTED_WITH_SAME_HKDF_INFO_AS_UPLOAD:
+  $ grep -c "vyomanaut-filename-v1" internal/client/manage/files.go
+  EXPECT: >= 1
+ 
+AVAILABILITY_NEVER_RENDERED_AS_RAW_ENUM:
+  $ grep -c "copy.AvailabilityLabel\|AvailabilityLabel(" internal/client/manage/files.go
+  EXPECT: >= 1
+  $ grep -nE 'fmt\.Print.*"OK"|fmt\.Print.*"DEGRADED"|fmt\.Print.*"CRITICAL"' internal/client/manage/files.go
+  EXPECT: no matches                 # raw enum string must never reach a Print/output call directly
+ 
+DELETE_SURFACES_PROVIDER_NOTIFICATION_COUNTS:
+  $ grep -cE "assignments_marked|providers_notified|providers_pending" internal/client/manage/delete.go
+  EXPECT: >= 3
+ 
+DELETE_409_TREATED_AS_IDEMPOTENT_SUCCESS:
+  $ grep -c "FILE_ALREADY_DELETED" internal/client/manage/delete.go
+  EXPECT: >= 1
+  $ grep -A3 "FILE_ALREADY_DELETED" internal/client/manage/delete.go | grep -cE "return nil|success"
+  EXPECT: >= 1
+ 
+UNIT_TESTS:
+  $ go test -v -run "TestFileList|TestFileDelete" ./internal/client/manage/
+  EXPECT: exit 0; tests include:
+    TestFileListDecryptsDisplayNameWhenPresent
+    TestFileListFallsBackToFileIDWhenNamePlaintextAbsent
+    TestFileListRendersAvailabilityThroughLabelMapping
+    TestFileDeleteSurfacesProviderNotificationCounts
+    TestFileDeleteTreats409AsIdempotentSuccess
+ 
+VET:
+  $ go vet ./internal/client/manage/
+  EXPECT: exit 0; zero output
+```
+
+#### Session 15.4.2 — Implement escrow balance, deposit, and withdrawal (`balance`, `deposit`, `withdraw`)
+
+**Reference:** FR-021 (balance view — current balance, 30-day reserved, available,
+transaction history), FR-059 (withdrawal — idempotency key `SHA-256(owner_id +
+withdrawal_request_id)`, blocked while any upload is in-flight), ADR-035 (`intent_url`
+construction — **pending merge**, see PRECONDITIONS)
+
+**PRECONDITIONS** — `docs/api/openapi.yaml`'s live `DepositInitiateResponse` currently
+returns only `vpa`/`qr_code_url`/`expires_at`; it does **not** yet include `intent_url`
+(confirmed against the live OAS — ADR-035 is Proposed, not merged). This session builds
+`deposit`'s rendering path against **both** possible response shapes: if `intent_url` is
+present, render it as the primary, copyable output (ADR-035 §3's specified client
+behavior); if absent, fall back to printing `vpa` and the `qr_code_url` link, so this
+session does not block on ADR-035 landing first, and requires no rework once it does.
+
+**TASK:**
+
+1. `escrow.go` (`balance`) — `GET /api/v1/owner/{owner_id}/balance` → render `balance_paise`,
+   `reserved_next_30d_paise`, `available_paise` (OwnerBalance; all integer paise, never
+   floating point client-side either — consistent with IC §11's payment-path rule, applied
+   here even though this is a read-only client display, not `internal/payment` itself).
+2. `escrow.go` (`deposit`) — `POST /api/v1/owner/deposit`; render per the PRECONDITIONS
+   fallback logic above.
+3. `escrow.go` (`withdraw`, new per A-5) — `POST /api/v1/owner/withdraw`; idempotency key
+   `SHA-256(owner_id + withdrawal_request_id)`, generated client-side once per withdrawal
+   attempt and reused verbatim on retry (never regenerated on retry — a fresh key on retry
+   would defeat the idempotency guarantee FR-059 exists for). Surface the HTTP 409 case
+   (blocked while an upload is in-flight) as an explicit, actionable message, not a generic
+   error.
+**FILES** — `internal/client/manage/escrow.go`, `manage_test.go` (edit — extends Session
+15.4.1's test file)
+
+**VERIFY**
+
+```bash
+COMPILE:
+  $ go build ./internal/client/manage/
+  EXPECT: exit 0
+ 
+BALANCE_RENDERS_ALL_THREE_FIGURES_INTEGER_PAISE:
+  $ grep -cE "balance_paise|reserved_next_30d_paise|available_paise" internal/client/manage/escrow.go
+  EXPECT: >= 3
+  $ grep -cE "float32|float64" internal/client/manage/escrow.go
+  EXPECT: 0
+ 
+DEPOSIT_HANDLES_BOTH_RESPONSE_SHAPES:
+  $ grep -c "intent_url" internal/client/manage/escrow.go
+  EXPECT: >= 1
+  $ grep -c "qr_code_url" internal/client/manage/escrow.go
+  EXPECT: >= 1
+ 
+WITHDRAW_IDEMPOTENCY_KEY_STABLE_ACROSS_RETRY:
+  $ grep -c "withdrawal_request_id" internal/client/manage/escrow.go
+  EXPECT: >= 1
+  $ grep -cE "sha256.Sum256\(.*owner_id.*withdrawal_request_id\)|SHA-256.*owner_id.*withdrawal" internal/client/manage/escrow.go
+  EXPECT: >= 1
+  $ grep -nE "uuid.New\(\)|rand\." internal/client/manage/escrow.go | grep -i retry
+  EXPECT: no matches                # key must not be regenerated inside a retry loop
+ 
+WITHDRAW_409_BLOCKED_WHILE_UPLOAD_INFLIGHT_SURFACED:
+  $ grep -c "409" internal/client/manage/escrow.go
+  EXPECT: >= 1
+ 
+UNIT_TESTS:
+  $ go test -v -run TestEscrow ./internal/client/manage/
+  EXPECT: exit 0; tests include:
+    TestBalanceRendersAllThreeFiguresAsIntegerPaise
+    TestDepositRendersIntentURLWhenPresent
+    TestDepositFallsBackToVPAAndQRWhenIntentURLAbsent
+    TestWithdrawReusesSameIdempotencyKeyOnRetry
+    TestWithdrawSurfaces409AsActionableMessage
+ 
+VET:
+  $ go vet ./internal/client/manage/
+  EXPECT: exit 0; zero output
+```
 
 ---
 
 ## Milestone 16 — Demo Mode Validation
 
-**Deliverable:** A fully runnable demo that completes the 30-minute lifecycle from MVP
-§3.6 timeline. `go test` suite validates all demo-specific behaviours and mode-invariant
-properties.
+**Deliverable:** A fully runnable demo that completes the 30-minute lifecycle from `mvp.md`
+§3.6, **on the platform it is committed to shipping on first** (Windows —
+`ux-decisions.md` §7). `go test` validates all demo-specific behaviours and mode-invariant
+properties; a native `windows-latest` CI run validates that the demo path is not
+Linux/macOS-only.
 
-**Reference:** MVP §3.6 (demo timeline), MVP §7 (viability fact-checks), MVP §6 (switching
-requirements), MVP §8.4 (CI checks 14–15)
+**Reference:** `mvp.md` §3.6 (demo timeline), §7 (viability fact-checks), §6 (switching
+requirements), §8.4 (CI checks 14–15); ADR-046 (Windows storage engine — Phase 16.0, new)
+
+---
+
+### Phase 16.0 — Cross-Platform Storage Prerequisite *(new phase — closes A-8)*
+
+**Reference:** ADR-046 (Provider Storage Engine on Windows: BadgerDB, Not RocksDB/CGo)
+
+> **Why this phase exists here and not in Milestone 5.** `internal/storage` is an M5
+> deliverable, already merged, with no `//go:build` tags on its RocksDB import — confirmed
+> against the live repo. It compiles today only because nothing has yet tried to
+> cross-compile it for Windows. Milestone 16 is the first point in the build plan where
+> that stops being true: Session 16.2.1's `--sim-count` harness is explicitly meant to run
+> "at a hackathon or investor meeting" (`mvp.md` §3.1), and the product's committed
+> platform order ships Windows first. This phase is sequenced as **16.0**, before 16.1/16.2,
+> specifically so it does not renumber the two already-cross-referenced existing phases —
+> it is a prerequisite insert, not a milestone restructure.
+
+#### Session 16.0.1 — Retrofit `internal/storage` with build-tag-selected engines
+
+**PRECONDITIONS** — `internal/storage/index.go` currently imports `github.com/linxGnu/grocksdb`
+unconditionally (no build tag on any file in the package). ADR-046 is approved for
+implementation per Karma's direction on this document.
+
+**TASK:**
+
+1. Rename `internal/storage/index.go` → `internal/storage/engine_rocksdb.go`; add
+   `//go:build linux || darwin` (ADR-046 §1). No logic change — this is a pure rename +
+   tag, the existing RocksDB implementation and its CI-proven Linux/macOS build are
+   unchanged.
+2. Create `internal/storage/engine_badger.go`, `//go:build windows`, implementing the same
+   internal surface `engine_rocksdb.go` exposes (`AppendChunk`, `LookupChunk`, `DeleteChunk`,
+   `RunGC`, `RecoverFromCrash`, `Close`) against `badger.DB`, configured per ADR-046 §2:
+   `WithValueThreshold(1024)`, `WithBloomFalsePositive(0.01)`, `WithBlockCacheSize(64<<20)`,
+   `WithCompression(options.None)`. `content_hash` verification (`SHA-256(chunk_data)`
+   before every audit response) is unchanged — it is application logic on top of `Get`/`Set`,
+   identical on both engines (ADR-046 §2).
+3. Edit `store.go`'s `NewChunkStore` so it calls a build-tag-satisfied constructor (the same
+   function name on both engine files, e.g. `openIndex(dbPath)`) rather than
+   `openRocksDBIndex` directly — the rest of `store.go`/`vlog.go` is otherwise unchanged
+   (ADR-046 §3: Badger's own crash recovery/GC machinery replaces the hand-rolled
+   single-writer-goroutine/tail-scan/GC code on the Windows path only; the Linux/macOS path
+   keeps all of it, unchanged).
+4. Add `github.com/dgraph-io/badger/v4` to `go.mod`.
+5. Add a native `windows-latest` CI job (mirroring the existing native `macos-15` job)
+   running `internal/storage`'s test suite — ADR-046's own "open constraint": cross-compiling
+   proves the code compiles for Windows, not that it behaves correctly there.
+**FILES** — `internal/storage/engine_rocksdb.go` (renamed from `index.go`, tagged),
+`internal/storage/engine_badger.go` (new, tagged), `internal/storage/store.go` (edit —
+engine-selection call site only), `go.mod` (edit), `.github/workflows/ci.yml` (edit —
+new `windows-latest` job)
+
+**VERIFY**
+
+```bash
+COMPILE_LINUX_UNCHANGED:
+  $ go build ./internal/storage/...
+  EXPECT: exit 0
+ 
+CROSS_COMPILE_WINDOWS:                     # ADR-046 §4 — the immediate, no-new-toolchain check
+  $ GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build ./internal/storage/...
+  EXPECT: exit 0
+ 
+BUILD_TAGS_PRESENT_ON_BOTH_ENGINES:
+  $ head -1 internal/storage/engine_rocksdb.go | grep -c "go:build linux || darwin"
+  EXPECT: 1
+  $ head -1 internal/storage/engine_badger.go | grep -c "go:build windows"
+  EXPECT: 1
+ 
+NO_UNCONDITIONAL_GROCKSDB_IMPORT:          # every grocksdb-importing file must carry a build tag
+  $ for f in internal/storage/*.go; do grep -q "go:build" "$f" || grep -l "grocksdb" "$f"; done
+  EXPECT: no output
+ 
+BADGER_CONFIG_MATCHES_ADR046:
+  $ grep -cE "WithValueThreshold\(1024\)|WithBloomFalsePositive\(0.01\)|WithBlockCacheSize\(64 ?<< ?20\)|WithCompression\(options.None\)" internal/storage/engine_badger.go
+  EXPECT: >= 4
+ 
+CHUNKSTORE_INTERFACE_SURFACE_IDENTICAL_ON_BOTH_ENGINES:
+  $ grep -cE "func.*AppendChunk|func.*LookupChunk|func.*DeleteChunk|func.*RunGC|func.*RecoverFromCrash|func.*Close" internal/storage/engine_badger.go
+  EXPECT: >= 6
+  $ grep -cE "func.*AppendChunk|func.*LookupChunk|func.*DeleteChunk|func.*RunGC|func.*RecoverFromCrash|func.*Close" internal/storage/engine_rocksdb.go
+  EXPECT: >= 6
+ 
+STORE_GO_DISPATCHES_BY_BUILD_TAG_NOT_RUNTIME_OS_CHECK:
+  $ grep -cE "runtime.GOOS" internal/storage/store.go
+  EXPECT: 0                                 # selection must be compile-time (build tags), not a runtime branch
+ 
+CONTENT_HASH_VERIFICATION_IDENTICAL_ON_BOTH_PATHS:
+  $ grep -c "sha256.Sum256\|SHA-256" internal/storage/engine_badger.go
+  EXPECT: >= 1
+ 
+WINDOWS_CI_JOB_ADDED:
+  $ grep -c "windows-latest" .github/workflows/ci.yml
+  EXPECT: >= 1
+ 
+UNIT_TESTS:
+  $ go test ./internal/storage/...
+  EXPECT: exit 0                            # existing M5 suite, unaffected on Linux/macOS
+  $ go test -v -run TestEngineBadger ./internal/storage/
+  EXPECT: exit 0 (on a windows-latest runner); tests include:
+    TestBadgerAppendLookupDeleteRoundTrip
+    TestBadgerContentHashVerifiedBeforeAuditResponse
+    TestBadgerAndRocksDBSatisfySameChunkStoreInterface
+ 
+VET:
+  $ go vet ./internal/storage/...
+  EXPECT: exit 0; zero output
+```
 
 ---
 
 ### Phase 16.1 — End-to-End Demo Test
 
-**Reference:** MVP §3.6
+**Reference:** `mvp.md` §3.6
 
 #### Session 16.1.1 — Implement `TestDemoTimeline` integration test
 
-**Task:** Create `scripts/test/demo_timeline_test.go`. Using `--sim-count=5
---sim-asn-count=5` and `VYOMANAUT_MODE=demo`, run the demo timeline from MVP §3.6:
+**TASK:** Create `scripts/test/demo_timeline_test.go`. Using `--sim-count=5
+--sim-asn-count=5` and `VYOMANAUT_MODE=demo`, run the demo timeline from `mvp.md` §3.6:
 
-- Assert readiness gate passes within 60s of startup
-- Assert file upload succeeds for a file ≤ 1.25 MB
-- Assert first audit PASS is recorded within 3 minutes
-- Assert VETTING→ACTIVE transition completes within 12 minutes
-- Assert synthetic chunk GC is delivered after ACTIVE transition
+- Assert readiness gate passes within 60s of startup.
+- Assert file upload succeeds for a file ≤ 1.25 MB.
+- Assert first audit PASS is recorded within 3 minutes.
+- Assert VETTING→ACTIVE transition completes within 12 minutes.
+- Assert synthetic chunk GC is delivered after ACTIVE transition.
 - Kill one simulated daemon; assert departure detection within `profile.DepartureThreshold`
-  (10 min in demo)
-- Assert repair job created and completed
-
-**One more assertion:** Readiness response `mode` field equals `"demo"` when `VYOMANAUT_MODE=demo`. The OAS `ReadinessResponse.properties.mode` and the `DemoReady` example confirm this field is present in both modes (OAS `paths./api/v1/admin/readiness.get.responses.200.examples.DemoReady`). Demo thresholds: `active_vetted_providers.required_value=5`, `distinct_asns.required_value=5`, `distinct_metro_regions.required_value=1`, `microservice_quorum.required_value=1`, `relay_nodes_deployed.required_value=0`.
-
+  (10 min in demo).
+- Assert repair job created and completed.
+- Assert `ReadinessResponse.mode == "demo"` when `VYOMANAUT_MODE=demo` (OAS
+  `ReadinessResponse.properties.mode` and the `DemoReady` example both confirm this field —
+  verified present in the live OAS). Demo thresholds, confirmed against the same example:
+  `active_vetted_providers.required_value=5`, `distinct_asns.required_value=5`,
+  `distinct_metro_regions.required_value=1`, `microservice_quorum.required_value=1`,
+  `relay_nodes_deployed.required_value=0`.
 This test is tagged `//go:build integration` and runs separately from unit tests.
 
-#### Session 16.1.2 — Validate all viability fact-checks from MVP §7
+**FILES** — `scripts/test/demo_timeline_test.go`
 
-**Task:** Add individual tests for each fact-check in MVP §7:
+**VERIFY**
 
-- MVP §7.1 (ASN cap): assert `MinDistinctASNs=5` in DemoProfile (already in M1 tests)
-- MVP §7.2 (RS math): assert repair succeeds when 2 of 5 providers are offline
-- MVP §7.3 (vetting timing): assert ACTIVE transition happens at ~10 min in demo
-- MVP §7.7 (mock idempotency): assert duplicate webhook delivery produces exactly one
-  `escrow_events` row
+```bash
+COMPILE:
+  $ go build -tags integration ./scripts/test/
+  EXPECT: exit 0
+ 
+BUILD_TAG_PRESENT:
+  $ head -1 scripts/test/demo_timeline_test.go | grep -c "go:build integration"
+  EXPECT: 1
+ 
+ALL_SEVEN_TIMELINE_ASSERTIONS_PRESENT:
+  $ grep -cE "readiness|upload.*1.25|audit.*PASS|VETTING.*ACTIVE|GC.*deliver|DepartureThreshold|repair.*complet" scripts/test/demo_timeline_test.go
+  EXPECT: >= 7
+ 
+MODE_FIELD_ASSERTED:
+  $ grep -c '"demo"' scripts/test/demo_timeline_test.go
+  EXPECT: >= 1
+ 
+DEMO_THRESHOLDS_MATCH_OAS_DEMOREADY_EXAMPLE:
+  $ grep -cE "required_value.*5|required_value.*1|required_value.*0" scripts/test/demo_timeline_test.go
+  EXPECT: >= 3
+ 
+UNIT_TESTS:
+  $ go test -tags integration -v -run TestDemoTimeline ./scripts/test/
+  EXPECT: exit 0 (full run takes ~30-35 min per mvp.md §3.6 — this is an integration test, not a fast unit test)
+ 
+VET:
+  $ go vet -tags integration ./scripts/test/
+  EXPECT: exit 0; zero output
+```
+
+#### Session 16.1.2 — Validate all viability fact-checks from `mvp.md` §7
+
+**TASK:** Add individual tests for each fact-check:
+
+- §7.1 (ASN cap): assert `MinDistinctASNs=5` in `DemoProfile` (already covered in M1 tests
+  — this session asserts it again from the demo-timeline harness, not a duplicate: it
+  confirms the *running* profile matches, not just the struct literal).
+- §7.2 (RS math): assert repair succeeds when 2 of 5 providers are offline.
+- §7.3 (vetting timing): assert ACTIVE transition happens at ~10 min in demo.
+- §7.7 (mock idempotency): assert duplicate webhook delivery produces exactly one
+  `escrow_events` row.
+**FILES** — `scripts/test/demo_timeline_test.go` (edit — additional test functions in the
+same file; no new file needed, per the file's existing scope)
+
+**VERIFY**
+
+```bash
+COMPILE:
+  $ go build -tags integration ./scripts/test/
+  EXPECT: exit 0
+ 
+UNIT_TESTS:
+  $ go test -tags integration -v -run "TestViability" ./scripts/test/
+  EXPECT: exit 0; tests include:
+    TestViabilityASNCapMatchesRunningDemoProfile
+    TestViabilityRepairSucceedsWithTwoOfFiveOffline
+    TestViabilityActiveTransitionAtTenMinutes
+    TestViabilityDuplicateWebhookProducesExactlyOneEscrowRow
+ 
+DUPLICATE_WEBHOOK_ROW_COUNT_ASSERTED:
+  $ grep -c "COUNT(\*)\|len(.*escrow_events\|rowCount" scripts/test/demo_timeline_test.go
+  EXPECT: >= 1
+ 
+VET:
+  $ go vet -tags integration ./scripts/test/
+  EXPECT: exit 0; zero output
+```
 
 ---
 
 ### Phase 16.2 — Simulation Mode
 
-**Reference:** MVP §8.3 (`--sim-count` flag), IC §10 (simulation mode paths)
+**Reference:** `mvp.md` §8.3 (`--sim-count` flag), IC §10 (simulation mode paths)
 
-#### Session 16.2.1 — Implement `--sim-count` multi-instance provider
+#### Session 16.2.1 — Implement `--sim-count` multi-instance provider *(rewritten — closes A-8)*
 
-**Task:** In `cmd/provider/main.go`, when `--sim-count=N`, spawn N goroutines each
-running an independent provider daemon instance with:
+**PRECONDITIONS** — Phase 16.0 complete (`internal/storage.NewChunkStore` compiles on both
+`linux || darwin` and `windows`).
 
-- Separate Ed25519 identity
-- Separate RocksDB instance at `/tmp/vyomanaut-sim/{zero-padded-index}/db/`
-- Separate vLog at `/tmp/vyomanaut-sim/{zero-padded-index}/vlog/chunks.vlog`
-- Auto-assigned synthetic ASN `SIM-AS{1..N}` from `--sim-asn-count`
+**TASK:** In `cmd/provider/main.go`, when `--sim-count=N`, spawn N goroutines each running
+an independent provider daemon instance with:
 
+- Separate Ed25519 identity.
+- **Separate `storage.ChunkStore` instance** at `/tmp/vyomanaut-sim/{zero-padded-index}/db/`
+  — the same `storage.NewChunkStore` call used in normal (non-simulation) mode; the engine
+  selected underneath it is RocksDB on Linux/macOS or BadgerDB on Windows (ADR-046, Phase
+  16.0), transparently, via the build tag already resolved at compile time. **This session's
+  code must never name the engine directly** — that coupling is exactly what made the
+  original spec Linux/macOS-only.
+- Value-log path unchanged in shape: `/tmp/vyomanaut-sim/{zero-padded-index}/vlog/chunks.vlog`
+  on the RocksDB engine; the equivalent Badger data directory on Windows, both produced by
+  the same `dbPath` argument to `storage.NewChunkStore` — no simulation-specific path
+  branching by OS.
+- Auto-assigned synthetic ASN `SIM-AS{1..N}` from `--sim-asn-count`.
 Paths must use the exact format from IC §10 naming conventions: `{instance_id}` is
 zero-padded to 4 digits (e.g. `0000`, `0001`).
+
+**FILES** — `cmd/provider/main.go` (edit — `--sim-count` branch)
+
+**VERIFY**
+
+```bash
+COMPILE:
+  $ go build ./cmd/provider/
+  EXPECT: exit 0
+ 
+CROSS_COMPILE_WINDOWS_SIM_PATH:                     # the actual fix this session exists for
+  $ GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build ./cmd/provider/
+  EXPECT: exit 0
+ 
+NO_ENGINE_NAMED_IN_SIM_CODE_PATH:
+  $ grep -niE "rocksdb|grocksdb|badger" cmd/provider/main.go
+  EXPECT: no matches                                 # engine choice must stay inside internal/storage
+ 
+USES_SHARED_NEWCHUNKSTORE_CALL:
+  $ grep -c "storage.NewChunkStore" cmd/provider/main.go
+  EXPECT: >= 1
+ 
+INSTANCE_ID_ZERO_PADDED_4_DIGITS:
+  $ grep -cE "%04d|Sprintf.*04d" cmd/provider/main.go
+  EXPECT: >= 1
+ 
+SIM_PATH_MATCHES_IC10_CONVENTION:
+  $ grep -c "/tmp/vyomanaut-sim/" cmd/provider/main.go
+  EXPECT: >= 1
+ 
+ASN_AUTO_ASSIGNMENT_PRESENT:
+  $ grep -c "SIM-AS" cmd/provider/main.go
+  EXPECT: >= 1
+ 
+UNIT_TESTS:
+  $ go test -v -run TestSimCount ./cmd/provider/
+  EXPECT: exit 0 (Linux/macOS CI); tests include:
+    TestSimCountSpawnsNIndependentInstances
+    TestSimCountAssignsDistinctEd25519Identities
+    TestSimCountZeroPadsInstanceIDToFourDigits
+    TestSimCountAssignsSyntheticASNsFromFlag
+    TestSimCountNeverReferencesStorageEngineDirectly    # static-analysis-style test asserting the grep above
+  $ go test -v -run TestSimCount ./cmd/provider/                      # re-run on windows-latest runner
+  EXPECT: exit 0 — same test names, same pass criteria, no Windows-specific skips
+ 
+VET:
+  $ go vet ./cmd/provider/
+  EXPECT: exit 0; zero output
+```
 
 ---
 
 ## Milestone 17 — Production Hardening
 
-**Status:** Circuit relay integration and HA microservice clustering require deployment
-topology details from `architecture.md`. The Razorpay live integration and secrets manager
-adapters (Vault, AWS SSM, GCP) can proceed.
+**Status:** *(corrected per A-12)* All deployment-topology detail this milestone needs is
+present in `architecture.md` §13, §18, §24, §27.5 — nothing here is blocked on missing
+documentation. The one genuine gap found during this review was the absence of an
+authentication contract for inter-replica gossip sync (A-9); it is resolved by
+**ADR-048** (approved, drafted in full alongside this document) and is folded into Session
+17.2.1 below as a marked addendum, in the same base-task-plus-addendum shape Milestones
+13/14 already use for ADR-036.
 
-**Reference:** IC §4.3 (circuit relay), IC §8 (secrets manager — interface defined;
-adapters not yet specified without architecture.md), MVP §6.2 (infrastructure requirements)
+**Reference:** IC §4.3 (circuit relay), IC §8 (secrets manager — path/rotation contract),
+architecture.md §13 (P2P transfer layer — relay tiers, node placement), §18 (coordination
+microservice — gossip, quorum, routing, background throttling), §24 (deployment topology),
+§27.5 (network/DHT scaling); ADR-048 (gossip authentication — new)
 
 ---
 
 ### Phase 17.1 — Secrets Manager Adapters
 
-**Reference:** IC §8, MVP §6.2 (IR-03)
+**Reference:** IC §8, `mvp.md` §6.2 (IR-03)
 
 #### Session 17.1.1 — Implement secrets manager adapters
 
-**Task:** Implement `SecretsManagerClient` (IC §8 interface) for three backends:
+**TASK:** Implement `SecretsManagerClient` (IC §8 interface — `GetSecret(ctx, path)
+([]byte, error)`) for three backends:
 
 - HashiCorp Vault (`internal/secrets/vault.go`)
 - AWS SSM Parameter Store (`internal/secrets/aws_ssm.go`)
 - GCP Secret Manager (`internal/secrets/gcp_secret.go`)
-
 Each adapter reads the secret at path `/vyomanaut/audit-secret/v{N}` (IC §8 path
 convention). Each must handle the 24-hour rotation overlap window: read both `v{N}` and
 `v{N+1}` when both exist (IC §8 rotation contract). Selection among adapters is via
-`VYOMANAUT_SECRETS_BACKEND` environment variable.
+`VYOMANAUT_SECRETS_BACKEND`. **Forward-compatibility note (A-10/A-11):** these same three
+adapters, unchanged, are what Session 17.2.1 below reads the new
+`/vyomanaut/cluster-replica-pubkeys/v{N}` path through — no fourth adapter, no interface
+change; write the path handling generically (accept any `/vyomanaut/{topic}/v{N}` shape)
+rather than hardcoding `audit-secret` into the adapter logic itself, so the new path Session
+17.2.1 needs costs nothing extra here.
+
+**FILES** — `internal/secrets/vault.go`, `aws_ssm.go`, `gcp_secret.go`, `secrets_test.go`
+
+**VERIFY**
+
+```bash
+COMPILE:
+  $ go build ./internal/secrets/
+  EXPECT: exit 0
+ 
+IMPORT_CONSTRAINTS:                    # A-3 — internal/secrets is a leaf, like crypto/erasure
+  $ grep -cE "Vyomanaut_V2/internal/(audit|scoring|repair|payment|storage|cluster|client)" internal/secrets/*.go
+  EXPECT: 0
+ 
+ALL_THREE_BACKENDS_IMPLEMENT_GETSECRET:
+  $ grep -cE "func.*GetSecret\(ctx" internal/secrets/vault.go internal/secrets/aws_ssm.go internal/secrets/gcp_secret.go
+  EXPECT: 3
+ 
+PATH_CONVENTION_NOT_HARDCODED_TO_AUDIT_SECRET:      # forward-compat for ADR-048's new path
+  $ grep -nE '"/vyomanaut/audit-secret' internal/secrets/vault.go internal/secrets/aws_ssm.go internal/secrets/gcp_secret.go
+  EXPECT: no matches inside GetSecret itself — the path is a caller-supplied argument, not a package-level constant
+ 
+ROTATION_OVERLAP_READS_BOTH_VERSIONS:
+  $ grep -cE "v\{N\}|vN|version.*\+.*1|N\+1" internal/secrets/vault.go
+  EXPECT: >= 1
+ 
+BACKEND_SELECTED_VIA_ENV_VAR:
+  $ grep -c "VYOMANAUT_SECRETS_BACKEND" internal/secrets/*.go
+  EXPECT: >= 1
+ 
+SENTINEL_ERRORS_PRESENT:
+  $ grep -cE "ErrSecretNotFound|ErrSecretManagerUnavailable|ErrSecretExpired" internal/secrets/*.go
+  EXPECT: >= 3
+ 
+UNIT_TESTS:
+  $ go test -v -run TestSecretsManager ./internal/secrets/
+  EXPECT: exit 0; tests include:
+    TestVaultGetSecretReturnsDecodedBytes
+    TestAWSSSMGetSecretReturnsDecodedBytes
+    TestGCPSecretManagerGetSecretReturnsDecodedBytes
+    TestRotationOverlapReadsBothVAndVPlusOne
+    TestBackendSelectionRespectsEnvVar
+    TestUnreachableManagerReturnsErrSecretManagerUnavailable
+ 
+VET:
+  $ go vet ./internal/secrets/
+  EXPECT: exit 0; zero output
+```
 
 ---
 
 ### Phase 17.2 — HA Microservice & Relay Nodes
 
-#### Session 17.2.1 — Implement gossip cluster (`internal/cluster`)
+#### Session 17.2.1 — Implement gossip cluster (`internal/cluster`) *(base task unchanged; security addendum added — A-9/ADR-048)*
 
-**Reference:** ARCH §18
+**Reference:** ARCH §18; ADR-048 (new)
 
-Create `internal/cluster/gossip.go` implementing the three-replica gossip membership per architecture.md §18. The `GossipCluster` struct must expose:
+**TASK — base (matches ARCH §18 as currently written):**
 
-- `HealthyCount() int` — returns the count of peers with a last-seen timestamp within the last 5 seconds
-- `MemberAddresses() []url.URL` — returns the current membership list for client-driven routing
-- A `reconcile()` loop running at 1-second intervals: select one randomly-chosen peer, exchange membership histories via a `POST /internal/membership/sync` HTTP call carrying a vector clock
-- Two pre-configured seed node addresses read from `VYOMANAUT_SEED_NODE_1` and `VYOMANAUT_SEED_NODE_2`; these prevent partition on restart (architecture.md §18)
+Create `internal/cluster/gossip.go` implementing the three-replica gossip membership per
+`architecture.md` §18. The `GossipCluster` struct must expose:
 
-Quorum check: `HealthyCount() >= 2` satisfies the (3,2,2) write quorum (architecture.md §18). A read or write that cannot reach 2 replicas must return `ErrQuorumUnavailable`.
+- `HealthyCount() int` — returns the count of peers with a last-seen timestamp within
+  `profile.GossipHealthyWindow` (ADR-048 §6 — a named profile field, not the bare `5
+  seconds` literal the original spec used).
+- `MemberAddresses() []url.URL` — returns the current membership list for client-driven
+  routing.
+- A `reconcile()` loop running at 1-second intervals: select one randomly-chosen peer,
+  exchange membership histories via `POST /internal/membership/sync` carrying a vector
+  clock.
+- Two pre-configured seed node addresses read from `VYOMANAUT_SEED_NODE_1` and
+  `VYOMANAUT_SEED_NODE_2`; these prevent partition on restart (architecture.md §18).
+Quorum check: `HealthyCount() >= 2` satisfies the (3,2,2) write quorum (architecture.md
+§18). A read or write that cannot reach 2 replicas must return `ErrQuorumUnavailable`.
 
-Add `internal/cluster/router.go` implementing `ResponsibleReplica(opType string) *url.URL` per the client-driven routing description in M12 Session 12.1.1.
+Add `internal/cluster/router.go` implementing `ResponsibleReplica(opType string) *url.URL`
+per the client-driven routing description in M12 Session 12.1.1.
 
-Add `internal/cluster/mock_cluster.go` (build tag `test`) providing `MockClusterMembership` that returns configurable healthy counts for unit testing without a live cluster.
+Add `internal/cluster/mock_cluster.go` (build tag `test`) providing `MockClusterMembership`
+that returns configurable healthy counts for unit testing without a live cluster.
 
-Wire into `cmd/microservice/main.go`: after guard rails pass, initialise `GossipCluster`, wait for 2-peer ack, then start the readiness evaluator.
+Wire into `cmd/microservice/main.go`: after guard rails pass, initialise `GossipCluster`,
+wait for 2-peer ack, then start the readiness evaluator.
+
+**⛔ SECURITY ADDENDUM — apply after ADR-048 accepted (A-9):** the base task above matches
+`architecture.md §18` as currently written, but §18 itself never specifies authentication
+for `POST /internal/membership/sync`, and `interface-contracts.md` §2's own rule treats
+this link as out of scope without an ADR — closed by ADR-048, now approved and drafted.
+Once accepted:
+
+1. **Replica identity at startup.** Each replica generates (or loads, if already present)
+   an Ed25519 key pair, persisted locally the same way `internal/p2p/identity.go` persists
+   a provider's identity (ADR-048 §2). Load the other two replicas' public keys from
+   `/vyomanaut/cluster-replica-pubkeys/v{N}` via the existing `SecretsManagerClient` (Session
+   17.1.1 — no new interface), cached on the same 5-minute TTL as the audit secret.
+2. **Extend `MembershipSyncRequest`/`-Response`** with `request_ts_ms`(8B) and
+   `replica_sig`(64B) — Ed25519 by the sender's own replica key over
+   `SHA-256("vyomanaut-gossip-sync-v1" ‖ replica_id ‖ vector_clock ‖ request_ts_ms)`
+   (ADR-048 §4). Sign **both** the outgoing request and the outgoing response — this is a
+   bidirectional exchange, and a forged response is exactly as dangerous as a forged
+   request (ADR-048 §4).
+3. **Handler ordering, before any vector-clock merge** (ADR-048 §5 — authz-before-mutation,
+   the same ordering pattern already enforced in `cmd/provider/handler_vetting_gc.go` for
+   ADR-036): (a) `replica_id` ∈ the cached two-key set → else discard silently; (b)
+   `|now − request_ts_ms| ≤ profile.AuthRequestFreshnessWindow` (reused from ADR-036, not a
+   new field) → else discard as stale; (c) `replica_sig` verifies → else discard. Only then
+   merge.
+4. Add the `MS ↔ MS` self-edge to `interface-contracts.md` §2's diagram and cross-reference
+   table (ADR-048 §1 / A-10) — this is a documentation PR, not a code change, but it is a
+   precondition IC §2 itself states before this session's code path is in scope at all.
+**FILES** — `internal/cluster/gossip.go`, `router.go`, `mock_cluster.go` (build tag `test`),
+`internal/cluster/identity.go` (new — addendum only), `gossip_test.go`
+
+**VERIFY**
+
+```bash
+COMPILE:
+  $ go build ./internal/cluster/
+  EXPECT: exit 0
+ 
+IMPORT_CONSTRAINTS:                    # A-3's proposed row for internal/cluster
+  $ grep -cE "Vyomanaut_V2/internal/(audit|scoring|repair|payment|storage)" internal/cluster/*.go
+  EXPECT: 0
+ 
+HEALTHYCOUNT_USES_NAMED_PROFILE_FIELD_NOT_LITERAL_5S:
+  $ grep -c "profile.GossipHealthyWindow" internal/cluster/gossip.go
+  EXPECT: >= 1
+  $ grep -cE '5 \* time\.Second\b' internal/cluster/gossip.go
+  EXPECT: 0
+ 
+RECONCILE_1S_INTERVAL_AND_SEED_NODES:
+  $ grep -c "time.NewTicker(1 \* time.Second)\|1 \* time.Second" internal/cluster/gossip.go
+  EXPECT: >= 1
+  $ grep -cE "VYOMANAUT_SEED_NODE_1|VYOMANAUT_SEED_NODE_2" internal/cluster/gossip.go
+  EXPECT: 2
+ 
+QUORUM_THRESHOLD_IS_TWO:
+  $ grep -c "HealthyCount() >= 2" internal/cluster/*.go
+  EXPECT: >= 1
+  $ grep -c "ErrQuorumUnavailable" internal/cluster/*.go
+  EXPECT: >= 1
+ 
+MOCK_CLUSTER_BUILD_TAGGED_TEST_ONLY:
+  $ head -1 internal/cluster/mock_cluster.go | grep -c "go:build test"
+  EXPECT: 1
+ 
+UNIT_TESTS_BASE:
+  $ go test -v -run "TestGossip|TestRouter" ./internal/cluster/
+  EXPECT: exit 0; tests include:
+    TestHealthyCountUsesProfileWindow
+    TestReconcileTicksEverySecond
+    TestQuorumUnavailableBelowTwoHealthy
+    TestResponsibleReplicaClientDrivenRouting
+    TestMockClusterMembershipConfigurableHealthyCounts
+ 
+# ── VERIFY (enable after ADR-048 accepted) — the security-critical checks ──
+REPLICA_IDENTITY_LOADED_AT_STARTUP:
+  $ grep -c "ed25519.GenerateKey\|ed25519.NewKeyFromSeed" internal/cluster/identity.go
+  EXPECT: >= 1
+  $ grep -c "cluster-replica-pubkeys" internal/cluster/identity.go
+  EXPECT: >= 1
+ 
+SYNC_REQUEST_AND_RESPONSE_BOTH_SIGNED:
+  $ grep -c "replica_sig\|ReplicaSig" internal/cluster/gossip.go
+  EXPECT: >= 2                        # request AND response paths both reference it
+ 
+AUTHZ_BEFORE_ANY_MERGE:
+  $ awk '/replica_id.*cached|verifyReplicaID/{a=NR} /mergeVectorClock|MergeMembership/{m=NR} END{print (a>0 && m>0 && a<m)?"PASS":"FAIL"}' internal/cluster/gossip.go
+  EXPECT: PASS
+ 
+FRESHNESS_WINDOW_REUSES_ADR036_FIELD_NOT_A_NEW_ONE:
+  $ grep -c "profile.AuthRequestFreshnessWindow" internal/cluster/gossip.go
+  EXPECT: >= 1
+  $ grep -cE "GossipFreshnessWindow|SyncFreshnessWindow" internal/config/*.go
+  EXPECT: 0                           # must not introduce a second, redundant freshness field
+ 
+UNIT_TESTS_ADR048:
+  $ go test -v -run "TestGossipRejectsUnknownReplica|TestGossipRejectsStaleSync|TestGossipRejectsForgedSig|TestGossipVerifiesResponseSignatureToo" ./internal/cluster/
+  EXPECT: exit 0
+ 
+VET:
+  $ go vet ./internal/cluster/
+  EXPECT: exit 0; zero output
+```
 
 #### Session 17.2.2 — Relay node binary and deployment configuration
 
-**Reference:** ARCH §13, §24, §27.5
+**Reference:** architecture.md §13, §24, §27.5
 
-Create `cmd/relay/main.go` as the relay node binary. The relay runs a libp2p host with Circuit Relay v2 enabled and no DHT, chunk storage, or audit logic. Configuration:
+**TASK:** Create `cmd/relay/main.go` as the relay node binary. The relay runs a libp2p host
+with Circuit Relay v2 enabled and no DHT, chunk storage, or audit logic. Configuration:
 
-- 128 concurrent relay reservations per node (architecture.md §13, §27.5)
-- Reservation TTL: 30 minutes (libp2p default)
-- Relay multiaddrs are reported via a `GET /relay/status` HTTP health endpoint returning `{"reservation_count": N, "capacity": 128}`
-- Metrics: expose `vyomanaut_relay_reservations_active` gauge at `/metrics`
-
-Create `deployments/production/relay/docker-compose.yml` for the three-node relay deployment:
+- 128 concurrent relay reservations per node (architecture.md §13, §27.5).
+- Reservation TTL: 30 minutes (libp2p default).
+- Relay multiaddrs are reported via `GET /relay/status` → `{"reservation_count": N,
+  "capacity": 128}`.
+- Metrics: expose `vyomanaut_relay_reservations_active` gauge at `/metrics` (naming per IC
+  §10's `vyomanaut_{subsystem}_{name}_{unit}` convention — `relay` as subsystem).
+Create `deployments/production/relay/docker-compose.yml` for the three-node relay
+deployment:
 
 - Node 1: Mumbai AZ1 (`ap-south-1a`)
 - Node 2: Mumbai AZ2 (`ap-south-1b`)
 - Node 3: Chennai/Hyderabad (`ap-south-2` or `ap-southeast-1`)
-- Minimum spec per node: 1 vCPU, 1 GB RAM, 1 Gbps network (architecture.md §24)
+- Minimum spec per node: 1 vCPU, 1 GB RAM, 1 Gbps network (architecture.md §24).
+**FILES** — `cmd/relay/main.go`, `deployments/production/relay/docker-compose.yml`
+
+**VERIFY**
+
+```bash
+COMPILE:
+  $ go build ./cmd/relay/
+  EXPECT: exit 0
+ 
+NO_DHT_STORAGE_OR_AUDIT_LOGIC:                # relay must be minimal per its own spec
+  $ grep -cE "Vyomanaut_V2/internal/(storage|audit|scoring|repair|payment)" cmd/relay/main.go
+  EXPECT: 0
+  $ grep -ciE "dht\." cmd/relay/main.go
+  EXPECT: 0
+ 
+RESERVATION_CAPACITY_128:
+  $ grep -c "128" cmd/relay/main.go
+  EXPECT: >= 1
+ 
+RESERVATION_TTL_30MIN:
+  $ grep -cE "30 \* time.Minute|1800" cmd/relay/main.go
+  EXPECT: >= 1
+ 
+STATUS_ENDPOINT_SHAPE:
+  $ grep -c "reservation_count\|/relay/status" cmd/relay/main.go
+  EXPECT: >= 2
+ 
+METRIC_NAME_FOLLOWS_IC10_CONVENTION:
+  $ grep -c "vyomanaut_relay_reservations_active" cmd/relay/main.go
+  EXPECT: >= 1
+ 
+DOCKER_COMPOSE_THREE_AZ_NODES:
+  $ grep -cE "ap-south-1a|ap-south-1b|ap-south-2|ap-southeast-1" deployments/production/relay/docker-compose.yml
+  EXPECT: >= 3
+ 
+UNIT_TESTS:
+  $ go test -v -run TestRelay ./cmd/relay/
+  EXPECT: exit 0; tests include:
+    TestRelayEnforces128ReservationCap
+    TestRelayStatusEndpointReturnsCorrectShape
+    TestRelayExportsReservationsActiveGauge
+    TestRelayHostHasNoDHTServerMode
+ 
+VET:
+  $ go vet ./cmd/relay/
+  EXPECT: exit 0; zero output
+```
 
 ---
 
@@ -1673,5 +2580,67 @@ Add the following entries to `docs/system-design/security-verification-checklist
 
 All 15 must pass simultaneously. Document the passing state in a milestone sign-off
 commit with the message `milestone: M18 launch-readiness all-green CI`.
+
+---
+
+## M18/M19 Forward-Compatibility: Desktop GUI Shell Readiness
+
+**Why this section exists.** `build.md`'s Milestone 18 ("Launch Readiness") is the last
+milestone currently in the plan. `ux-decisions.md` §7/§9 and ten already-drafted ADRs
+(038–047) commit this product to shipping two Wails-based Windows desktop apps — and none
+of that is reflected anywhere in `build.md`/`build_part2.md`/`build_part3.md` today. This
+section does three things: confirms what M15–17, as rewritten above, already got right for
+that future; flags the one thing outside my reviewed scope (M13) worth fixing while it's
+still cheap; and drafts a placeable Milestone 19 outline so `build.md` has somewhere
+concrete to grow into, rather than stopping at M18 with the GUI direction undocumented in
+the build plan itself.
+
+### What's already GUI-ready, and why
+
+`ADR-039` (UI–Backend Communication) decides that both Wails apps call Go functions
+**directly, in-process** — *"the existing `cmd/client` and `cmd/provider` logic is what
+the app runs."* That only works if `internal/client/*` is already something a new
+entrypoint can import and drive without going through `cmd/`. It already is:
+`interface-contracts.md` §9's own permitted-dependency graph (corrected per A-2) is
+`cmd/* → internal/client/* → (...)` with **no constraint on which `cmd/*` does the
+importing** — a future `cmd/desktop-owner` (or wherever the Wails Go backend lives) is just
+another member of that same permitted left-hand side, no different in kind from
+`cmd/client` today. Nothing in Part C's Milestone 15 rewrite needed to change for this;
+IC §5.9's `UploadOrchestrator` interface (`UploadFile`/`ResumeUpload`/`RetrieveFile`) and
+Phase 15.4's file/escrow functions are exactly the bindable surface ADR-039 needs, and they
+were designed (by IC, before this review) with no `cmd/`-specific assumptions baked in.
+
+`ADR-035`'s `intent_url` field (Session 15.4.2, Part C) was written with **both** consumers
+in mind — *"the Wails Data Owner app... renders it as a tappable link... `cmd/client
+deposit`... prints `intent_url` as its primary, copyable output"* — so Session 15.4.2 does
+not need a GUI-specific variant later; the CLI and the future GUI read the same field off
+the same response.
+
+### Candidate Milestone 19 — Desktop GUI Shell (Data Owner & Provider Apps)
+
+**Not a finished, `VERIFY`-ready set of sessions** — a phase-level outline, grounded in the
+ten ADRs that already exist, sized so Karma can confirm numbering/placement (immediately
+after M18, or interleaved with it) before it is expanded to session-level detail in a
+follow-up pass, the same way this document expanded M15–17.
+
+| Phase | Grounded in | Scope |
+| --- | --- | --- |
+| 19.1 — Windows Storage Validation | ADR-046 open constraint | Native `windows-latest` test run of `internal/storage`'s Badger path under real load; re-run the HDD-equivalent compaction benchmark against Badger's own tuning surface (ADR-046 explicitly does not assume RocksDB's tuned values transfer) |
+| 19.2 — Provider App Shell | ADR-038, ADR-040, ADR-042, ADR-047 | Wails-wrap `cmd/provider` (post F.2's `StartDaemon` refactor); goroutine-pattern system tray; Task Scheduler logon-trigger installer step, no elevation anywhere in the install or runtime path |
+| 19.3 — Data Owner App Shell | ADR-038, ADR-039, ADR-035 | Wails-wrap `internal/client/*` directly (Part C's Phase 15.1–15.4 orchestrators, called in-process, no local port); render `intent_url` per ADR-035 §3 |
+| 19.4 — Shared Component Library & Design System | `ux-decisions.md` §9.5 | One component set (buttons, cards, status badges, toast/error system) shared by both apps; status colors wired to the same IC §14 copy table both CLIs already render from (A-4's Phase 15.4, once §14.2 merges) |
+| 19.5 — Windows Packaging, Signing & CI | ADR-041 | NSIS via `wails build -nsis`; Azure Trusted Signing from the first external build; GitHub Actions producing a signed installer on every release |
+| 19.6 — Provider Setup & Transparency Surfaces | ADR-043, ADR-044, ADR-045, ADR-016 addendum | No manual port-forwarding/DDNS in setup; environmental-claim copy scoped per ADR-044; the ADR-016 addendum's `gross_amount_paise`/`release_multiplier_bps` rendered as the "why was my payout smaller" explanation ADR-045 and the addendum both anticipate |
+
+**Recommendation, for your decision, not mine to make:** `build.md`'s dependency graph
+currently ends `M17 → M18`. Milestone 18 ("Launch Readiness") is written entirely in terms
+of the *network* — runbooks, benchmarks, the security checklist, the 15-check CI gate —
+and none of its four phases reference a GUI at all. Two placements are both defensible:
+(a) insert Milestone 19 as a genuine sequel, after M18's all-green CI gate, treating GUI
+shipment as a fast-follow on top of a network that's already launch-ready on its own terms;
+or (b) interleave GUI phases into M18 itself, if "launch" is meant to mean "the GUI is what
+most users actually install," not "the backend network passes its own checklist." Nothing
+in M15–17 as rewritten above forecloses either choice — that's the point of F.1 — so this
+is deliberately left as a placement decision rather than a fix.
 
 ---
