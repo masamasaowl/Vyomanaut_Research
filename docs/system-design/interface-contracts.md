@@ -2093,9 +2093,16 @@ The following import directions are **prohibited**. A PR that introduces any pro
 | `internal/audit` | `internal/scoring`, `internal/repair`, `internal/payment`. The audit package handles challenge generation and receipt writing only. Score updates and repair triggers are the caller's responsibility (the microservice entrypoint orchestrates these after the audit result is written). |
 | Any `internal/client/*` | `cmd/`. Client packages are imported by the CLI entrypoint; they do not import the CLI. |
 
+| Package | Must NOT import | Basis |
+| --- | --- | --- |
+| `internal/secrets` | Any other `internal/` package | Pure API client (ctx + path in, bytes out) — same shape as `crypto`/`erasure` |
+| `internal/cluster` | `internal/audit`, `internal/scoring`, `internal/repair`, `internal/payment`, `internal/storage` | Membership/quorum only; consumed by `cmd/microservice`, not by the four subsystem packages |
+| `internal/metrics` | Any other `internal/` package except `internal/config` (subsystem-name constants only) | Every subsystem imports *into* metrics for instrumentation; the reverse would create cycles |
+| `internal/vettingchunk` | `internal/scoring`, `internal/repair`, `internal/payment` | Already stated inline at `build_part3.md` line 178; promoting it to IC §9 makes it enforceable by the same `depguard` mechanism as everything else instead of living only in a build-plan comment |
+
 **The one explicit exception: `internal/payment` → `internal/scoring`.** Milestone 10's release-multiplier computation (`internal/payment/release.go`) reads a provider's score via `scoring.GetScoreFromPrimary` to apply FR-049's release-multiplier table — a one-way, side-effect-free read with no cycle risk (`internal/scoring` itself is barred from importing `internal/payment`, so no cycle can form through this edge). This is the ONLY permitted cross-import among `internal/audit`, `internal/scoring`, `internal/repair`, and `internal/payment` — see the closing paragraph below. `internal/repair` was considered for the same treatment and deliberately declined: nothing in `internal/repair`'s own logic needs a score, and granting it read access here would blur the "repair acts only on signals it's handed" boundary the row above states.
 
-The permitted dependency graph flows in one direction: `cmd/*` → `internal/client/*` → (`internal/crypto`, `internal/erasure`, `internal/p2p`) → no further `internal/` imports. The microservice entrypoint wires `internal/audit`, `internal/scoring`, `internal/repair`, and `internal/payment` together; none of these four packages imports any of the others directly, with the single exception of `internal/payment` → `internal/scoring` documented above.
+The permitted dependency graph flows in one direction: cmd/*→ internal/client/* → (internal/config, internal/crypto, internal/erasure, internal/p2p) → no further internal/ imports. The microservice entrypoint wires `internal/audit`, `internal/scoring`, `internal/repair`, and `internal/payment` together; none of these four packages imports any of the others directly, with the single exception of `internal/payment` → `internal/scoring` documented above.
 
 **Enforcement.** The actual mechanism is `golangci-lint`'s `depguard` linter (`.golangci.yml`), configured with a per-package explicit allow-list — every package's `allow` entry is this table's positive-space complement, and any import outside it fails CI. (Milestone 8 corrections session: an earlier revision of this paragraph attributed enforcement to "`go vet ./...` with the import-graph analyser" — `go vet` has no such analyser; that claim did not match anything actually running in CI.) `go build ./...` independently catches circular imports, as a property of the Go compiler, not specific to this table. Both `golangci-lint run` and `go build ./...` are CI required checks. A PR that disables or modifies the `depguard` configuration must be rejected.
 
@@ -2151,7 +2158,7 @@ The following categories are prohibited from the repository. A PR introducing an
 
 **Convergent encryption or K reuse.** Each AONT key K is fresh random per segment by design. Any code path that reuses K across files or segments violates the zero-knowledge property and is a correctness violation.
 
-**References to non-existent ADRs.** References to ADR numbers above the current highest assigned number (currently ADR-031) must fail the CI reference check. Stale ADR references create false confidence in decisions that have not been made.
+**References to non-existent ADRs.** References to ADR numbers above the highest-numbered file present in docs/decisions/ADR-*.md at CI time must fail the check. The CI script computes this ceiling by listing the directory — the ceiling is never itself hardcoded in prose, here or anywhere else.
 
 **Hardcoded RBI bank holiday data outside `internal/payment/rbi_holidays.go`.** Holiday dates hardcoded in test files, migration scripts, or deployment configuration bypass the annual update procedure documented in `runbooks/rbi-holiday-table-update.md`.
 
