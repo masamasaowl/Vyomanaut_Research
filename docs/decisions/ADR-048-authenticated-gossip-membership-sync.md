@@ -1,6 +1,6 @@
 # ADR-048 — Authenticated, Freshness-Bound Inter-Replica Gossip Membership Sync
 
-**Status:** Proposed
+**Status:** Accepted
 **Topic:** #1 Coordination Architecture, Security
 **Supersedes:** —
 **Superseded by:** —

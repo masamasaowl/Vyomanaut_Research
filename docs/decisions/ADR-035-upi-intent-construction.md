@@ -1,6 +1,6 @@
 # ADR-035 — UPI Intent Link Construction Is Server-Owned, Not Client-Derived
 
-**Status:** Proposed
+**Status:** Accepted
 **Topic:** #13 Escrow & Payment Basis (deposit flow)
 **Supersedes:** —
 **Superseded by:** ADR-038 — context only (the premise that `cmd/client` has no planned GUI). The intent_url decision, schema, and construction logic below are not superseded — see the corrected Context and Client Behavior text below.

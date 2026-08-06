@@ -1,6 +1,6 @@
 # ADR-036 — Authenticated, Freshness-Bound Provider-Mutation Protocols
 
-**Status:** Proposed
+**Status:** Accepted
 **Topic:** #1 Coordination Architecture, #5 Peer Selection, Security
 **Supersedes:** ADR-030 §"New libp2p sub-protocol for vetting GC" — specifically its authorization posture only. ADR-030's vetting mechanism (synthetic chunks, GC timing, ACTIVE-transition flow) is unchanged.
 **Superseded by:** —
