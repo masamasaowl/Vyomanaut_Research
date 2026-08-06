@@ -3,7 +3,7 @@
 **Status:** Accepted
 **Topic:** #18 Economic Mechanism Design
 **Supersedes:** —
-**Superseded by:** —
+**Superseded by:** — [ADR-054](./ADR-054-progressive-earnings-ramp.md) for §6(Vetting period economics)
 **Research source:** Papers 5, 29, 31, 33, 35, 37, 40, 41
 
 ---
