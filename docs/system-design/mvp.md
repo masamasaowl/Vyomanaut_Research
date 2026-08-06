@@ -3,7 +3,7 @@
 **Status:** Authoritative — read alongside ADR-031, architecture.md, and the pre-ADR analysis  
 **Version:** 1.0  
 **Date:** May 2026  
-**Repository:** https://github.com/masamasaowl/Vyomanaut_Research  
+**Repository:** <https://github.com/masamasaowl/Vyomanaut_Research>  
 **Supersedes:** —  
 **Companion documents:**
 
@@ -94,7 +94,7 @@ hackathon or investor meeting?*
 ### 3.1 Physical topology
 
 | Resource | Minimum for demo | Notes |
-|---|---|---|
+| --- | --- | --- |
 | Provider machines | 5 laptops or 1 laptop with `--sim-count=5` | Each runs the provider daemon binary |
 | Microservice instance | 1 (single replica, quorum checks disabled) | Runs on any laptop or a separate machine |
 | Relay nodes | 0 | All traffic is local; NAT traversal is not exercised |
@@ -105,7 +105,7 @@ hackathon or investor meeting?*
 ### 3.2 Erasure coding parameters
 
 | Parameter | Production | **Demo** |
-|---|---|---|
+| --- | --- | --- |
 | `DataShards` (s) | 16 | **3** |
 | `ParityShards` (r) | 40 | **2** |
 | `TotalShards` (n) | 56 | **5** |
@@ -119,7 +119,7 @@ hackathon or investor meeting?*
 ### 3.3 Readiness gate thresholds
 
 | Condition | Production | **Demo** |
-|---|---|---|
+| --- | --- | --- |
 | Active vetted providers | ≥ 56 | **≥ 5** |
 | Distinct ASNs | ≥ 5 | **≥ 5** (see §7.1 — corrected from pre-ADR analysis) |
 | Distinct metro regions | ≥ 3 | **≥ 1** |
@@ -131,7 +131,7 @@ hackathon or investor meeting?*
 ### 3.4 Time windows
 
 | Parameter | Production | **Demo** | Observable in |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | Provider heartbeat interval | 4 h | **30 s** | ~2 min |
 | Heartbeat jitter | ±5 min | **±5 s** | — |
 | Polling / audit interval | 24 h | **2 min** | ~2 min |
@@ -157,7 +157,7 @@ hackathon or investor meeting?*
 ### 3.5 Cryptographic parameters
 
 | Parameter | Production | **Demo** | What changes |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | Argon2id time cost (t) | 3 | **1** | Faster session start (~20–50 ms vs ~200–500 ms) |
 | Argon2id memory (m) | 65,536 KiB (64 MB) | **4,096 KiB (4 MB)** | Weaker brute-force resistance |
 | Argon2id parallelism (p) | 4 | **1** | Fewer threads |
@@ -199,7 +199,7 @@ The following table enumerates every capability present in PROD but absent, redu
 simulated in DEMO. Features not listed are identical in both modes.
 
 | # | Feature | PROD | DEMO | Why absent in DEMO |
-|---|---|---|---|---|
+| --- | --- | --- | --- | --- |
 | F-01 | File size per segment | Up to 14 MB | Up to 1.25 MB | RS n=5 × 256 KB = 1.25 MB max per segment |
 | F-02 | Fault tolerance | Any 40 of 56 providers can fail | Any 2 of 5 providers can fail | Direct consequence of RS(3,5) |
 | F-03 | Provider network size | ≥ 56 active providers | ≥ 5 active providers | Demo n = 5 |
@@ -388,29 +388,59 @@ var DemoProfile = NetworkProfile{
 
 ### 5.3 Profile selection and injection
 
-```go
-// cmd/microservice/main.go  and  cmd/provider/main.go
+> **Flagged and corrected (closes QA audit Finding 3).** This section previously showed an
+> unexported, zero-argument `selectProfile()` that read `os.Getenv`/`flag.Lookup` internally.
+> `internal/config`'s Milestone 1 implementation is exported and takes the parsed `--mode` value
+> as an explicit argument instead — a pure function of its input is more testable, and this is
+> what Session 1.3.1's own `UNIT_TESTS` actually exercise (`SelectProfile("demo")`,
+> `SelectProfile("prod")`, `SelectProfile("")`). The text below now matches the shipped code
+> exactly (`internal/config/select.go`).
 
-func selectProfile() config.NetworkProfile {
-    mode := os.Getenv("VYOMANAUT_MODE")
-    if flag.Lookup("mode") != nil {
-        mode = *modeFlag // CLI flag overrides env
+```go
+// internal/config/select.go
+
+// SelectProfile returns the canonical NetworkProfile for the given mode string.
+// If modeFlag is empty, VYOMANAUT_MODE is read from the environment.
+// Absent or empty mode defaults to ProductionProfile with a logged warning.
+// An unrecognised mode is fatal — the process refuses to start.
+func SelectProfile(modeFlag string) NetworkProfile {
+    if modeFlag == "" {
+        modeFlag = os.Getenv("VYOMANAUT_MODE")
     }
-    switch mode {
+
+    var profile NetworkProfile
+    switch modeFlag {
     case "demo":
         log.Printf("[STARTUP] Vyomanaut — mode=DEMO — do not use for real data")
-        return config.DemoProfile
-    case "prod", "":
-        if mode == "" {
-            log.Printf("[STARTUP] WARNING: VYOMANAUT_MODE not set; defaulting to prod")
-        }
+        profile = DemoProfile
+    case "prod":
         log.Printf("[STARTUP] Vyomanaut — mode=PRODUCTION")
-        return config.ProductionProfile
+        profile = ProductionProfile
+    case "":
+        log.Printf("[STARTUP] WARNING: VYOMANAUT_MODE not set; defaulting to prod")
+        profile = ProductionProfile
     default:
-        log.Fatalf("[STARTUP] FATAL: unknown VYOMANAUT_MODE=%q; must be 'demo' or 'prod'", mode)
+        log.Fatalf("[STARTUP] FATAL: unknown VYOMANAUT_MODE=%q; must be 'demo' or 'prod'", modeFlag)
+        return ProductionProfile // unreachable; satisfies compiler
     }
-    panic("unreachable")
+
+    // OR-01 (§6.3): print the full NetworkProfile at startup so mode drift
+    // between replicas is detectable. Every field is a threshold, time
+    // window, or infrastructure flag — never a credential — so a full
+    // %+v dump is safe. The cluster master seed lives outside this struct
+    // entirely and is never captured here.
+    log.Printf("[STARTUP] NetworkProfile: %+v", profile)
+    return profile
 }
+```
+
+Both binaries parse `--mode` themselves and pass the result in — see §8.3 for the flag definition:
+
+```go
+// cmd/microservice/main.go and cmd/provider/main.go
+modeFlag := flag.String("mode", "", "'demo' or 'prod'; overrides VYOMANAUT_MODE")
+flag.Parse()
+profile := config.SelectProfile(*modeFlag)
 ```
 
 The returned profile is passed to every subsystem constructor. No subsystem reads
@@ -419,7 +449,7 @@ The returned profile is passed to every subsystem constructor. No subsystem read
 ### 5.4 Toggle map: one reference per feature
 
 | Feature / parameter | Toggle location | How it toggles |
-|---|---|---|
+| --- | --- | --- |
 | RS parameters (s, r, n, r0) | `NetworkProfile.DataShards` / `ParityShards` / `TotalShards` / `LazyRepairR0` | `internal/erasure` reads these from the profile passed to `NewEngine(profile)` |
 | Readiness gate thresholds | `NetworkProfile.MinActiveProviders` etc. | Assignment service `ReadinessChecker` reads all `Min*` fields from profile |
 | ASN cap | `NetworkProfile.ASNCapFraction` | `MaxShardsPerASN = floor(profile.TotalShards * profile.ASNCapFraction)` |
@@ -513,7 +543,7 @@ mechanism to exist safely, and the repercussion if any requirement is violated.
 ### 6.1 Code requirements
 
 | # | Requirement | Repercussion if violated |
-|---|---|---|
+| --- | --- | --- |
 | CR-01 | `NetworkProfile` is the only place mode-variable values are defined. No `if mode == "demo"` in business logic. | Scattered conditionals create untested code paths; demo behavior diverges from production without detection |
 | CR-02 | `ShardSize` (262,144) is a constant in both profiles. It must not appear in `NetworkProfile` as a variable field. | A changed shard size breaks vLog entry sizing, audit challenge framing, and RocksDB index assumptions simultaneously — silent data corruption |
 | CR-03 | The 33-byte `challenge_nonce` CHECK constraint and all wire-format fixed sizes are hardcoded constants, not profile fields. | A shorter nonce in demo breaks cross-replica validation for all future production deployments where demo receipts exist in the same audit log |
@@ -528,7 +558,7 @@ mechanism to exist safely, and the repercussion if any requirement is violated.
 ### 6.2 Infrastructure requirements
 
 | # | Requirement | Repercussion if violated |
-|---|---|---|
+| --- | --- | --- |
 | IR-01 | Demo and production databases are completely separate instances (separate connection strings, separate Postgres data directories). | Demo data (meaningless synthetic chunks, test escrow events) in the production DB corrupts audit logs and payment history |
 | IR-02 | Demo and production Razorpay credentials are separate. Demo uses mock or Razorpay test environment; it must never touch the live Razorpay account. | Real money could be moved; real provider bank accounts could be credited or seized |
 | IR-03 | Demo and production `VYOMANAUT_CLUSTER_MASTER_SEED` values are separate. | A demo secret leaked in env vars (e.g. in container logs) that matches the production seed would allow audit nonce prediction |
@@ -538,7 +568,7 @@ mechanism to exist safely, and the repercussion if any requirement is violated.
 ### 6.3 Operational requirements
 
 | # | Requirement | Repercussion if violated |
-|---|---|---|
+| --- | --- | --- |
 | OR-01 | The `NetworkProfile` struct must be printed in full at startup (values only, not secrets). | Mode drift between replicas is undetectable; audit scoring uses different windows per replica |
 | OR-02 | The demo `DemoProfile` struct has a compiler-enforced test that verifies `ShardSize == ProductionProfile.ShardSize`. | A future engineer changes ShardSize in DemoProfile without realising the wire-format implication |
 | OR-03 | Every time a new mode-variable parameter is added to `NetworkProfile`, a corresponding value must be added to both `ProductionProfile` and `DemoProfile`. The Go compiler enforces this (struct literal with all fields). | A zero-value default silently uses Go's zero value (0, false, "", nil) which may be wrong for production |
@@ -547,7 +577,7 @@ mechanism to exist safely, and the repercussion if any requirement is violated.
 ### 6.4 Schema migration requirements
 
 | # | Requirement | Repercussion if violated |
-|---|---|---|
+| --- | --- | --- |
 | MR-01 | Schema migrations are never applied between demo and production databases in either direction. | A demo schema (with `shard_index BETWEEN 0 AND 4`) applied to production breaks all 56-shard file uploads |
 | MR-02 | The migration generator (`migrations/generator.go`) must be given the active `NetworkProfile` at generation time, not at apply time. | Generating with the wrong profile produces a schema that is structurally correct but has wrong CHECK bounds |
 | MR-03 | The migration checklist in `data-model.md §9` must be run against both profiles in CI (two separate migration runs against two separate databases). | A constraint that works for demo (5 shards) may fail to create correctly for production (56 shards) without this check |
@@ -562,6 +592,7 @@ bottleneck when the full demo network runs together.
 ### 7.1 CORRECTED: ASN Cap vs MinDistinctASNs (bottleneck found in pre-ADR analysis)
 
 **The pre-ADR analysis contains an internal contradiction.** It states both:
+
 - "20% of 5 = 1 shard per ASN" (correct)
 - "with 2 required ASNs and 5 shards it is enforceable (2–3 shards per ASN)" (contradicts the 20% cap)
 
@@ -746,14 +777,19 @@ This section is the authoritative reference for the repository structure, packag
 │
 ├── internal/
 │   ├── config/                # NetworkProfile struct, ProductionProfile, DemoProfile (§5.2)
-│   ├── crypto/                # AONT cipher, HKDF, Argon2id, pointer file AEAD, BIP-39, Ed25519 helpers
-│   ├── erasure/               # Reed-Solomon RS encode/decode via klauspost/reedsolomon
+│   ├── crypto/                # AONT cipher, HKDF, Argon2id, general-purpose + pointer-file AEAD, BIP-39, Ed25519 helpers
+│   ├── erasure/                # Reed-Solomon RS encode/decode
 │   ├── storage/               # WiscKey: RocksDB chunk index + append-only vLog
-│   ├── p2p/                   # libp2p host, QUIC/TCP transports, DHT, NAT traversal, heartbeat
+│   ├── p2p/                   # Host, transports, DHT, NAT traversal, heartbeat, identity
 │   ├── audit/                 # Challenge generation, dispatch, receipt two-phase write, cluster secret
-│   ├── scoring/               # Three-window reliability score, consecutive-pass counter, EWMA RTO
+│   ├── scoring/                # Three-window reliability score, consecutive-pass counter, EWMA RTO
 │   ├── repair/                # Departure detector, repair job queue, repair executor
-│   ├── payment/               # PaymentProvider interface, Razorpay implementation, escrow ledger
+│   ├── payment/                # PaymentProvider interface, Razorpay implementation, escrow ledger
+│   ├── vettingchunk/           # Synthetic vetting-chunk lifecycle (M14)
+│   ├── cluster/                # Gossip membership + client-driven routing (M17)
+│   ├── api/                    # HTTP routing, error envelope, readiness handler (M11)
+│   ├── metrics/                # Prometheus metric registries, microservice + daemon (M-OBS)
+│   ├── secrets/                # SecretsManagerClient adapters: Vault, AWS SSM, GCP Secret Manager (M17)
 │   └── client/
 │       ├── account/           # Registration, BIP-39 mnemonic, session key derivation, keystore
 │       ├── upload/            # Upload orchestrator: encode + assignment + parallel transfer
@@ -772,13 +808,15 @@ This section is the authoritative reference for the repository structure, packag
 ├── runbooks/                  # Operational runbooks (must all exist before M8 closes)
 │
 ├── docs/
-│   ├── decisions/             # ADR-001 through ADR-031+
+│   ├── decisions/             # ADR-001 through ADR-037+ (grows with each accepted ADR — do not
+│   │                           # hardcode this ceiling elsewhere; see §8.4's CI check 10 note)
 │   ├── research/              # Paper notes, reading list, open/answered questions, benchmarking protocol
-│   └── system-design/         # The six canonical documents + sequence-diagrams/
+│   └── system-design/         # The canonical documents + sequence-diagrams/
 │       └── api/               # openapi.yaml
 │
 ├── .github/
-│   ├── workflows/             # ci.yml, release.yml
+│   ├── workflows/             # ci.yml, release.yml, and supporting workflows (dependabot, CodeQL,
+│   │                           # OSSF Scorecard/SLSA3, dependency-review, CI image build)
 │   └── CODEOWNERS
 │
 ├── go.mod                     # module github.com/masamasaowl/Vyomanaut_V2
@@ -789,15 +827,15 @@ This section is the authoritative reference for the repository structure, packag
 
 Each package's file list is the contract between the repository structure and the interface definitions in `interface-contracts.md §5`. Adding a file is additive and safe. Renaming or splitting a file that exports a frozen symbol (listed in `interface-contracts.md §12`) requires updating §12 in the same PR.
 
-- `internal/config/**network_profile.go` — `NetworkProfile` struct (§5.2 of this document), `ProductionProfile` and `DemoProfile` vars. `profiles_test.go` — `TestProfileShardSizeIsConstant`, `TestProfileBothFullySpecified` (Go struct-literal compiler enforcement).
+- `internal/config/**network_profile.go` — `NetworkProfile` struct (§5.2 of this document), `ProductionProfile` and `DemoProfile` vars. `select.go` — `SelectProfile(modeFlag string) NetworkProfile` (§5.3). `profiles_test.go` — `TestProfileShardSizeIsConstant`, `TestProfileBothFullySpecified` (Go struct-literal compiler enforcement).
 
-- `internal/crypto/**hkdf.go`, `argon2.go`, `aont.go`, `aont_canary.go` (fixed `[16]byte` const, never a var), `bip39.go` (MasterSecretToMnemonic, MnemonicToMasterSecret, SelectConfirmationWords (see interface-contracts.md §5.1 for full signatures)), `chacha20poly1305.go`, `aesni.go` (CPUID, `//go:build amd64`), `aesni_other.go` (stub, returns false), `errors.go` (`ErrTagMismatch`, `ErrCanaryMismatch`), `*_test.go` including cross-platform known-answer vectors and fuzz targets.
+- `internal/crypto/**hkdf.go`, `argon2.go`, `aont.go`, `aont_canary.go` (fixed `[16]byte` const, never a var), `bip39.go` (MasterSecretToMnemonic, MnemonicToMasterSecret, SelectConfirmationWords (see interface-contracts.md §5.1 for full signatures)), `chacha20poly1305.go` (`EncryptAEAD`/`DecryptAEAD` general-purpose primitive; `EncryptPointerFile`/`DecryptPointerFile` thin wrappers around them), `aesni.go` (CPUID, `//go:build amd64`), `aesni_other.go` (stub, returns false), `errors.go` (`ErrTagMismatch`, `ErrCanaryMismatch`, `ErrInvalidMnemonic`), `*_test.go` including cross-platform known-answer vectors and fuzz targets.
 
 - `internal/erasure/**params.go` (exported constants `DataShards`, `ParityShards`, `TotalShards`, `ShardSize`), `engine.go` (`NewEngine(profile)`, `EncodeSegment`, `DecodeSegment`), `errors.go`, `engine_test.go` (round-trip, any-k-shards, shard-size).
 
 - `internal/storage/**store.go` (`ChunkStore` interface, `NewChunkStore`), `vlog.go` (append, read, GC, crash-recovery tail-scan), `index.go` (RocksDB wrapper: Bloom filter, lookup, insert, delete), `rotational.go` (HDD/SSD detection, `//go:build linux`), `rotational_other.go` (stub, assume SSD), `errors.go`, `store_test.go`, `single_writer_test.go` (`TestSingleWriterGoroutine` with 100-goroutine contention — deadlock, not data corruption, is the detectable failure mode).
 
-- `internal/p2p/**host.go` (0-RTT policy enforcement per protocol ID suffix), `dht.go` (custom HMAC key validator), `dht_namespace.go` (`const dhtKeyNamespace = "/vyomanaut/dht-key/1.0.0"` — sole definition in the entire repo), `nat.go` (`maxHolePunchRetries = 1`), `heartbeat.go` (4-hour signed heartbeat), `identity.go` (Ed25519 key pair generation and keystore persistence), `errors.go`, `dht_test.go` (`TestDHTKeyValidator`, `TestDHTKeyValidatorPersists` — CI required check).
+- `internal/p2p/**host.go` (0-RTT policy enforcement per protocol ID suffix), `dht.go` (custom HMAC key validator), `dht_namespace.go` (`const dhtKeyNamespace = "/vyomanaut/dht-key/1.0.0"` — sole definition in the entire repo), `nat.go` (`maxHolePunchRetries = 1`), `heartbeat.go` (4-hour signed heartbeat), `identity.go` (Ed25519 key pair generation and keystore persistence), `peerid.go`, `errors.go`, `dht_test.go` (`TestDHTKeyValidator`, `TestDHTKeyValidatorPersists` — CI required check).
 
 - `internal/audit/**challenge.go` (`ChallengeNonce` — always 33 bytes), `validate.go` (`ValidateResponse`), `receipt.go` (`WriteReceiptPhase1`, `WriteReceiptPhase2`), `secret.go` (`ClusterSecretCache`, 5-minute TTL, fail-closed on expiry), `secrets_iface.go` (`SecretsManagerClient` interface), `jit.go` (JIT threshold computation and `jit_flag` evaluation), `errors.go`, `audit_test.go` (two-phase crash safety, idempotent retry, cross-replica nonce validation).
 
@@ -807,9 +845,17 @@ Each package's file list is the contract between the repository structure and th
 
 - `internal/payment/**provider.go` (`PaymentProvider` interface), `razorpay.go` (Razorpay implementation), `mock.go` (mock implementation for demo mode), `ledger.go` (`InsertEscrowEvent`, `EscrowEventType` constants including `EscrowReversal`), `balance.go` (`GetBalance`), `release.go` (monthly release computation, release multiplier table, dual-window flag check), `seizure.go` (escrow seizure on departure, Razorpay Route reversal), `paise.go` (`PaiseAmount int64` type with custom JSON unmarshaller that rejects fractional values), `rbi_holidays.go` (`LastWorkingDayOfMonth`), `errors.go`, `payment_test.go` (`TestNoFloatArithmetic` — CI required check), `razorpay_test.go` (webhook handler tests for all three events).
 
+- `internal/cluster/**gossip.go` (`GossipCluster`, `HealthyCount`, `MemberAddresses`, reconcile loop), `router.go` (`ResponsibleReplica`), `mock_cluster.go` (`MockClusterMembership`, `test` build tag).
+
+- `internal/api/**errors.go` (`WriteError`, error-code constants), `readiness.go` (readiness evaluator + handler), `router.go` (routing tree), plus one handler file per endpoint group (auth, owner, provider, upload/file, pricing, audit, admin), built out across Milestone 11.
+
+- `internal/metrics/**microservice.go` (NFR-025 metrics), `daemon.go` (NFR-026 metrics, local-only bind), `window.go` (pure-stdlib p99 window — zero `internal/` imports, an M-OBS leaf-package constraint).
+
+- `internal/secrets/**vault.go`, `aws_ssm.go`, `gcp_secret.go` — three `SecretsManagerClient` (IC §8) adapters, selected via `VYOMANAUT_SECRETS_BACKEND`.
+
 - `internal/client/account/**register.go`, `master_secret.go` (UI gate before upload), `mnemonic.go` (BIP-39 generation and `TwoWordConfirmationGate` — skipped in demo when `profile.SkipMnemonicConfirm = true`), `keystore.go` (encrypted keystore: Ed25519 key + pointer file nonce counter), `recover.go` (passphrase and mnemonic recovery paths), `account_test.go`.
 
-- `internal/client/upload/**orchestrator.go`, `session.go` (FR-060 crash recovery: `file_id`, `chunk_ids`, `ack_status[TotalShards]`, persisted to disk), `assign.go` (assignment request, HTTP 503 handling), `transfer.go` (parallel libp2p shard upload, receipt collection, progress callback), `pointer.go` (pointer file construction, AEAD encryption, microservice registration), `upload_test.go`.
+- `internal/client/upload/**orchestrator.go`, `session.go` (FR-060 crash recovery: `file_id`, `chunk_ids`, `ack_status[TotalShards]`, persisted to disk), `assign.go` (assignment request, HTTP 503 handling), `transfer.go` (parallel shard upload, receipt collection, progress callback), `pointer.go` (pointer file construction, AEAD encryption, microservice registration), `upload_test.go`.
 
 - `internal/client/retrieve/**orchestrator.go`, `pointer.go` (fetch, derive key, constant-time tag verify, decrypt), `download.go` (parallel 56-provider dial, cancel after 16 valid shards, content-address verification per shard), `decode.go` (RS decode, AONT decode, K recovery, canary check, padding strip, buffer zeroing on canary fail), `retrieve_test.go`.
 
@@ -817,10 +863,21 @@ Each package's file list is the contract between the repository structure and th
 
 ### 8.3 `cmd/` entrypoint flags
 
+**`cmd/microservice/main.go` flags:**
+
+| Flag | Default | Description |
+| --- | --- | --- |
+| `--mode` | `` (empty — falls back to `VYOMANAUT_MODE`) | `demo` or `prod`. CLI flag takes precedence over the environment variable (§5.3). |
+
+*(No other CLI flags are specified anywhere in scope for the microservice binary; all other
+configuration is via `NetworkProfile` plus environment-provided secrets. Add rows here as further
+flags are introduced.)*
+
 **`cmd/provider/main.go` flags:**
 
 | Flag | Default | Description |
 | --- | --- | --- |
+| `--mode` | `` (empty — falls back to `VYOMANAUT_MODE`) | `demo` or `prod`. CLI flag takes precedence over the environment variable (§5.3). |
 | `--microservice-url` | — | Required. HTTPS base URL of the coordination microservice. |
 | `--data-dir` | `$HOME/.vyomanaut` | Persistent data directory. |
 | `--sim-count` | 0 | Simulation instances in a single process. 0 = normal mode. |
@@ -851,22 +908,28 @@ All checks in this section are required — a PR may not be merged if any of the
 .github/workflows/ci.yml triggers on every PR:
   1. go build ./...           — zero warnings, strict mode
   2. go vet ./...
-  3. golangci-lint run        — .golangci.yml configured with exhaustive, errcheck, godot, gomnd
-  4. go test ./... -race      — race detector enabled
+  3. golangci-lint run        — .golangci.yml configured with exhaustive, errcheck, godot, mnd, depguard
+  4. go test ./... -race      — race detector enabled; runs after check 7 (schema + role passwords must exist first)
   5. TestDHTKeyValidatorPersists        — separate required check; blocks merge if failing
   6. TestNoFloatArithmetic              — blocks merge if internal/payment/ contains any float type
-  7. Migration apply + rollback         — against CI Postgres instance with btree_gist installed
+  7. Migration apply + rollback         — against CI Postgres instance with btree_gist installed; also
+                                            runs scripts/ci/migration_check.sh (DM §9 checklist)
   8. Grep fail: challenge_nonce BYTEA(32) in any file
   9. Grep fail: float64|float32|FLOAT|DECIMAL|NUMERIC in internal/payment/ context
-  10. Grep fail: ADR-039 or any non-existent ADR reference
+  10. Grep fail: any ADR reference above the current highest accepted ADR — the ceiling is a
+      hand-maintained regex in scripts/ci/grep_checks.sh; it has gone stale twice already
+      (see build.md Session 0.2.2's note), so treat any number quoted here as approximate
   11. Grep fail: UPI Collect API endpoint string
   12. Mermaid render check (all .md files in docs/system-design/)
   13. Hyperlink check (markdown-link-check)
   14. TestProfileShardSizeIsConstant
-  15. TestProfileBothFullySpecified`
+  15. TestProfileBothFullySpecified
+  16. TestNoOrphanMetricName            — Prometheus metric names in Grafana dashboards/alerts
+                                            validated against internal/metrics/*.go (NFR-046,
+                                            registered by build_part3.md Session OBS.4.1)
 ```
 
-`.golangci.yml` mandatory linters: `gofmt`, `govet`, `errcheck` (every error handled or explicitly ignored with a comment), `exhaustive` (every switch on `AuditResult`, `ProviderStatus`, `EscrowEventType`, `RepairPriority` must handle all cases), `godot` (all exported doc comments end with a period), `gomnd` (catches magic numbers that should be `NetworkProfile` fields).
+`.golangci.yml` mandatory linters: `gofmt`, `govet`, `errcheck` (every error handled or explicitly ignored with a comment), `exhaustive` (every switch on an enum-shaped type must handle all cases — `default-signifies-exhaustive: false` covers every type automatically, no per-type list to maintain), `godot` (all exported doc comments end with a period), `mnd` (renamed from `gomnd` between golangci-lint v1 and the pinned v2.12.2; catches magic numbers that should be `NetworkProfile` fields), `depguard` (CI-enforced form of the per-package import table in interface-contracts.md §9 — one rule per `internal/` package, added as that package's milestone is built).
 
 ### 8.5 Infrastructure directory conventions
 
@@ -880,5 +943,5 @@ All checks in this section are required — a PR may not be merged if any of the
 
 ---
 
-*Repository: https://github.com/masamasaowl/Vyomanaut_Research*  
-*Authoritative companion: `docs/decisions/ADR-031-demo-mode-network-profile.md`*  
+*Repository: <https://github.com/masamasaowl/Vyomanaut_Research>*  
+*Authoritative companion: `docs/decisions/ADR-031-demo-mode-network-profile.md`*
