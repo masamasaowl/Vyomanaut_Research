@@ -122,6 +122,12 @@ Valid questions explicitly out of scope for V2. Each references the V3 milestone
 | Q37-1, Q37-2 | Trust / audit scalability | At what provider concentration does microservice capture become a realistic threat? Minimum audit frequency for probabilistic sampling under SHELBY Theorem 1 | V3 Transparent Merkle Log; V3 audit scheduler |
 | Q39-1 (V3 path) | Repair BW | Hitchhiker code adoption after V2 telemetry gate (OQ-005) triggers | V3 ADR-026 implementation |
 
+### Q26-1 — At what provider count N does Hitchhiker's 25–45% repair-bandwidth reduction become economically necessary rather than optional, once Paper 36's 22× burst-variance multiplier is accounted for?
+
+Measure: once V3 provider-count growth data exists, substitute the Hitchhiker-adjusted β into
+Paper 10's Formula 1 and compare against the background bandwidth budget, using Paper 36's
+correlated-burst variance rather than the mean. Not blocking ADR-026 — the code-family decision
+(Hitchhiker, not Clay) doesn't depend on pinning down N precisely
 ---
 
 ## Additional Open Questions
