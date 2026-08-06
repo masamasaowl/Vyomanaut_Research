@@ -3,7 +3,7 @@
 **Status:** Accepted
 **Topic:** #5 Peer Selection Algorithm
 **Supersedes:** —
-**Superseded by:** — Partially superseded by [ADR-029](./ADR-029-bootstrap-minimum-viable-network.md)
+**Superseded by:** — [ADR-053](./ADR-053-confidence-gated-vetting-duration.md) for the duration clause, Partially superseded by [ADR-029](./ADR-029-bootstrap-minimum-viable-network.md)
 **Research source:** Papers 01, 05, 07, 08, 20, 21, 40
 
 ---
