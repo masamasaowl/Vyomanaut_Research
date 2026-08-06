@@ -119,7 +119,7 @@ This is also, deliberately, the opposite of the Honeygain model: those apps work
 
 ## 9. Desktop application engineering foundations
 
-*These are decisions, not options — made so engineering has a fixed foundation to build on. Each one has, or will get, its own ADR (ADR-038 through ADR-042 already cover §9.1–§9.4; §9.5 remains a design pass, not an ADR).*
+*These are decisions, not options — made so engineering has a fixed foundation to build on. Each one has, or will get, its own ADR (ADR-038 through ADR-042 already cover §9.1–§9.4; §9.5 remains a design pass, not an ADR; ADR-049 covers §9.6; ADR-050 covers §9.7; ADR-051 covers §9.8; ADR-052 covers §9.9).*
 
 ### 9.1 Shell technology: Wails
 
@@ -165,6 +165,38 @@ A design mandate only helps engineering if it turns into specific, checkable cho
 - **Motion:** short, purposeful transitions (opening a window, switching a tab, a status changing) — never decorative animation for its own sake. Motion should make state changes easier to follow, not slower to get through.
 - **One component system, shared by both apps.** The Data Owner and Provider apps are different products with the same visual language — a shared internal component library (buttons, cards, status badges, the toast/error system already defined in the interface contracts) is what keeps them feeling like one company made both, and keeps a design change from having to happen twice.
 
+### 9.6 Frontend framework: Svelte + TypeScript
+
+**Decision: the frontend inside the Wails shell is Svelte 5 with TypeScript, using Wails' official `svelte-ts` template.**
+
+Wails ships six official templates — Svelte, React, Vue, Preact, Lit, and Vanilla, each in JavaScript and TypeScript variants — so this was a real choice, not a default. Svelte compiles reactivity away at build time instead of shipping a virtual-DOM runtime, which wins on the same runtime-footprint grounds §9.1 already used to pick Wails over Electron, and its syntax stays closer to plain HTML/CSS/JS than React's or Vue's — the same "closest to what a Go-first team already half-knows" reasoning applied one layer up the stack. TypeScript is chosen specifically so the type definitions Wails already auto-generates from Go structs and functions get consumed with real compile-time checking, instead of that generated typing going unused behind a JavaScript frontend.
+
+The single shared component system §9.5 requires lives in its own package, `@vyomanaut/ui` (Svelte + Vite, library mode), linked into both app frontends through a pnpm workspace — a build-time dependency, not a runtime one, so each app still embeds only its own compiled output via `embed.FS` and ships independently. Full decision, including the options considered and rejected: ADR-049, Paper 51.
+
+### 9.7 Accessibility baseline
+
+**Decision: WCAG 2.1 Level AA, built into the design system from the start, not added later.**
+
+§5.2's institutional audience — universities, offices, hospitals — includes a real share of government and government-funded organizations, and India's accessibility framework for them (the RPwD Act 2016, IS 17802, GIGW 3.0) is not just a website concern; IS 17802 explicitly covers software. This is the same "survive scrutiny before it happens" posture §5.2 and §10.2 already take toward institutional IT policy, applied to a different kind of scrutiny. Every custom component in `@vyomanaut/ui` is built with correct semantic HTML and ARIA, a minimum 4.5:1 text contrast ratio, full keyboard operability, and a visible focus indicator — cheap now, at the design-system-primitives stage §9.5 is still at, and expensive to retrofit into a shipped component library later.
+
+Correct markup alone isn't sufficient proof this works, though: the bridge between markup and an actual screen reader has had real, documented gaps in exactly this stack — a Microsoft-confirmed WebView2 keyboard-focus bug (fixed in Windows App SDK 1.5, not independently confirmed against Wails' own WebView2 hosting) and a currently open Wails-specific screen-reader focus bug on Linux. Before the M19 shared component library is considered done, the first built screens get a direct Windows Narrator smoke test against the real packaged build — not an inference from the spec. Formal IS 17802 certification isn't pursued at this stage; like the rest of institutional go-to-market timing (§11), that's a decision for when the business actually needs it, not before. Full decision: ADR-050, Paper 52.
+
+### 9.8 Keeping the app up to date
+
+**Decision: a two-phase update mechanism — silent NSIS reinstall now, Wails v3's built-in updater once it's stable and confirmed shipped.**
+
+Neither app has a way to receive updates today, which is a real, standing security gap, not just a missing convenience — and it's worth being honest that Wails v2 has no built-in answer for this (a years-old feature request for one was never resolved) and its `embed.FS` asset model doesn't cleanly support a custom partial-update workaround either. Wails v3 does solve this properly — GitHub Releases as an update source, SHA-256 and Ed25519 verification, an in-place binary swap, smaller downloads via delta patches — but it's still beta, the framework's own release notes recommend keeping v2 apps in place until v3 is actually ready, and the updater feature itself isn't confirmed to have landed in a tagged release yet, only demonstrated against one still on a branch.
+
+So the app updates itself now the way Tailscale eventually learned to: not with a custom binary-swap tool, but by silently re-running the same installer it already ships (§9.4's signed NSIS build, via NSIS's own `/S` flag) against a version it checks for on GitHub Releases. Tailscale's own Windows auto-updater took years to ship, and what it landed on wasn't a from-scratch mechanism — it was reusing the install path that already existed. The moment Wails v3 is stable and its updater is confirmed to actually be in a tagged release, the app moves to it and the interim mechanism retires. Full decision: ADR-051, Paper 53.
+
+### 9.9 Locale-ready copy and number formatting
+
+**Decision: all user-facing text goes through Paraglide JS message functions, not hardcoded strings — and every number and rupee amount uses `Intl.NumberFormat("en-IN", ...)`, unconditionally.**
+
+These are two different questions wearing the same "localization" coat, and only one of them is actually gated on the language-scope business decision §11 defers. Whether the app ever ships in anything other than English is a business call, deliberately not answered here. Whether a rupee amount displays as "₹12,34,567" instead of "₹1,234,567" is not a business call at all — it's a correctness question for the exact Indian audience §5.2 and §8 are already built for, and JavaScript's native `Intl.NumberFormat("en-IN", ...)` gets this right today, at zero dependency cost, independent of what language the surrounding text is in.
+
+The copy side is cheaper to decide now than to retrofit later, the same reasoning §9.7 already used for accessibility: user-facing text is authored as keyed Paraglide JS messages — a compiler-based system that fits ADR-049's own compile-time philosophy and works in a plain Svelte + Vite project without needing SvelteKit — sourced from `interface-contracts.md` §14's copy table once it merges. This doesn't commit to shipping a second language; it just means the English strings V1 ships with are already structured so that adding one later doesn't mean rewriting every component's text. Full decision: ADR-052, Paper 54.
+
 ---
 
 ## 10. Provider build risk: what "Windows first" actually requires underneath
@@ -185,10 +217,9 @@ Both were unaddressed gaps between an accepted architecture decision and an acce
 
 ## 11. What still needs deciding (not answered here, on purpose)
 
-- **The exact frontend framework** for the Wails UI layer (React, Vue, Svelte, or plain HTML/CSS/JS) — a smaller, more reversible choice than the shell itself, and can be decided when the first screen is actually built.
 - **macOS- and Linux-specific packaging, signing, and autostart mechanisms** — deferred until the Windows version is real and in front of users, per §7. FR-031's "macOS LaunchDaemon" / "Linux systemd unit" wording needs the same system-wide-vs-per-user correction §10.2 made for Windows, once those platforms are actually being built.
 - **The exact color palette, type scale, and spacing values** — §9.5 fixes the *kind* of system, not the final numbers; that's a focused design pass, not an open research question.
 - **Whether BadgerDB should replace RocksDB on Linux/macOS too**, not just Windows (Q49-1) — Badger's own published comparisons, and independent recent large-value-KV-store research, suggest it may outperform general-purpose RocksDB at Vyomanaut's fixed 256 KB chunk size regardless of platform. Not blocking — the existing RocksDB path on Linux/macOS works and is CI-proven — but worth measuring against real provider hardware post-launch rather than leaving two storage engines in place indefinitely by default.
-- **How and when we approach institutions** (universities, offices, hospitals) as a go-to-market motion — a business-development question, deliberately not a product one (§5.2). The product is built to work either way; this is about timing and outreach, not design.
+- **How and when we approach institutions** (universities, offices, hospitals) as a go-to-market motion — a business-development question, deliberately not a product one (§5.2). The product is built to work either way; this is about timing and outreach, not design. Formal IS 17802 accessibility conformance certification (§9.7, ADR-050) is deferred to this same decision — the WCAG 2.1 AA baseline is already built in regardless of when, or whether, that outreach happens.
 
 Everything else in this document — the problem, the solution, the market we're in, the market we're not in, who we're building for, the design bar we're holding ourselves to, and the desktop-application foundations that make "Windows first" actually buildable — is intended to be settled.
