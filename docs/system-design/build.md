@@ -3,7 +3,7 @@
 **Status:** Authoritative build specification  
 **Version:** 1.0  
 **Date:** May 2026  
-**Repository:** https://github.com/masamasaowl/Vyomanaut_Research  
+**Repository:** <https://github.com/masamasaowl/Vyomanaut_Research>  
 **Derived from:**
 
 1. `docs/system-design/requirements.md` (REQ) — FR/NFR completeness gates, capacity calculations
@@ -280,8 +280,8 @@ For each internal/ subdirectory, create doc.go:
   NEGATIVE_CHECKS:
 
   ```go
-    $ test -d docs && echo "PASS: docs pre-existing" || echo "FAIL: docs missing"
-    $ test -d cmd/relay && echo "FAIL: cmd/relay must not exist until M17" || echo "PASS"
+    test -d docs && echo "PASS: docs pre-existing" || echo "FAIL: docs missing"
+    test -d cmd/relay && echo "FAIL: cmd/relay must not exist until M17" || echo "PASS"
   ```
   
   CONTENT_CHECKS:
@@ -346,9 +346,9 @@ EXPECT: 1
 NEGATIVE_CHECKS:
 
 ```go
-$ test -f cmd/relay/main.go && echo "FAIL: cmd/relay must not exist" || echo "PASS"
+test -f cmd/relay/main.go && echo "FAIL: cmd/relay must not exist" || echo "PASS"
 
-$ grep -rn "mode=UNKNOWN" cmd/ && echo "FAIL" || echo "PASS"
+grep -rn "mode=UNKNOWN" cmd/ && echo "FAIL" || echo "PASS"
 ```
 
 ---
@@ -392,6 +392,7 @@ linters:
     - exhaustive
     - godot
     - mnd
+    - depguard
 
 formatters:
   enable:
@@ -399,11 +400,14 @@ formatters:
 
 linters-settings:
   exhaustive:
-    # Types added here as they are defined in subsequent milestones.
-    # Format: <package_import_path>.<TypeName>
-    # M7: internal/audit.AuditResult
-    # M9: internal/repair.Priority, internal/repair.TriggerType
-    # M10: internal/payment.EscrowEventType
+    # `default-signifies-exhaustive: false` makes this linter check every
+    # switch on every enum-shaped type in the module by default — there is
+    # no per-type allowlist to maintain. An earlier version of this session
+    # documented a "types added here as they are defined" tracking comment
+    # (naming internal/audit.AuditResult, internal/repair.Priority/
+    # TriggerType, internal/payment.EscrowEventType); when M7/M9/M10 went to
+    # update it, there was nothing to add — the setting already covered
+    # those types with zero configuration. Do not reintroduce a per-type list.
     default-signifies-exhaustive: false
 
   errcheck:
@@ -413,6 +417,24 @@ linters-settings:
     ignored-functions:
       - "argon2.IDKey"
 
+  depguard:
+    rules:
+      # One rule per internal/ package, added incrementally as each package
+      # is built — this is the CI-enforced form of the import constraints in
+      # interface-contracts.md §9. The first rule (added in Milestone 2) is
+      # shown below; every subsequent package-milestone adds its own block
+      # in the same shape, restricting `files` to that package and `allow`
+      # to exactly the dependencies interface-contracts.md §9 permits it.
+      crypto:
+        files:
+          - "**/internal/crypto/**"
+        allow:
+          - $gostd
+          - golang.org/x/crypto
+          - golang.org/x/sys
+        # No internal/ package is in the allow-list: internal/crypto must
+        # not import any other internal/ package (IC §9's strictest rule).
+
 issues:
   exclude-rules:
     - path: "_test\\.go"
@@ -420,14 +442,20 @@ issues:
         - mnd
 ```
 
-**NOTE:** The exhaustive linter section is intentionally sparse at M0. It is updated incrementally as each type is defined (sessions 7.1.1, 9.1.1, 10.2.1). The comment block above is the authoritative tracking list.
+**NOTE:** The exhaustive linter section requires no updates as new enum types are added in later
+milestones — see the comment in the block above. The `depguard` section, by contrast, genuinely
+does grow one rule per package: `internal/erasure`, `internal/storage`, `internal/p2p`,
+`internal/audit`, `internal/scoring`, `internal/repair`, `internal/payment`, and
+`internal/vettingchunk` each add their own rule when that package's milestone is built, mirroring
+their row in interface-contracts.md §9's import table. This is a CI-enforced restatement of §9,
+not a new requirement — a PR that violates §9 now fails `golangci-lint run`, not just code review.
 
 **VERIFY:**
 
 FILES_EXIST:
 
 ```go
-$ test -f .golangci.yml && echo PASS || echo FAIL
+test -f .golangci.yml && echo PASS || echo FAIL
 ```
 
 CONTENT_CHECKS:
@@ -436,8 +464,14 @@ CONTENT_CHECKS:
 $ grep -c "exhaustive" .golangci.yml
 EXPECT: >= 2 (linter name + settings section)
 
-$ grep -c "gomnd" .golangci.yml
+$ grep -c "\bmnd\b" .golangci.yml
 EXPECT: >= 2
+
+$ grep -c "depguard" .golangci.yml
+EXPECT: >= 2 (linter name + settings section)
+
+$ grep -A3 "crypto:" .golangci.yml | grep -c "internal/crypto"
+EXPECT: >= 1
 ```
 
 LINT_CHECK:
@@ -487,10 +521,10 @@ EXPECT: exit 0; zero findings on stub-only repository
     "(float64|float32|FLOAT|DECIMAL|NUMERIC)" \
     "internal/payment"
 
-  # Check 10: no references to non-existent ADRs (above ADR-031)
-  # Pattern: ADR-0[3-9][2-9]|ADR-[1-9][0-9]{2,}
+  # Check 10: no references to non-existent ADRs (above ADR-033 as of this bump)
+  # Pattern excludes ADR-034..039, ADR-040..099, and any 3+-digit ADR number.
   check "ADR_REFERENCE" \
-    "ADR-0[3-9][2-9]|ADR-[1-9][0-9]{2,}" \
+    "ADR-0(3[4-9]|[4-9][0-9])|ADR-[1-9][0-9]{2,}" \
     "."
 
   # Check 11: no UPI Collect API endpoint calls
@@ -501,6 +535,34 @@ EXPECT: exit 0; zero findings on stub-only repository
   exit $FAIL
 ```
 
+> **Flagged — this exact check has already gone stale a second time.** The regex above is what
+> is actually in `scripts/ci/grep_checks.sh` today (correctly bumped once, from an original
+> ceiling of ADR-031 to exclude ADR-032 and ADR-033). But `docs/decisions/` now contains
+> ADR-034 through ADR-037, all Accepted, none of which this pattern excludes — it is currently
+> dormant only because no `.go`/`.sql` file happens to cite one of them yet. The first PR that
+> adds a comment like `// (ADR-035)` will fail this check for citing a real, valid ADR. This is
+> the second time a hand-maintained numeric ceiling here has gone stale before the next milestone
+> even finished. Recommended fix, to close the pattern permanently rather than re-bump it a third
+> time:
+>
+> ```bash
+> # Check 10 (recommended replacement): ceiling derived from the ADR files on disk,
+> # not hand-maintained.
+> MAX_ADR=$(ls "$REPO_ROOT"/docs/decisions/ADR-*.md 2>/dev/null \
+>   | sed -E 's/.*ADR-0*([0-9]+)-.*/\1/' | sort -n | tail -1)
+> bad=$(grep -rhoE "ADR-0*[0-9]+" --include="*.go" --include="*.sql" "$REPO_ROOT" 2>/dev/null \
+>       | sed -E 's/ADR-0*([0-9]+)/\1/' | sort -nu | awk -v max="$MAX_ADR" '$1 > max')
+> if [ -n "$bad" ]; then
+>   echo "FAIL [ADR_REFERENCE]: reference(s) above current max ADR-$MAX_ADR found"; FAIL=1
+> else
+>   echo "PASS [ADR_REFERENCE] (ceiling: ADR-$MAX_ADR)"
+> fi
+> ```
+>
+> Until this is applied, re-bump the static pattern every time a new ADR is accepted — the
+> current safe ceiling (as of this document revision, and now including ADR-038, added by this
+> same documentation-alignment pass) is **ADR-038**.
+
 **MAKE EXECUTABLE:** chmod +x scripts/ci/grep_checks.sh
 
 **VERIFY:**
@@ -508,9 +570,9 @@ EXPECT: exit 0; zero findings on stub-only repository
 FILES_EXIST:
 
 ```zsh
-$ test -f scripts/ci/grep_checks.sh && echo PASS || echo FAIL
+test -f scripts/ci/grep_checks.sh && echo PASS || echo FAIL
 
-$ test -x scripts/ci/grep_checks.sh && echo PASS || echo FAIL
+test -x scripts/ci/grep_checks.sh && echo PASS || echo FAIL
 ```
 
 SCRIPT_RUNS:
@@ -548,11 +610,21 @@ The workflow triggers on: [push, pull_request]
 Uses: `ubuntu-latest`, `go: '1.26'`
 
 **Services block:** postgres:16 with `POSTGRES_DB=vyomanaut_test`,
-`POSTGRES_USER=vyomanaut_app`,
+`POSTGRES_USER=vyomanaut_migrator`,
 `POSTGRES_PASSWORD=testpass`,
 options: `--health-cmd pg_isready`
 
-**Steps (in order, each with id matching check number):**
+> **Flagged and corrected (post-M4, ADR-032).** The services block originally specified
+> `POSTGRES_USER=vyomanaut_app`. Under Postgres, the image's `POSTGRES_USER` becomes the
+> **bootstrap superuser that owns the schema** — with only `ENABLE ROW LEVEL SECURITY` (not
+> `FORCE`), the owner bypasses every RLS policy, silently defeating Invariants 1 and 2
+> (`audit_receipts`/`escrow_events` append-only). ADR-032 documents this as a confirmed,
+> live-verified defect (`DELETE FROM audit_receipts` as the app role returned `DELETE 1`) and
+> assigns the bootstrap role to `vyomanaut_migrator` instead — `vyomanaut_app` and `vyomanaut_gc`
+> are created *by the migration* as `NOSUPERUSER NOBYPASSRLS` roles, never as the schema owner.
+> This is now the actual services-block value in `.github/workflows/ci.yml`.
+
+**Steps (in order, each with id matching check number — see the ordering note below the block):**
 
 ```yml
   check-01: go build ./...
@@ -565,9 +637,6 @@ options: `--health-cmd pg_isready`
   check-03: golangci-lint
     uses: golangci/golangci-lint-action@v4
     with: {version: v2.12.2, args: --timeout=5m}
-
-  check-04: go test with race detector
-    run: go test -race -count=1 ./...
 
   check-05: TestDHTKeyValidatorPersists (M6 gate)
     run: |
@@ -586,23 +655,32 @@ options: `--health-cmd pg_isready`
   check-07: Migration apply + rollback
     run: |
       export PGPASSWORD=testpass
-      psql -h localhost -U vyomanaut_app -d vyomanaut_test \
+      psql -h localhost -U vyomanaut_migrator -d vyomanaut_test \
         -c "CREATE EXTENSION IF NOT EXISTS btree_gist;"
       go run migrations/generator.go --profile=prod \
         > /tmp/001_prod.sql
-      psql -h localhost -U vyomanaut_app -d vyomanaut_test \
+      psql -h localhost -U vyomanaut_migrator -d vyomanaut_test \
         -f /tmp/001_prod.sql
       go run migrations/generator.go --profile=demo \
         > /tmp/001_demo.sql
       # Demo schema applied to separate DB to avoid cross-contamination
-      psql -h localhost -U vyomanaut_app \
+      psql -h localhost -U vyomanaut_migrator \
         -c "CREATE DATABASE vyomanaut_demo_test;"
-      psql -h localhost -U vyomanaut_app -d vyomanaut_demo_test \
+      psql -h localhost -U vyomanaut_migrator -d vyomanaut_demo_test \
         -c "CREATE EXTENSION IF NOT EXISTS btree_gist;"
-      psql -h localhost -U vyomanaut_app -d vyomanaut_demo_test \
+      psql -h localhost -U vyomanaut_migrator -d vyomanaut_demo_test \
         -f /tmp/001_demo.sql
+      # ADR-032/033: the DM §9 checklist script exists (Session 4.8.1) but was
+      # never actually invoked by CI until this fix — wire it in here, after
+      # the prod schema is applied, with the migrator role and target DB set.
+      export PGUSER=vyomanaut_migrator PGDATABASE=vyomanaut_test
+      bash scripts/ci/migration_check.sh
     # PENDING until M4. Until M4: stub exits 0.
     continue-on-error: true
+
+  check-04: go test with race detector
+    run: go test -race -count=1 ./...
+    # Runs AFTER check-07, not in numeric position — see ordering note below.
 
   check-08 through check-11: grep checks
     run: bash scripts/ci/grep_checks.sh
@@ -642,12 +720,26 @@ options: `--health-cmd pg_isready`
 and the `|| (echo "PENDING..." && exit 0)` fallback from its corresponding
 check. That check then becomes a hard gate.
 
+> **Flagged and corrected — check-04 depends on check-07, and now runs after it.**
+> `check-04` (`go test -race`) needs the schema applied and the `vyomanaut_app`/`vyomanaut_gc`
+> role passwords set (`ALTER ROLE ... WITH PASSWORD`, part of the migration) before any test can
+> open a request-path DB connection. That dependency did not exist at M0 (no schema existed yet)
+> and only became real once M4 shipped. Rather than renumber every check, `check-04` is defined
+> *after* `check-07` in the actual workflow file, with an inline comment explaining why — the
+> numeric ids are stable identifiers, not an execution-order guarantee. Once M4 test suites need
+> a Postgres connection, they authenticate as `vyomanaut_app` (the RLS-restricted role being
+> tested) with a separate `PGVERIFY_USER=vyomanaut_migrator` available to test helpers that need
+> an elevated connection to confirm what the restricted role could/couldn't do — mirroring
+> ADR-032's two-pool design (`vyomanaut_app` for the hot path, `vyomanaut_migrator` for
+> migrations/maintenance). `vyomanaut_app` appearing in `check-04`'s environment is correct and
+> expected; it must never appear as the *services block*'s `POSTGRES_USER` (see above).
+
 **VERIFY:**
 
 FILES_EXIST:
 
 ```bash
-$ test -f .github/workflows/ci.yml && echo PASS || echo FAIL
+test -f .github/workflows/ci.yml && echo PASS || echo FAIL
 ```
 
 CONTENT_CHECKS:
@@ -669,6 +761,17 @@ STEP_COUNT:
 ```bash
 $ grep -c "name: check-" .github/workflows/ci.yml
 EXPECT: 16
+```
+
+NEGATIVE_CHECKS:
+
+```bash
+$ grep -n "POSTGRES_USER:\s*vyomanaut_app" .github/workflows/ci.yml \
+    && echo "FAIL: vyomanaut_app must never be the Postgres bootstrap/services-block user (ADR-032)" \
+    || echo "PASS"
+
+$ grep -c "migration_check.sh" .github/workflows/ci.yml
+EXPECT: >= 1
 ```
 
 ---
@@ -711,17 +814,24 @@ lists at least three owner handles (can be duplicates at this stage).
       image: postgres:16
       environment:
         POSTGRES_DB: vyomanaut_dev
-        POSTGRES_USER: vyomanaut_app
+        POSTGRES_USER: vyomanaut_migrator
         POSTGRES_PASSWORD: devpass
       ports: ["5432:5432"]
       volumes:
         - ./init-db.sql:/docker-entrypoint-initdb.d/init.sql
       healthcheck:
-        test: ["CMD-SHELL", "pg_isready -U vyomanaut_app"]
+        test: ["CMD-SHELL", "pg_isready -U vyomanaut_migrator"]
         interval: 5s
         timeout: 5s
         retries: 5
+```
 
+> **Flagged and corrected (ADR-032)** — same defect and same fix as Session 0.3.1's CI services
+> block: `POSTGRES_USER` here becomes the schema-owning bootstrap role, which must never be the
+> RLS-restricted request-path role. `vyomanaut_app` (and `vyomanaut_gc`) are created by the
+> migration itself as `NOSUPERUSER NOBYPASSRLS`, not set as the container's bootstrap user.
+
+```yaml
     # cmd/relay binary created in M17 Session 17.2.2.
     # Placeholder keeps docker-compose valid until M17.
     relay:
@@ -769,9 +879,9 @@ lists at least three owner handles (can be duplicates at this stage).
 FILES_EXIST:
 
 ```bash
-$ test -f deployments/dev/docker-compose.yml && echo PASS || echo FAIL
+test -f deployments/dev/docker-compose.yml && echo PASS || echo FAIL
 
-$ test -f deployments/dev/init-db.sql && echo PASS || echo FAIL
+test -f deployments/dev/init-db.sql && echo PASS || echo FAIL
 ```
 
 YAML_VALID:
@@ -809,7 +919,7 @@ psql -U vyomanaut_app -d vyomanaut_dev -c "\dx" | grep btree_gist \
 CLEANUP:
 
 ```bash
-$ docker-compose -f deployments/dev/docker-compose.yml down -v
+docker-compose -f deployments/dev/docker-compose.yml down -v
 ```
 
 NEGATIVE_CHECKS:
@@ -1677,13 +1787,18 @@ package (IC §5.1 post-condition for `AONTEncodeSegment`).
 **ALGORITHM (from architecture.md §10 Stage 1):**
 
 ``` go
+  const (
+    aontWordSize     = 16 // one AONT codeword / the canary
+    aontKeyBlockSize = 32 // K XOR h — two word-widths, because K is 256 bits, not one
+  )
+
   1. K = make([]byte, 32); io.ReadFull(rand.Reader, K) — fresh per call (IC §11)
   2. numWords = len(segment) / 16
   3. plaintext = segment ‖ aontCanary   // append canary to the PLAINTEXT before
      encryption (ARCH §10 Stage 1 step 1) — this ordering is security-critical,
      see the warning below
-     output = make([]byte, (numWords+2)*16)  // (numWords+1) encrypted words + key-block
-     ciphertext = output[:(numWords+1)*16]
+     output = make([]byte, (numWords+1)*aontWordSize + aontKeyBlockSize) // = (numWords+3)*16
+     ciphertext = output[:(numWords+1)*aontWordSize]
   4. Cipher selection — encrypts the data words AND the canary word together:
      if aesNIAvailable {
        // AES-256-CTR path; counter starts at i+1 per architecture.md §10 Stage 1
@@ -1698,10 +1813,12 @@ package (IC §5.1 post-condition for `AONTEncodeSegment`).
      }
   5. h = sha256.Sum256(ciphertext)   // hash covers ALL ciphertext words, INCLUDING
      the encrypted canary — also security-critical, see below
-  6. output[(numWords+1)*16 : (numWords+2)*16] = xor32(K, h[:])  // key-block
+  6. keyBlock = xor32(K, h[:])                                    // 32 bytes
+     copy(output[(numWords+1)*aontWordSize:], keyBlock[:])         // fills exactly the last 32 bytes
 
   Return output, nil
 ```
+
 **⚠️ SECURITY-CRITICAL ORDERING (corrected — M2 review corrections):** the canary
 must be appended to the plaintext *before* encryption (step 3) and the commitment
 hash (step 5) must cover the encrypted canary word along with the data words. An
@@ -1716,6 +1833,22 @@ decode text ("Recover K from the last word XOR SHA-256(all preceding words)") do
 not need a separate correction — it was already describing the correct, wider hash
 scope; it only *looked* inconsistent relative to this block's previous, narrower one.
 
+**🔴 BUFFER-SIZING ARITHMETIC (corrected):** the previous version of this block sized
+`output` as `(numWords+2)*16` and wrote the key block into a single 16-byte window
+(`output[(numWords+1)*16 : (numWords+2)*16]`) — but `xor32(K, h[:])` is 32 bytes,
+because `K` is 256 bits. Written literally that either fails to compile (Go
+slice-length mismatch) or, with a loose `copy()`, silently truncates the embedded
+key to 16 bytes, permanently corrupting the segment. The correct total size is
+`(numWords+1)*aontWordSize + aontKeyBlockSize`, i.e. **three word-widths (48 bytes)
+larger than the original segment** (one canary word + one 32-byte key block) — not
+one, as ADR-022 Step 5's prose previously said. This is confirmed independently by
+`AONTDecodePackage`'s own precondition, `len(aontPackage) >= 64`
+(`= 2×16 + 32`, i.e. one data word + one canary word + a 32-byte key block at the
+minimum size). The shipped implementation has always used this correct arithmetic,
+under exactly the `aontWordSize`/`aontKeyBlockSize` names shown above; only this
+pseudocode block, ADR-022 Step 5, and interface-contracts.md §5.1's post-condition
+text had the error. All three are corrected as part of this revision.
+
 **HELPER:** `xor16(a, b []byte) [16]byte — XOR two 16-byte slices`
 **HELPER:** `xor32(a, b []byte) [32]byte — XOR two 32-byte slices (for K ⊕ h)`
 
@@ -1729,6 +1862,7 @@ scope; it only *looked* inconsistent relative to this block's previous, narrower
 
 **Task:** Implement `AONTDecodePackage(aontPackage []byte, aesNIAvailable bool) ([]byte,
 error)` in `internal/crypto/aont.go`. Must:
+
 1. Recover K from the last word XOR SHA-256(all preceding words)
 2. Decrypt
 3. Verify the canary word (second-to-last) equals `aontCanary`
@@ -1741,6 +1875,7 @@ error)` in `internal/crypto/aont.go`. Must:
 #### Session 2.4.4 — AONT tests
 
 **Task:** Add `internal/crypto/aont_test.go`:
+
 - Round-trip test: `AONTDecodePackage(AONTEncodeSegment(data))` == original data
 - Test that each call to `AONTEncodeSegment` produces a different ciphertext (K freshness)
 - Test that corrupting any single byte in the AONT package causes `ErrCanaryMismatch`
@@ -1820,25 +1955,47 @@ $ grep -n "return K\b" internal/crypto/aont.go \
 **Reference:** IC §5.1 (`EncryptPointerFile`, `DecryptPointerFile`, `ErrTagMismatch`),
 IC §11 (constant-time tag comparison: NFR-019), REQ §5.4 NFR-019
 
-#### Session 2.5.1 — Implement pointer file AEAD
+#### Session 2.5.1 — Implement AEAD primitives
 
-**TASK:** Implement `EncryptPointerFile` and `DecryptPointerFile`.
+**TASK:** Implement `EncryptAEAD`/`DecryptAEAD` (general-purpose) and
+`EncryptPointerFile`/`DecryptPointerFile` (pointer-file-specific wrappers around them).
+
+> **Flagged and corrected (post-M6, closes QA audit Finding 5).** This session originally
+> specified only `EncryptPointerFile`/`DecryptPointerFile`. Milestone 6's `internal/p2p/identity.go`
+> needed to encrypt the provider daemon's local Ed25519 identity key — an artifact that is not a
+> pointer file — and had no general-purpose primitive to call, so it misused
+> `EncryptPointerFile`/`DecryptPointerFile` with an unrelated AAD string instead. The fix landed
+> here, at the source: `EncryptAEAD`/`DecryptAEAD` are now the package's actual general-purpose
+> AEAD primitive, and `EncryptPointerFile`/`DecryptPointerFile` are a thin wrapper kept only
+> because IC §5.1 documents a pointer-file-specific precondition (non-empty AAD encoding
+> `ownerID||fileID||schemaVersion`) that doesn't belong on the generic primitive. Any caller
+> encrypting something that is *not* a pointer file calls `EncryptAEAD`/`DecryptAEAD` directly.
 
 **FILE:** `internal/crypto/chacha20poly1305.go`
 
-**FUNCTION SIGNATURES (exact, from IC §5.1):**
+**FUNCTION SIGNATURES (exact, matches shipped code):**
+  `func EncryptAEAD(key [32]byte, nonce [12]byte, aad, plaintext []byte) ([]byte, error)`
+  `func DecryptAEAD(key [32]byte, nonce [12]byte, aad, ciphertext []byte) ([]byte, error)`
   `func EncryptPointerFile(key [32]byte, nonce [12]byte, aad, plaintext []byte) ([]byte, error)`
   `func DecryptPointerFile(key [32]byte, nonce [12]byte, aad, ciphertext []byte) ([]byte, error)`
 
-**PRECONDITIONS for EncryptPointerFile:**
+**EncryptAEAD / DecryptAEAD — no artifact-specific precondition.** `aad` may be empty; callers
+that need domain separation pass a non-empty, artifact-specific `aad` and document why (the
+pointer-file wrapper's stricter precondition, below, is the example). Returned ciphertext is
+`len(plaintext)+16` bytes (plaintext + 16-byte Poly1305 tag).
 
-  - `len(aad) > 0`  (panic in debug; aad must include `ownerID||fileID||schemaVersion`)
+**PRECONDITIONS for EncryptPointerFile (in addition to EncryptAEAD's):**
 
-**PRECONDITIONS for DecryptPointerFile:**
+- `len(aad) > 0`  (panic in debug; aad must include `ownerID||fileID||schemaVersion`) —
+    implemented as `EncryptPointerFile` panicking on the empty-aad case, then delegating to
+    `EncryptAEAD` for the actual seal.
 
-  - `len(ciphertext) >= 16`  (must include `Poly1305` tag)
+**PRECONDITIONS for DecryptAEAD / DecryptPointerFile:**
 
-**DecryptPointerFile CRITICAL PATH (NFR-019, requirements.md §5.4):**
+- `len(ciphertext) >= 16`  (must include `Poly1305` tag)
+
+**DecryptAEAD CRITICAL PATH (NFR-019, requirements.md §5.4) — DecryptPointerFile is a direct
+call-through to this:**
 
   1. Construct AEAD cipher: aead, `err = chacha20poly1305.New(key[:])`
   2. Call `aead.Open()` — this uses `crypto/subtle.ConstantTimeCompare` internally
@@ -1848,7 +2005,8 @@ IC §11 (constant-time tag comparison: NFR-019), REQ §5.4 NFR-019
   4. On success: return decrypted plaintext, nil
 
 **FILE:** `internal/crypto/errors.go`
-(**Note:** this file has already been created as part of Phase 2.4)
+(**Note:** this file has already been created as part of Phase 2.4, including `ErrInvalidMnemonic`
+— see Appendix C)
 **CONTENT (sentinel errors for this package):**
 
 ```go
@@ -1877,11 +2035,28 @@ EXPECT: exit 0
 FUNCTION_SIGNATURES:
 
 ```go
+$ grep -c "^func EncryptAEAD" internal/crypto/chacha20poly1305.go
+EXPECT: 1
+
+$ grep -c "^func DecryptAEAD" internal/crypto/chacha20poly1305.go
+EXPECT: 1
+
 $ grep -c "^func EncryptPointerFile" internal/crypto/chacha20poly1305.go
 EXPECT: 1
 
 $ grep -c "^func DecryptPointerFile" internal/crypto/chacha20poly1305.go
 EXPECT: 1
+```
+
+WRAPPER_RELATIONSHIP:
+
+```go
+$ grep -A3 "^func EncryptPointerFile" internal/crypto/chacha20poly1305.go | grep -c "EncryptAEAD("
+EXPECT: >= 1
+# EncryptPointerFile must delegate to EncryptAEAD, not duplicate the Seal() call
+
+$ grep -A2 "^func DecryptPointerFile" internal/crypto/chacha20poly1305.go | grep -c "DecryptAEAD("
+EXPECT: >= 1
 ```
 
 CONSTANT_TIME_TAG:
@@ -1976,7 +2151,7 @@ indices across 1000 calls.
 FILES_EXIST:
 
 ```go
-$ test -f internal/crypto/wordlist_en.txt && echo PASS || echo FAIL
+test -f internal/crypto/wordlist_en.txt && echo PASS || echo FAIL
 ```
 
 WORDLIST_COUNT:
@@ -5359,7 +5534,7 @@ Create `internal/storage/store_test.go` with the following named tests. All test
 **TEST INVENTORY:**
 
 | Test name | What it validates |
-|---|---|
+| --- | --- |
 | `TestAppendLookupRoundTrip` | Write N chunks; read each back; SHA-256 matches (IC §5.3 post-condition) |
 | `TestLookupChunkNotFound` | `LookupChunk` on an unwritten chunk_id returns `ErrChunkNotFound` |
 | `TestLookupChunkCorrupt` | Corrupt vLog bytes at a known offset; `LookupChunk` returns `ErrContentHashMismatch` |
@@ -5452,7 +5627,7 @@ before this milestone closes — the custom DHT key validator must survive every
 **0-RTT DENY-LIST — complete and exhaustive (IC §4, ARCH §13):**
 
 | Protocol ID | 0-RTT | Reason |
-|---|---|---|
+| --- | --- | --- |
 | `/vyomanaut/chunk-upload/1.0.0` | **Permitted** | Replay is idempotent — RocksDB UNIQUE rejects duplicate (IC §4.1) |
 | `/vyomanaut/audit-challenge/1.0.0` | **Prohibited** | Replayed response falsely credits a PASS (IC §4.2) |
 | `/vyomanaut/repair-download/1.0.0` | **Prohibited** | Replayed request could exfiltrate chunk data (IC §4.4.1) |
@@ -5619,7 +5794,7 @@ NEGATIVE_CHECKS:
 **THREE-TIER NAT TRAVERSAL (ARCH §13 §NAT traversal — three tiers):**
 
 | Tier | Protocol | Applies to | Note |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | 1 | AutoNAT | All providers at startup | Classifies: publicly reachable / cone NAT / symmetric NAT |
 | 2 | DCUtR | Cone NAT (Indian home routers) | `maxHolePunchRetries = 1`; 97.6% succeed on first attempt |
 | 3 | Circuit Relay v2 | Symmetric NAT (~30-45% per ARCH §27.5) | Relay RTT < 50 ms from Indian cloud nodes (NFR-006) |
@@ -5979,7 +6154,7 @@ VET:
 **KEY VALIDATOR RULES (IC §12 — explicit accept/reject table):**
 
 | Condition | Decision | Reason |
-|---|---|---|
+| --- | --- | --- |
 | `len(key) == 32` | **Accept** | HMAC-SHA256 output is always 32 bytes |
 | `len(key) != 32` | **Reject** → `ErrDHTKeyInvalid` | Wrong length — not an HMAC output |
 | Key has `"vyom-chunk:"` prefix | **Reject** → `ErrDHTKeyInvalid` | Plaintext chunk hash — wrong format (IC §12) |
@@ -6526,7 +6701,7 @@ Every design invariant from DM §3 and IC must be enforced at the layer shown be
 A PR that breaks any row here must be rejected.
 
 | ID | Name | Source | Enforced At | Milestone |
-|----|------|---------|-------------|-----------|
+| ---- | ------ | --------- | ------------- | ----------- |
 | INV-1 | Append-only audit log | DM §3 | DB RSP + `WriteReceiptPhase2` WHERE clause | M4, M7 |
 | INV-2 | Append-only escrow ledger | DM §3 | DB RSP + `InsertEscrowEvent` sole write path | M4, M10 |
 | INV-3 | No physical provider deletion | DM §3 | IC §6 DML; departure sets `status='DEPARTED'` | M4, M9 |
@@ -6741,7 +6916,7 @@ A PR that breaks any row here must be rejected.
 | `internal/crypto/aont.go` | 2.4.2 | 2.4.3 |
 | `internal/crypto/aont_test.go` | 2.4.4 | — |
 | `internal/crypto/chacha20poly1305.go` | 2.5.1 | — |
-| `internal/crypto/errors.go` | 2.4.x (no later than 2.4.4 — see that session's VERIFY block; Session 2.5.1's own text notes "this file has already been created as part of Phase 2.4") | 2.6.3 (adds ErrInvalidMnemonic) |
+| `internal/crypto/errors.go` | 2.4.x (no later than 2.4.4 — see that session's VERIFY block) | — (all three sentinels, including `ErrInvalidMnemonic`, are declared together from Phase 2.4 onward; Session 2.5.1's own inline content block lists all three ahead of Phase 2.6's BIP-39 implementation, so there is no later "Modified By" session — this row previously said 2.6.3 added `ErrInvalidMnemonic`, which contradicted Session 2.5.1's own text) |
 | `internal/crypto/wordlist_en.txt` | 2.6.1 | — |
 | `internal/crypto/bip39.go` | 2.6.2 | 2.6.3, 2.6.4 |
 | `internal/crypto/ed25519.go` | 2.7.1 | — |
@@ -6826,4 +7001,4 @@ A PR that breaks any row here must be rejected.
 ---
 
 *End of BUILD.md*  
-*Repository: https://github.com/masamasaowl/Vyomanaut_Research*  
+*Repository: <https://github.com/masamasaowl/Vyomanaut_Research>*
