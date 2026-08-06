@@ -12,7 +12,7 @@ Where this document conflicts with an ADR, the ADR wins. Where it conflicts with
 **Companion documents:**
 
 - [`openapi.yaml`](./openapi.yaml) — authoritative REST/HTTP surface
-- [`data-model.md`](./data-model.md) — canonical database schema and invariants
+- [`data-model.md`](./data-model.md) — x
 - [`architecture.md`](./architecture.md) — system overview and component descriptions
 - [`requirements.md`](./requirements.md) — functional and non-functional requirements
 - [`ADR-001`](../decisions/ADR-001-coordination-architecture.md) through [`ADR-029`](../decisions/ADR-029-bootstrap-minimum-viable-network.md) — all architectural decisions
@@ -240,6 +240,8 @@ heartbeat. If the token is beyond the 1-hour grace period and refresh fails, the
 must prompt re-registration (full OTP flow) on its local status interface.
 
 **Refer:** ([`ADR-028`](../decisions/ADR-028-provider-heartbeat.md))
+
+---
 
 ### 3.2 Ed25519 Signing Conventions
 
@@ -596,8 +598,7 @@ challenge streams without queuing delay.
 
 - `response_hash` = `SHA-256(chunk_data || challenge_nonce)` — unforgeable without the chunk
 - `provider_sig` covers both the response and the server-set timestamp — prevents replay
-- The provider has NOT recorded the receipt in any local database — the microservice owns
-  the authoritative receipt record
+- The provider has NOT recorded the receipt in any local database — the microservice owns the authoritative receipt record
 
 >**NOTE:** The correctness of response_hash — that it was computed over the actual 256 KB chunk and not fabricated — is guaranteed by the computational hardness of SHA-256 preimage inversion, not by independent microservice verification. Please note the microservice never verifies the response_hash, it knows the chunk_id but not the 256 KB chunk data making the SHA-256(chunk_data || challenge_nonce) unverifiable. It only verifies the Ed25519 signature.
 
@@ -762,6 +763,14 @@ This section specifies the exported interface of every internal package, includi
 build tags and returns a sentinel error in `release` builds. Pre-condition violations are
 always bugs in the caller, not in the callee.
 
+This applies to functions whose signature includes an `error` return. Pure-value-returning
+functions — the HKDF derivation family (`DeriveFileKey`, `DerivePointerEncKey`,
+`DeriveKeystoreEncKey`, `DeriveMasterSecret`, `DeriveDHTOwnerKey`, `DeriveDHTKey`), all of
+which return `[32]byte` with no error channel — always panic on precondition violation, in
+every build mode, since there is no error channel to use instead. This is deliberate: their
+preconditions are fixed-length byte-slice invariants that indicate an unrecoverable caller
+bug, never a runtime/user-input failure.
+
 ---
 
 ### 5.1 `internal/crypto`
@@ -780,7 +789,7 @@ return all outputs as values.
 // See ADR-019 (ChaCha20-256 / AES-256-CTR), ADR-020 (HKDF key hierarchy).
 package crypto
 
-// DeriveAESNIAvailable detects hardware AES-NI support via CPUID (x86) or
+// DetectAESNI detects hardware AES-NI support via CPUID (x86) or
 // equivalent. Called once at daemon startup and stored as a package-level
 // constant. Never re-checked at runtime.
 //
@@ -836,22 +845,40 @@ func DeriveMasterSecret(passphrase, ownerID []byte, argon2Time uint32, argon2Mem
 // Caller responsibility. The microservice and provider daemon must pass profile.Argon2Time, profile.Argon2Memory, and profile.Argon2Threads from the active NetworkProfile. They must never hardcode Argon2id parameters inline. (ADR-031)
 
 
-// EncryptPointerFile encrypts the serialised pointer file plaintext using
-// AEAD_CHACHA20_POLY1305 (RFC 8439, ADR-019).
+// EncryptAEAD encrypts plaintext using AEAD_CHACHA20_POLY1305 (RFC 8439,
+// ADR-019). This is the package's general-purpose AEAD primitive — for any
+// artifact that is NOT the pointer file. EncryptPointerFile (below) is a
+// thin wrapper around this that adds one extra precondition specific to the
+// pointer-file artifact. Callers encrypting anything else (e.g. a provider
+// daemon's local identity key) call EncryptAEAD directly rather than
+// repurposing EncryptPointerFile with an unrelated AAD string.
 //
 // Pre-conditions:
 //   - len(key) == 32
-//   - len(nonce) == 12         (96-bit counter; caller increments BEFORE this call)
-//   - len(aad) > 0             (must include ownerID || fileID || schemaVersion)
+//   - len(nonce) == 12         (caller chooses the nonce strategy appropriate to
+//     the artifact — a monotone counter is not required unless the artifact is
+//     re-encrypted repeatedly under the same key, as the pointer file is)
 // Post-conditions:
 //   - returned ciphertext is len(plaintext)+16 bytes (plaintext + 16-byte Poly1305 tag)
-//   - tag is over ciphertext with the supplied AAD
+//   - tag is over ciphertext with the supplied AAD (aad may be empty)
 // Error semantics: returns error if the underlying cipher construction fails (should
 //   never happen with correct inputs; treat as fatal if it does).
 // Goroutine-safe: yes.
+func EncryptAEAD(key [32]byte, nonce [12]byte, aad, plaintext []byte) ([]byte, error)
+
+// EncryptPointerFile encrypts the serialised pointer file plaintext using
+// AEAD_CHACHA20_POLY1305 (RFC 8439, ADR-019). A thin wrapper around
+// EncryptAEAD (above) that enforces the pointer-file-specific AAD contract.
+//
+// Pre-conditions (in addition to EncryptAEAD's):
+//   - len(nonce) == 12         (96-bit counter; caller increments BEFORE this call)
+//   - len(aad) > 0             (must include ownerID || fileID || schemaVersion)
+// Post-conditions, error semantics, goroutine safety: identical to EncryptAEAD.
 func EncryptPointerFile(key [32]byte, nonce [12]byte, aad, plaintext []byte) ([]byte, error)
 
-// DecryptPointerFile decrypts and verifies a pointer file ciphertext.
+// DecryptAEAD decrypts and verifies a ciphertext produced by EncryptAEAD.
+// General-purpose counterpart to EncryptAEAD — DecryptPointerFile (below) is
+// a direct call-through to this for the pointer-file artifact specifically.
 // CRITICAL: The Poly1305 tag is verified with constant-time comparison before
 // any plaintext is returned. (NFR-019, ADR-019)
 //
@@ -866,6 +893,11 @@ func EncryptPointerFile(key [32]byte, nonce [12]byte, aad, plaintext []byte) ([]
 //   - ErrTagMismatch: tag verification failed; caller MUST NOT use any returned bytes.
 //   - Other errors: internal cipher failure; treat as fatal.
 // Goroutine-safe: yes.
+func DecryptAEAD(key [32]byte, nonce [12]byte, aad, ciphertext []byte) ([]byte, error)
+
+// DecryptPointerFile decrypts and verifies a pointer file ciphertext. A
+// direct call-through to DecryptAEAD (above) — see its doc comment for the
+// full contract, which applies identically here.
 func DecryptPointerFile(key [32]byte, nonce [12]byte, aad, ciphertext []byte) ([]byte, error)
 
 // AONTEncodeSegment applies the All-or-Nothing Transform to a plaintext segment.
@@ -877,10 +909,18 @@ func DecryptPointerFile(key [32]byte, nonce [12]byte, aad, ciphertext []byte) ([
 //   - len(segment) is a multiple of 16 (segment is pre-padded by the caller to 4 MB minimum)
 //   - aesNIAvailable must be the value returned by DetectAESNI() at startup
 // Post-conditions:
-//   - returns the AONT package: (s+1) 16-byte words where s = len(segment)/16
-//   - the last word is K XOR SHA-256(all preceding codewords)
-//   - the second-to-last word is the canary (fixed 16-byte value defined in aont_canary.go)
-//   - K is not returned; it is embedded and inaccessible without assembling all s+1 words
+//   - returns the AONT package of length (s+3)*16 bytes, where s = len(segment)/16:
+//       * words 0..s-1   : the encrypted original data (s words)
+//       * word s          : the encrypted canary (fixed 16-byte value, aont_canary.go)
+//       * final 32 bytes  : K XOR SHA-256(all s+1 preceding ciphertext words) — NOT a
+//                            single 16-byte word; K is 256 bits, so this occupies two
+//                            word-widths, not one (a previous revision of this
+//                            post-condition and of ADR-022 Step 5 said "one word larger
+//                            than the original segment" — the package is in fact three
+//                            word-widths, 48 bytes, larger: one canary word plus one
+//                            32-byte key-embedding block)
+//   - K is not returned; it is embedded and inaccessible without assembling all s+1
+//     ciphertext words plus the final 32-byte key block
 // Error semantics: returns error if crypto/rand fails (treat as fatal).
 // Goroutine-safe: yes.
 func AONTEncodeSegment(segment []byte, aesNIAvailable bool) ([]byte, error)
@@ -889,7 +929,9 @@ func AONTEncodeSegment(segment []byte, aesNIAvailable bool) ([]byte, error)
 // Also verifies the canary word after decryption. (FR-018, ADR-022)
 //
 // Pre-conditions:
-//   - len(aontPackage) >= 32   (must have at least one data word, canary word, key-block)
+//   - len(aontPackage) >= 64   (at least 1 data word + 1 canary word + a
+//     32-byte key block: 2×16 + 32 = 64. 32 bytes alone is just the key
+//     block with zero ciphertext words, which can never be valid.)
 //   - len(aontPackage) is a multiple of 16
 //   - aesNIAvailable must be the value returned by DetectAESNI() at startup
 // Post-conditions (on nil error):
@@ -2082,29 +2124,21 @@ var (
 
 The following import directions are **prohibited**. A PR that introduces any prohibited import must be rejected at review regardless of the stated justification. These constraints exist because the packages involved are either security-critical (no business-logic dependency allowed) or architecturally separated (payment must not depend on repair to avoid cycles through the departure handler).
 
+>**NOTE:** internal/config is universally importable by all packages
+
 | Package | Must NOT import |
 | --- | --- |
 | `internal/crypto` | Any other `internal/` package. This package is purely functional — no shared state, no I/O, no dependency on the data layer. Any utility needed here (e.g. byte comparison) uses the standard library only. |
 | `internal/erasure` | Any other `internal/` package. RS encoding takes bytes in and produces bytes out. It has no knowledge of the storage engine, the network, or the payment system. |
 | `internal/storage` | `internal/payment`, `internal/scoring`, `internal/repair`. The storage engine is unaware of economics or network topology. |
-| `internal/payment` | `internal/repair`, `internal/p2p`. The payment system does not initiate repair or open network connections. It receives instructions from the microservice entrypoint. `internal/scoring` is a deliberate EXCEPTION, not an omission — see below. |
+| `internal/payment` | `internal/repair`, `internal/p2p`. The payment system does not initiate repair or open network connections. It receives instructions from the microservice entrypoint. |
 | `internal/scoring` | `internal/repair`, `internal/payment`. Score computation is read-only against the audit receipt history. It does not trigger repairs or move money. |
-| `internal/repair` | `internal/scoring`, `internal/payment`, `internal/p2p`, `internal/audit`. Repair triggers physical re-replication; it must not read scores, move money, open network connections, or touch audit state directly — it acts only on assignment/departure signals the microservice entrypoint hands it. (Milestone 8 corrections session: this row was missing entirely; `internal/repair`'s own restrictions existed only implicitly, via the closing paragraph below and `.golangci.yml`'s `repair` depguard entry, neither of which is this table.) |
 | `internal/audit` | `internal/scoring`, `internal/repair`, `internal/payment`. The audit package handles challenge generation and receipt writing only. Score updates and repair triggers are the caller's responsibility (the microservice entrypoint orchestrates these after the audit result is written). |
 | Any `internal/client/*` | `cmd/`. Client packages are imported by the CLI entrypoint; they do not import the CLI. |
 
-| Package | Must NOT import | Basis |
-| --- | --- | --- |
-| `internal/secrets` | Any other `internal/` package | Pure API client (ctx + path in, bytes out) — same shape as `crypto`/`erasure` |
-| `internal/cluster` | `internal/audit`, `internal/scoring`, `internal/repair`, `internal/payment`, `internal/storage` | Membership/quorum only; consumed by `cmd/microservice`, not by the four subsystem packages |
-| `internal/metrics` | Any other `internal/` package except `internal/config` (subsystem-name constants only) | Every subsystem imports *into* metrics for instrumentation; the reverse would create cycles |
-| `internal/vettingchunk` | `internal/scoring`, `internal/repair`, `internal/payment` | Already stated inline at `build_part3.md` line 178; promoting it to IC §9 makes it enforceable by the same `depguard` mechanism as everything else instead of living only in a build-plan comment |
+The permitted dependency graph flows in one direction: `cmd/*` → `internal/client/*` → (`internal/crypto`, `internal/erasure`, `internal/p2p`) → no further `internal/` imports. The microservice entrypoint wires `internal/audit`, `internal/scoring`, `internal/repair`, and `internal/payment` together; none of these four packages imports any of the others directly.
 
-**The one explicit exception: `internal/payment` → `internal/scoring`.** Milestone 10's release-multiplier computation (`internal/payment/release.go`) reads a provider's score via `scoring.GetScoreFromPrimary` to apply FR-049's release-multiplier table — a one-way, side-effect-free read with no cycle risk (`internal/scoring` itself is barred from importing `internal/payment`, so no cycle can form through this edge). This is the ONLY permitted cross-import among `internal/audit`, `internal/scoring`, `internal/repair`, and `internal/payment` — see the closing paragraph below. `internal/repair` was considered for the same treatment and deliberately declined: nothing in `internal/repair`'s own logic needs a score, and granting it read access here would blur the "repair acts only on signals it's handed" boundary the row above states.
-
-The permitted dependency graph flows in one direction: cmd/*→ internal/client/* → (internal/config, internal/crypto, internal/erasure, internal/p2p) → no further internal/ imports. The microservice entrypoint wires `internal/audit`, `internal/scoring`, `internal/repair`, and `internal/payment` together; none of these four packages imports any of the others directly, with the single exception of `internal/payment` → `internal/scoring` documented above.
-
-**Enforcement.** The actual mechanism is `golangci-lint`'s `depguard` linter (`.golangci.yml`), configured with a per-package explicit allow-list — every package's `allow` entry is this table's positive-space complement, and any import outside it fails CI. (Milestone 8 corrections session: an earlier revision of this paragraph attributed enforcement to "`go vet ./...` with the import-graph analyser" — `go vet` has no such analyser; that claim did not match anything actually running in CI.) `go build ./...` independently catches circular imports, as a property of the Go compiler, not specific to this table. Both `golangci-lint run` and `go build ./...` are CI required checks. A PR that disables or modifies the `depguard` configuration must be rejected.
+**Enforcement.** `go build ./...` and `go vet ./...` catches circular imports.
 
 ---
 
@@ -2158,7 +2192,7 @@ The following categories are prohibited from the repository. A PR introducing an
 
 **Convergent encryption or K reuse.** Each AONT key K is fresh random per segment by design. Any code path that reuses K across files or segments violates the zero-knowledge property and is a correctness violation.
 
-**References to non-existent ADRs.** References to ADR numbers above the highest-numbered file present in docs/decisions/ADR-*.md at CI time must fail the check. The CI script computes this ceiling by listing the directory — the ceiling is never itself hardcoded in prose, here or anywhere else.
+**References to non-existent ADRs.** References to ADR numbers above the current highest assigned number (currently ADR-038 — derived from the ADR files actually present in `docs/decisions/`; see build.md Session 0.2.2's note on why this must not be hand-copied as a fixed number here) must fail the CI reference check. Stale ADR references create false confidence in decisions that have not been made.
 
 **Hardcoded RBI bank holiday data outside `internal/payment/rbi_holidays.go`.** Holiday dates hardcoded in test files, migration scripts, or deployment configuration bypass the annual update procedure documented in `runbooks/rbi-holiday-table-update.md`.
 
@@ -2298,7 +2332,7 @@ The `dht_key` must be persisted locally by the daemon (e.g., in RocksDB alongsid
 
 ---
 
-## Stale Address Fallback Path
+### 12.3 Stale Address Fallback Path
 
 The DHT is the FALLBACK path, not the primary path. The normal retrieval sequence is:
 
