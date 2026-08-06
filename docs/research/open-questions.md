@@ -220,3 +220,23 @@ the three tiers above — that's a call for whoever owns the next taxonomy pass,
 **Raised by:** Paper 54 (Paraglide JS documentation; ADR-049's plain Svelte + Vite decision)
 **Status:** open
 **Blocked on:** a direct build test once M19 has a real Wails + Svelte project scaffolded — not blocking adoption of the pattern now, since Paraglide's core compiler is documented to work in "any Vite app," only its interaction with Wails' specific Vite wrapping is unconfirmed.
+
+---
+
+- **Q56-1** — What is the maximum extractable payout per fake identity during a full 90-day forced-ceiling vetting run, in currency terms, given real per-audit rates and declared-storage-driven vetting-chunk caps? Blocked on: implementation-level rate constants not sourced in this research pass.
+
+- **Q56-2** — What identity-creation cost (phone/KYC friction) is required to keep expected Sybil-farming value below Q56-1's bound? Blocked on: Q56-1, and real registration-fraud data not available pre-launch.
+
+---
+
+- **Q57-1** — At what point should Vyomanaut re-evaluate true ISP-API integration if/when DEPA's telecom-sector Consent Manager rollout goes live? Blocked on: a regulatory event outside Vyomanaut's control; no fixed timeline exists as of this research pass.
+
+- **Q57-2** — What monitoring policy applies to a provider forced to graduate at the 90-day ceiling with sub-threshold confidence? Blocked on: ADR-008 scoring implementation decision, not yet made.
+
+- **Q57-3** — Does the current ADR-005 implementation already contain an early-exit-on-audit-count path, or is the 120–180 day window applied as a fixed calendar duration regardless of performance? Blocked on: implementation review — the cash-burn comparison in ADR-054 depends on this answer.
+
+---
+
+- **Q58-1** - Does daemon-managed wake-lock require elevated/administrator privileges on any of the three platforms, and does that conflict with ADR-042's least-privilege design for the provider app? Blocked on: implementation-level testing against ADR-042, not performed in this research pass.
+
+---
