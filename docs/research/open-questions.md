@@ -201,4 +201,8 @@ the three tiers above — that's a call for whoever owns the next taxonomy pass,
 
 ---
 
+### Q53-1 — Two independent verifications gate ADR-051's plan: (1) does Vyomanaut's NSIS installer complete via the `/S` silent flag without a UAC elevation prompt, and (2) has Wails v3's built-in updater actually landed in a tagged release, not just a development branch?
 
+**Raised by:** Paper 53 (Wails v3 updater docs; Tailscale issue tracker; wailsapp/updater-demo)
+**Status:** open
+**Blocked on:** (a) a direct test of Vyomanaut's own NSIS installer configuration run silently via `/S` — gates Phase 1, needed before it ships, not just before it's considered complete; (b) confirming the Wails v3 updater has merged into a tagged release rather than remaining on a branch — gates Phase 2's migration timing. Neither blocks the other.
