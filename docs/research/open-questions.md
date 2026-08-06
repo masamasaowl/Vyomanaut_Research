@@ -124,7 +124,7 @@ Valid questions explicitly out of scope for V2. Each references the V3 milestone
 
 ---
 
-## Additional Open Questions (Papers 42–49)
+## Additional Open Questions
 
 Raised during the later literature-review pass (BOINC through BadgerDB). Not yet triaged into
 the three tiers above — that's a call for whoever owns the next taxonomy pass, not assumed here.
@@ -185,6 +185,20 @@ the three tiers above — that's a call for whoever owns the next taxonomy pass,
 
 ---
 
-*Q47-1 (Paper 47, Rosenblat & Stark — how much of the reliability-score/payout-multiplier formula*
-*to disclose) is no longer listed here: it closed against ADR-045 and now lives in*
-*`answered-questions.md`.*
+### Q51-1 — Does Svelte's runtime-footprint advantage over React/Vue, established by js-framework-benchmark in a generic Chromium environment, hold when measured directly inside a Wails-packaged WebView2 host?
+
+**Raised by:** Paper 51 (js-framework-benchmark / Wails template docs)
+**Status:** open
+**Blocked on:** nothing actionable now — WebView2 is itself Chromium-family, so the qualitative ranking is expected to transfer. This is a watch item to re-verify empirically once M19 has a real build to profile, not a pre-decision blocker.
+
+---
+
+### Q52-1 — Does the Wails/WebView2 accessibility-tree bridge work correctly end-to-end (screen reader announces content, keyboard focus lands in the webview on window activation) in an actual packaged Windows build, not just in the underlying pieces individually?
+
+**Raised by:** Paper 52 (RPwD Act 2016 / IS 17802 / GIGW 3.0; WebView2Feedback#2330; wailsapp/wails#4535)
+**Status:** open
+**Blocked on:** a direct Windows Narrator smoke test against a real packaged build — scheduled as part of ADR-050's baseline, due before the M19 shared component library is considered done. Not a pre-launch blocker on its own: the underlying WebView2 focus bug is already confirmed fixed upstream (Windows App SDK 1.5), and only the Wails-specific hosting path remains unverified.
+
+---
+
+
