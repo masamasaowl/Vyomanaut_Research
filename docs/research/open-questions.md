@@ -206,3 +206,11 @@ the three tiers above — that's a call for whoever owns the next taxonomy pass,
 **Raised by:** Paper 53 (Wails v3 updater docs; Tailscale issue tracker; wailsapp/updater-demo)
 **Status:** open
 **Blocked on:** (a) a direct test of Vyomanaut's own NSIS installer configuration run silently via `/S` — gates Phase 1, needed before it ships, not just before it's considered complete; (b) confirming the Wails v3 updater has merged into a tagged release rather than remaining on a branch — gates Phase 2's migration timing. Neither blocks the other.
+
+---
+
+### Q54-1 — Does the Paraglide JS Vite plugin integrate cleanly with Wails' own build pipeline (`wails build`, which wraps Vite) for a plain Svelte + Vite project, rather than the SvelteKit setup its documentation assumes?
+
+**Raised by:** Paper 54 (Paraglide JS documentation; ADR-049's plain Svelte + Vite decision)
+**Status:** open
+**Blocked on:** a direct build test once M19 has a real Wails + Svelte project scaffolded — not blocking adoption of the pattern now, since Paraglide's core compiler is documented to work in "any Vite app," only its interaction with Wails' specific Vite wrapping is unconfirmed.
