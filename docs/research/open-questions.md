@@ -240,3 +240,17 @@ the three tiers above — that's a call for whoever owns the next taxonomy pass,
 - **Q58-1** - Does daemon-managed wake-lock require elevated/administrator privileges on any of the three platforms, and does that conflict with ADR-042's least-privilege design for the provider app? Blocked on: implementation-level testing against ADR-042, not performed in this research pass.
 
 ---
+
+### Q59-1 — Should Vyomanaut adopt automatic, continuously re-evaluated Hot/Cold band re-classification (HALO/Zebra's dynamic model), or keep the current one-time, data-owner-declared band choice indefinitely?
+
+**Raised by:** Paper 59 (HALO), Paper 60 (Zebra)
+**Status:** open — architectural decision, not a research gap
+**Blocked on:** a product/scope call, not further literature. Dynamic re-tiering requires new infrastructure (per-file access-rate metering at the coordination microservice, a re-tiering trigger, and accepting the re-encode cost of moving between bands whenever hotness drifts) that does not exist today and was never scoped into V2 or the current V3 plan. Static declaration is simpler to ship and matches the existing enrolment flow (ADR-018); dynamic re-tiering would deliver better long-run fit to real access patterns at meaningful added complexity. Recommend deferring to V4+ unless data owners report the static choice mismatching their actual usage in practice.
+
+---
+
+### Q61-1 — Does Vyomanaut's client retrieval path (data owner or auditor reading chunks back) currently request more than the minimum `k=16` shards in parallel, or does it request exactly 16 and block on the slowest response?
+
+**Raised by:** Paper 61 (POCache)
+**Status:** open
+**Blocked on:** implementation review of the client SDK / retrieval protocol (not yet reached in the dependency-ordered research plan — filed under Topic #12, Tier 4). If retrieval already over-requests, RS(16,56)'s 40-shard surplus likely already delivers most of POCache's straggler-tolerance benefit for free, with no new caching infrastructure required. If not, this is a low-cost latency win worth scoping before considering any caching-tier approach.
