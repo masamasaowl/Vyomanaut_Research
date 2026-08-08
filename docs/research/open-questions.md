@@ -254,3 +254,64 @@ the three tiers above — that's a call for whoever owns the next taxonomy pass,
 **Raised by:** Paper 61 (POCache)
 **Status:** open
 **Blocked on:** implementation review of the client SDK / retrieval protocol (not yet reached in the dependency-ordered research plan — filed under Topic #12, Tier 4). If retrieval already over-requests, RS(16,56)'s 40-shard surplus likely already delivers most of POCache's straggler-tolerance benefit for free, with no new caching infrastructure required. If not, this is a low-cost latency win worth scoping before considering any caching-tier approach.
+
+---
+
+### Q62-1 — Under ADR-004's `r0 = 8`, does Vyomanaut ever perform a single-fragment repair — and if so, what fraction of repair events are they?
+
+**Raised by:** Paper 62 (LESS), Paper 64 (Hitchhiker)
+**Status:** open — **blocks ADR-026's design-council session**
+**Blocked on:** first, resolving the ADR-004 trigger-flow ambiguity (Q26-4): steps 3–4 gate all repair on `available count ≤ 24`, but the scheduler-priority paragraph treats permanent-departure jobs as a distinct queued class, which reads as an independent trigger. If everything gates on `≤ 24`, single-fragment repair events are ~0% by construction and every candidate family in ADR-026 delivers a 0% saving — the code-family question then has no value and ADR-026 should close as *no V3 repair-BW optimisation*. If permanent departure enqueues repair independently, single-fragment events exist and the question becomes what fraction, which needs a churn model (Domain D, currently stale).
+
+Note that this is a **specification** question first and a measurement question second. The specification half is answerable now, from ADR-004's own text plus a decision; only the fraction needs data.
+
+---
+
+### Q62-2 — Do MDS-feasible LESS coding coefficients exist at `n−k = 40`, and in which Galois field?
+
+**Raised by:** Paper 62 (LESS)
+**Status:** open — conditional on Q62-1 resolving in favour of a code-family change
+**Blocked on:** a brute-force search that no published work has run. LESS's sufficient condition is `2^w ≥ nα + (n−k−1)·C(n−1,k)`; at `(56,16)`, `C(55,16) ≈ 2.97 × 10¹³`, so the condition demands `w ≥ 50`. The condition is only sufficient and the authors report smaller fields working in practice, but their table of feasible primitive elements covers only `n−k ≤ 4` and `2 ≤ α ≤ 4`. Independently, `α = 4` requires 224 distinct non-zero coefficients against GF(2⁸)'s 255, so GF(2¹⁶) is the realistic floor — which is a codec change, not a parameter change, and would invalidate any throughput measurement taken under Q65-1 before it.
+
+Do not start this search before Q62-1 is settled. It is expensive and it is worthless if the answer to Q62-1 is that single-fragment repair never happens.
+
+---
+
+### Q63-1 — What is the departure-persistency of RS(16,56) under *correlated* rather than independent departure at `N ∈ [56, 500]`?
+
+**Raised by:** Paper 63 (Friedman, Kapelko & Marchwicki)
+**Status:** open — this is F-28, now with an exact baseline to measure the gap against
+**Blocked on:** literature the corpus does not have (Domain E: R-16 correlated-failure durability at small scale, R-18 AS-level outage duration and blast radius). Paper 63 assumes departures are independent and uniformly random and does not relax it. The exact independent-case answer at the ADR-029 gate is 41 of 56 departures; the worst-case ASN substitution in ADR-029 Addendum A gives survival of any 3 of 5 simultaneous ASN losses. The distance between those two framings is the whole of F-28, and it is now bounded rather than unknown.
+
+---
+
+### Q63-2 — Does the persistency analysis extend to a mixed Hot/Cold redundancy population, and if not, what replaces it?
+
+**Raised by:** Paper 63 §5.1
+**Status:** open — becomes live only if ADR-018 ships two bands with different `(k, r)`
+**Blocked on:** unsolved in the source. The authors sketch the non-uniform case — `D_i` documents under `REC(p_i, p_i+q_i, r_i)` — and state that closed-form and asymptotic results for the mixture need further theoretical work. ADR-018's Hot/Cold band model is exactly that case. Whatever `k_hot` is eventually derived (itself a calculation awaiting SLA targets, not a research item), the departure-persistency analysis will not extend to the two-band system without new work. Not blocking: ADR-018 is unshipped and Q59-1 (whether Vyomanaut wants band re-tiering at all) is upstream of this.
+
+---
+
+### Q64-1 — Does Hitchhiker's mandatory-helper structure interact badly with ADR-005 assignment and ADR-014's ASN cap?
+
+**Raised by:** Paper 64 (Hitchhiker)
+**Status:** open — conditional on Q62-1, low priority
+**Blocked on:** nobody has looked. Hitchhiker's three-step decode requires the second sub-stripe of the *first* parity unit for every data-unit reconstruction, and the second sub-stripe of the `(j+1)`-th parity for a data unit in set `j`. Vyomanaut's placement currently treats all 56 shard positions as interchangeable; under Hitchhiker, specific parity positions become mandatory helpers for specific data positions. If the holder of parity 1 is unreachable — a routine event under ADR-021's NAT and relay constraints — the optimised path is unavailable and repair falls back to plain RS. Whether the 20% ASN cap's placement freedom is sufficient to keep mandatory helpers reliably reachable has not been analysed. Only matters if Hitchhiker is selected, which on current evidence is unlikely (LESS outranks it at our parameters, and both are zeroed by `r0 = 8`).
+
+---
+
+### Q65-1 — What is RS(16,56)'s actual encode and decode throughput on min-spec Indian desktop hardware?
+
+**Raised by:** Paper 65 (BiLP-BX), Paper 62 (LESS)
+**Status:** open — **F-27's remaining half; blocks restoring ADR-009's ≤5% CPU claim**
+**Blocked on:** a measurement nobody has taken. Paper 65 gives the first data point in the corpus — 258 MB/s for production Cauchy-RS at `(k=10, m=4)`, single-threaded, no SIMD, on an Intel i5-13600KF — and shows throughput falling superlinearly in `k·m`. Vyomanaut's `k·m = 640` is **16× the largest configuration ever benchmarked in that set**, so extrapolation is not available: a power-law fit taken 16× beyond its support, from a paper whose own instruction-count and throughput axes disagree by a factor of 20, is not an estimate.
+
+Three measurements are required, and only the last two bear on ADR-009's budget:
+
+1. RS(16,56) encode throughput, Vyomanaut's own Go codec, min-spec Indian desktop, `lf = 256 KB`, cold cache. *(This is client-side upload latency and belongs to an NFR that does not yet exist.)*
+2. Decode-plus-re-encode throughput for a **32-fragment repair event** — the ADR-004 case, and the only genuinely unbudgeted item in ADR-009.
+3. Wall-clock and CPU share for one full repair event on a provider simultaneously serving audits.
+Two things are already settled by calculation and need no measurement: SHA-256 over 70 GB/day costs at most 0.54% of one core (0.054% with SHA-NI), so the audit path is **cheap in CPU and expensive in disk** — confirming F-40's framing and removing a worry that was never the real one. Any measurement taken now must be re-taken if ADR-026's council session adopts LESS, which cuts encode throughput ~43% and widens the field to GF(2¹⁶).
+
+---
