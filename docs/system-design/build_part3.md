@@ -1188,6 +1188,7 @@ UNIT_TESTS:
 ## Milestone 14 — Vetting & Synthetic Chunks (`internal/vettingchunk`)
 
 **Deliverable:** synthetic-chunk lifecycle — generation, upload, GC delivery on ACTIVE transition, departure cleanup. Enforces Invariant 6 end-to-end.
+
 **Reference:** IC §5.10 (`Generator`, `GCDelivery`, sentinels), IC §4.5 (client side), DM §3 Invariant 6, DM §4.5. Import scope (IC §9): `internal/vettingchunk → config, crypto, storage, p2p` (+ `metrics` if A2/Option A is adopted).
 
 ---
