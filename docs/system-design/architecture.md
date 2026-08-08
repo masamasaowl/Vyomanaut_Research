@@ -2,9 +2,9 @@
 
 **Version:** 1.0  
 **Status:** Pre-Build phase.  
-**Authors:** https://github.com/masamasaowl  
+**Authors:** <https://github.com/masamasaowl>  
 **Last updated:** May 2026  
-**Repository:** https://github.com/masamasaowl/Vyomanaut_Research  
+**Repository:** <https://github.com/masamasaowl/Vyomanaut_Research>  
 **Decisions index:** `docs/decisions/README.md`  
 **Research index:** `docs/research/reading-list.md`
 
@@ -15,7 +15,7 @@
 ## Terminology and Glossary
 
 | Term | Definition |
-|---|---|
+| --- | --- |
 | **AONT** | All-or-Nothing Transform. An encryption scheme where the key K is embedded in the ciphertext and can only be recovered by assembling all codewords. Used before erasure coding so that possessing fewer than k=16 fragments reveals nothing. |
 | **ASN** | Autonomous System Number. Identifies an ISP or network operator. The 20% ASN cap ensures no correlated provider group holds more than ~11 of 56 fragments of any file. |
 | **BWavg** | Steady-state repair bandwidth per provider (Kbps). Computed via Giroire Formula 1. Target: <= 100 Kbps. At MTTF=300d, ~39 Kbps. |
@@ -116,32 +116,39 @@ These are explicit design decisions, each with a documented reason. Building aro
 These are the non-functional requirements that drove architectural decisions. They reveal how research improved the project.
 
 ### Durability
+
 **Target:** Data loss rate < 10⁻¹⁵ per year per file.  
 **How achieved:** Reed-Solomon RS(16, 56) with lazy repair at r0=8. At the target MTTF of 300 days per provider, the Giroire formula gives an actual loss rate of approximately 10⁻²⁵ per year — ten orders of magnitude below the target. The 20% ASN cap is a co-requisite: without it, correlated failures invalidate the calculation. ([ADR-003](../decisions/ADR-003-erasure-coding.md), [ADR-014](../decisions/ADR-014-adversarial-defences.md))
 
 ### Availability
+
 **Target:** File retrievable at any time as long as 16 of 56 fragment holders are reachable.  
 **How achieved:** 40 parity fragments above the reconstruction threshold. A file is accessible even if 40 providers simultaneously fail. At the target MTTF, the probability of 40 simultaneous failures is negligible.
 
 ### Repair bandwidth
+
 **Target:** ≤ 100 Kbps per provider of background upload bandwidth.  
 **Actual:** ~39 Kbps per provider at MTTF = 300 days.  
 **How achieved:** Lazy repair defers reconstruction until redundancy drops to r0=8 above the reconstruction floor. This produces approximately 38× lower bandwidth than reacting to every failure immediately. ([ADR-004](../decisions/ADR-004-repair-protocol.md))
 
 ### Audit response latency
+
 **Target:** Each provider responds to an audit challenge within `(chunk_size / p95_measured_upload_speed) × 1.5`.  
 **Typical value:** ~614 ms for a provider with 5 Mbps declared upload throughput.  
 **Why it matters:** This deadline makes just-in-time retrieval attacks infeasible — a provider cannot fetch the data from somewhere else and respond in time. ([ADR-014](../decisions/ADR-014-adversarial-defences.md))
 
 ### Microservice availability
+
 **Target:** No single microservice replica failure interrupts service.  
 **How achieved:** Three replicas with a (3, 2, 2) quorum. One replica can fail; reads and writes continue with the remaining two. ([ADR-025](../decisions/ADR-025-microservice-consistency-mechanism.md))
 
 ### Background CPU usage
+
 **Target:** ≤ 5% of CPU and background I/O from the data owner device and provider daemon.  
 **How achieved:** WiscKey storage engine keeps write amplification at ~1.0 for 256 KB chunks for the Provider. And ChaCha20 AONT encoding completes in ~186 ms per 14 MB segment for Data Owners on hardware without AES acceleration. ([ADR-009](../decisions/ADR-009-background-execution.md), [ADR-023](../decisions/ADR-023-provider-storage-engine.md))
 
 ### Zero-knowledge storage
+
 **Target:** The service and its operators must never be able to read any stored data.  
 **How achieved:** All encryption happens on the data owner's device before upload. The microservice stores only the encrypted ciphertext of pointer files. Providers store only encrypted fragments. No party in the coordination or audit path holds a decryption key. ([ADR-019](../decisions/ADR-019-client-side-encryption.md), [ADR-022](../decisions/ADR-022-encryption-erasure-order.md))
 
@@ -150,7 +157,7 @@ These are the non-functional requirements that drove architectural decisions. Th
 ## 4. Technology Stack
 
 | Layer | Technology | Why |
-|---|---|---|
+| --- | --- | --- |
 | Microservice language | Go | Concurrent, low-overhead, good libp2p support |
 | Provider daemon language | Go | Same binary can support future cross-platform builds |
 | Microservice database | PostgreSQL | Append-only INSERT-only audit log; CRDT-compatible escrow ledger; row security policy enforcement |
@@ -185,7 +192,7 @@ the milestone noted.
 #### Go ≥ 1.22
 
 | Rejected alternative | Reason |
-|---|---|
+| --- | --- |
 | Rust | goroutine model maps more naturally to the concurrent challenge-dispatch and single-writer vLog workload; existing team fluency |
 | Python / JavaScript | Cannot satisfy NFR-009 (AONT encode ≤ 200 ms per 14 MB segment without AES-NI) or NFR-008 (audit lookup p99 ≤ 100 ms) |
 | Java / JVM | GC pauses can cause audit RTO violations; JVM warm-up incompatible with daemon auto-start (ADR-009) |
@@ -202,7 +209,7 @@ require protocol or data-model changes.
 `NULLS NOT DISTINCT` syntax (required in `chunk_assignments`) is only available from PG 15.
 
 | Rejected alternative | Reason |
-|---|---|
+| --- | --- |
 | MySQL / MariaDB | Row-level security policies (enforcing INSERT-only on `audit_receipts` and `escrow_events`) are PostgreSQL-specific; without them Invariants 1–2 cannot be enforced at the DB layer |
 | CockroachDB | Operational complexity with no benefit at V2 scale; the 6 coordinated operations route through a single payment service, not distributed SQL |
 | MongoDB | Append-only CRDT ledger requires reliable INTEGER arithmetic and UNIQUE constraint enforcement — mismatched to MongoDB's document model |
@@ -219,7 +226,6 @@ application layer.
 
 ---
 
-
 ---
 
 #### libp2p / go-libp2p
@@ -229,7 +235,7 @@ Version pin: TBD — pin before M3 closes. The custom DHT key validator
 is a CI required check (interface-contracts.md §12).
 
 | Rejected alternative | Reason |
-|---|---|
+| --- | --- |
 | Raw QUIC + custom peer discovery | NAT traversal, hole-punching, relay coordination, and cryptographic peer identity must be built from scratch; libp2p is production-proven at IPFS and Filecoin scale |
 | gRPC over HTTP/2 | No connection migration; TCP head-of-line blocking; no built-in NAT traversal; DHCP lease rotation on Indian ISPs makes connection migration a first-class requirement |
 | Custom DHT | S/Kademlia parameters (k=16, α=3, disjoint lookups) are already implemented in `go-libp2p-kad-dht`; re-implementing adds correctness risk with no gain |
@@ -246,7 +252,7 @@ from scratch.
 #### QUIC v1 (RFC 9000) — primary transport
 
 | Rejected alternative | Reason |
-|---|---|
+| --- | --- |
 | TCP as primary | Head-of-line blocking stalls all 56 parallel shard streams on a single lost packet; no connection migration when provider IP changes due to DHCP rotation |
 | HTTP/3 framing on QUIC | Unnecessary header overhead; libp2p's binary chunk protocol is used directly over QUIC streams |
 
@@ -260,7 +266,7 @@ eliminates HOL blocking across 56 parallel upload streams per segment.
 #### TCP + Noise XX + yamux — fallback transport
 
 | Rejected alternative | Reason |
-|---|---|
+| --- | --- |
 | TLS over TCP | Noise XX provides identical cryptographic properties (mutual auth, forward secrecy) with simpler P2P semantics; libp2p has a production-hardened implementation |
 | Plain TCP (no multiplexing) | 56 parallel streams would require 56 simultaneous TCP connections per segment upload |
 
@@ -276,7 +282,7 @@ Cipher is detected at daemon startup via CPUID and stored as a package-level con
 re-checked at runtime. Version pin for `golang.org/x/crypto`: TBD — pin before M1 closes.
 
 | Rejected alternative | Reason |
-|---|---|
+| --- | --- |
 | AES-only on all hardware | Software AES on no-AES-NI hardware: 24–42 MB/s vs ChaCha20's 75–131 MB/s; table-lookup AES has cache-timing vulnerability without hardware |
 | RC4-128 + MD5 ("fast" AONT-RS config) | RC4 is cryptographically broken (RFC 7465, 2015); this is the explicitly insecure configuration in Paper 16; must never be adopted |
 | Single cipher everywhere (ChaCha20 only) | AES-256-CTR on AES-NI hardware achieves ~900 MB/s vs ~75–131 MB/s; the CPUID check at startup costs nothing |
@@ -294,7 +300,7 @@ produces identical keystreams.
 Version pin for `golang.org/x/crypto/chacha20poly1305`: TBD — pin before M1 closes.
 
 | Rejected alternative | Reason |
-|---|---|
+| --- | --- |
 | AES-256-GCM | 3–4× slower on no-AES-NI hardware; GHASH has known constant-time issues in some software implementations; Poly1305 is constant-time on all hardware with no hardware dependency |
 | NaCl secretbox (XSalsa20-Poly1305) | RFC 8439 is the current standard; `golang.org/x/crypto/chacha20poly1305` is a direct standard library; NaCl adds indirection |
 
@@ -310,7 +316,7 @@ Version pin: TBD — pin before M1 closes. Must be vendored if API breaking chan
 detected in a minor release.
 
 | Rejected alternative | Reason |
-|---|---|
+| --- | --- |
 | Clay codes (MSR) | Sub-packetisation at (n=56, k=16): α ≥ 40^16 — computationally intractable (Paper 22, Q19-2); removed as V3 candidate |
 | LRC (Azure-style) | Non-MDS; local group co-locality cannot be guaranteed in a consumer P2P network; repair benefit collapses to RS-level in the worst case |
 | Custom GF(2^8) implementation | `klauspost/reedsolomon` is production-hardened with SIMD (AVX-512, AVX2, NEON); re-implementing GF arithmetic introduces correctness risk |
@@ -330,7 +336,7 @@ Version pin for `golang.org/x/crypto` (covers both hkdf and argon2): TBD — pin
 closes.
 
 | Rejected alternative | Reason |
-|---|---|
+| --- | --- |
 | PBKDF2 for operational keys | PBKDF2 is designed for password-based derivation (high cost); HKDF is the correct primitive for fast deterministic domain-separated derivation from an already-strong secret (RFC 5869) |
 | Raw SHA-256 for key derivation | No domain separation; vulnerable to length-extension attacks; HKDF `info` parameter provides cryptographic domain separation between file keys and pointer keys |
 | scrypt for master secret | Argon2id won the Password Hashing Competition (2015); OWASP recommends Argon2id over scrypt for new systems |
@@ -347,7 +353,7 @@ documented in ADR-020.
 #### Ed25519 — digital signatures (`crypto/ed25519`, stdlib)
 
 | Rejected alternative | Reason |
-|---|---|
+| --- | --- |
 | ECDSA (P-256) | Requires a random nonce per signature; nonce reuse is catastrophic (private key recovery); Ed25519 uses a deterministic nonce — no RNG in the signing path |
 | RSA-2048/4096 | Signatures are 256–512 bytes vs Ed25519's 64 bytes; at millions of audit receipts per year the storage difference is significant; RSA key generation is orders of magnitude slower |
 | BLS signatures | BLS aggregation complexity is not justified at V2 scale; Ed25519 is directly available in the Go standard library |
@@ -366,13 +372,14 @@ Go SDK version: pin before M6 closes. All payment logic is isolated behind the
 business logic.
 
 | Rejected alternative | Reason |
-|---|---|
+| --- | --- |
 | Stripe Connect | Per-transaction fee; settlement takes days vs UPI's seconds; requires Stripe account (friction for Indian providers); planned as future international-gateway implementation of `PaymentProvider` |
 | Cryptocurrency | Price volatility; high onboarding friction; Swarm SWAP structural failure confirmed (Paper 07); bandwidth-as-currency is structurally incompatible with Vyomanaut's asymmetric model |
 | Razorpay Escrow+ | Requires NBFC registration and trustee approval Vyomanaut does not qualify for; Route `on_hold_until` provides the equivalent primitive (Paper 35) |
 | Manual bank transfers | No programmatic payout API; no idempotency support; cannot satisfy FR-047 or FR-048 |
 
 **Mandatory compliance notes (non-optional).**
+
 - UPI Collect deprecated by NPCI 28 Feb 2026 — all deposit flows must use UPI Intent or QR (NFR-029).
 - `X-Payout-Idempotency` header mandatory since 15 Mar 2025 (NFR-030, ADR-012).
 - RBI bank holiday table updated in every December deployment (NFR-031).
@@ -394,7 +401,7 @@ All three support per-path versioning (`/vyomanaut/audit-secret/v{N}`) and IAM-g
 The microservice accesses via the `SecretsManagerClient` interface (interface-contracts.md §8).
 
 | Rejected alternative | Reason |
-|---|---|
+| --- | --- |
 | Environment variables | Not versioned; cannot model the 24-hour rotation overlap window (ADR-027 §4); visible in process listings |
 | Per-replica local secret files | Cannot be updated across all three replicas atomically; no audit trail for access |
 | `VYOMANAUT_CLUSTER_MASTER_SEED` env var | Permitted in development and simulation mode only; presence in production is a critical misconfiguration caught by the startup check |
@@ -412,7 +419,7 @@ switching requires ~50 lines of Go, not application logic changes.
 Prometheus exporter and `prometheus/client_golang` versions: pin before M8 closes.
 
 | Rejected alternative | Reason |
-|---|---|
+| --- | --- |
 | Datadog / New Relic | Per-host per-month cost scales with provider count; SaaS APM agents cannot be installed on provider machines without violating the minimal-footprint requirement |
 | OpenTelemetry only | Collection standard, not a storage backend; adds indirection at launch without gain |
 | Logging only | Operational alerts (repair queue depth, TIMEOUT rate, content hash failures, replica count) require time-series data with threshold evaluation |
@@ -427,7 +434,7 @@ or Grafana Cloud requires re-pointing the scrape endpoint only.
 ### 4.2 Stack Lock-in Risk Summary
 
 | Technology | Lock-in | Migration cost | Notes |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | Go | Low | Medium | Interfaces are stable; language rewrite does not require protocol or data-model changes |
 | PostgreSQL | Medium | High | Row security policies and CRDT ledger encode business logic at DB layer |
 | RocksDB + vLog | Medium | Medium | vLog format documented; GC and crash-recovery code is bounded in scope |
@@ -483,7 +490,7 @@ The system has six first-class components and three external dependencies.
 **First-class components:**
 
 | Component | Runs on | Primary responsibility |
-|---|---|---|
+| --- | --- | --- |
 | Coordination microservice | Cloud VMs (3 replicas) | Registration, audit scheduling, payment, repair orchestration |
 | Provider daemon | Provider desktop / NAS | Chunk storage, audit response, heartbeat |
 | Data owner client | Data owner's device | Encryption, encoding, upload, retrieval |
@@ -494,7 +501,7 @@ The system has six first-class components and three external dependencies.
 **External dependencies:**
 
 | Dependency | Purpose | Failure impact |
-|---|---|---|
+| --- | --- | --- |
 | Razorpay Route + Smart Collect 2.0 | Provider payment releases and data owner deposits | Payment releases pause; audits and storage continue unaffected |
 | Secrets manager | Cluster audit secret distribution | Microservice replicas cannot start; existing instances continue running with cached secret |
 | Indian ISP infrastructure | Connectivity between providers and data owners | Covered by 40-fragment parity and 3-region relay deployment |
@@ -506,7 +513,7 @@ The system has six first-class components and three external dependencies.
 This table defines what each component is and is not trusted to do. It determines where verification must happen rather than trust.
 
 | Component | Trusted for | Not trusted for |
-|---|---|---|
+| --- | --- | --- |
 | Coordination microservice | Audit scheduling, payment computation, chunk assignment, audit result recording | Reading file contents; holding decryption keys; self-reporting its own correctness (V3 Merkle Log addresses this) |
 | Provider daemon | Storing the chunk it was assigned and responding to challenges | Reporting its own reliability; self-certifying throughput; knowing what other providers hold |
 | Data owner client | Encrypting correctly before upload; holding the pointer file | Providing correct audit results; knowing which providers hold which fragments |
@@ -523,7 +530,7 @@ This table defines what each component is and is not trusted to do. It determine
 The system refuses upload requests until all of the following conditions are simultaneously true. The assignment service re-evaluates every 60 seconds and exposes the state at `GET /api/v1/admin/readiness`. ([ADR-029](../decisions/ADR-029-bootstrap-minimum-viable-network.md))
 
 | Condition | Threshold | Reason |
-|---|---|---|
+| --- | --- | --- |
 | Active vetted providers | ≥ 56 | RS(16, 56) requires exactly 56 distinct shard holders per file |
 | Distinct ASNs in active pool | ≥ 5 | With fewer than 5 ASNs, one ASN necessarily holds > 20% — the cap is unenforceable |
 | Distinct Indian metro regions | ≥ 3 | Geographic baseline: Delhi NCR, Mumbai, and one southern metro |
@@ -585,7 +592,7 @@ The following parameters are **not** in `NetworkProfile` because they must be id
 The table below answers "can Vyomanaut staff read my files?" for every plausible attack path. It is the single reference for security reasoning during code review.
 
 | Threat | What limits it | ADR |
-|---|---|---|
+| --- | --- | --- |
 | Operator or microservice reads stored files | The AONT key K is never transmitted to or stored by the microservice. K is recoverable only by assembling k=16 fragments from providers. The microservice holds only encrypted pointer file ciphertext it cannot decrypt. | [ADR-019](../decisions/ADR-019-client-side-encryption.md), [ADR-022](../decisions/ADR-022-encryption-erasure-order.md) |
 | Compromised provider reads files it does not hold | A provider holds one of 56 fragments. Decrypting any word requires K. K requires all s+1 AONT codewords. A single fragment reveals nothing. | [ADR-022](../decisions/ADR-022-encryption-erasure-order.md) |
 | Compromised provider reads files it does hold (k=16 threshold breach) | The 20% ASN cap ensures no correlated group holds more than ~11 of 56 fragments. Collusion at or below 11 providers cannot reach the k=16 threshold. | [ADR-014](../decisions/ADR-014-adversarial-defences.md) |
@@ -611,7 +618,7 @@ A fresh random 256-bit key K is generated for the segment. The AONT (All-or-Noth
 
 1. Append a fixed-value 16-byte canary word to the segment.
 2. Generate K = SecureRandom(256 bits).
-3. For each 16-byte word d_i in the segment: 
+3. For each 16-byte word d_i in the segment:
       - ChaCha20 path:  `c_i = d_i XOR ChaCha20_keystream_word(K, block=⌊i/16⌋, offset=i%16)`
       - AES-CTR path:  `c_i = d_i XOR AES-256-ECB(K, i+1)    // counter starts at i+1 per AONT-RS spec.`
 4. Compute the commitment hash: `h = SHA-256(c_0 || c_1 || ... || c_s)`.
@@ -665,6 +672,7 @@ passphrase + owner_id
 The AONT key K is not in this hierarchy. It is embedded in the erasure-coded fragments and recovered automatically when k=16 fragments are assembled. The data owner never manages K directly.
 
 Recovery paths:
+
 - **Device loss, passphrase known:** Re-derive master_secret; download and decrypt pointer file ciphertext from microservice. Full recovery.
 - **Device loss, no passphrase, BIP-39 mnemonic available:** Reconstruct master_secret from mnemonic. Same as above.
 - **All credentials lost:** Permanent, unrecoverable data loss. This must be clearly disclosed at onboarding.
@@ -688,6 +696,7 @@ Recovery paths:
 ### During operation
 
 The provider daemon continuously:
+
 - Sends a heartbeat every 4 hours to the microservice with its current network addresses
 - Receives audit challenge messages daily for each stored chunk
 - Responds to challenges within the per-provider deadline
@@ -700,10 +709,10 @@ The provider daemon continuously:
 Four exit states with distinct triggers and financial consequences. ([ADR-007](../decisions/ADR-007-provider-exit-states.md))
 
 | State | Condition | Repair triggered | Escrow outcome |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | Temporary absence | Absent < 72 h, no notice | No | Score decremented per polling cycle |
 | Promised downtime | Absence declared in advance | No — wait for promised period | Fine deducted if promise broken |
-| Silent departure (VETTING)| Absent ≥ 72 h, no announcement, `status = VETTING` | No — all assignments are synthetic vetting chunks; no repair jobs enqueued; chunks discarded | All held escrow seized; provider marked `DEPARTED` |
+| Silent departure (VETTING) | Absent ≥ 72 h, no announcement, `status = VETTING` | No — all assignments are synthetic vetting chunks; no repair jobs enqueued; chunks discarded | All held escrow seized; provider marked `DEPARTED` |
 | Silent departure (ACTIVE) | Absent ≥ 72 h, no announcement, `status = ACTIVE` | Immediately | All held escrow seized for repair fund |
 | Announced departure | Provider explicitly notified | Immediately (real chunks only; synthetic chunks discarded) | Held escrow released proportionally |
 
@@ -732,7 +741,7 @@ libp2p handles peer identity, connection establishment, NAT traversal, stream mu
 ### NAT traversal — three tiers
 
 | Tier | Protocol | Applies to | Notes |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | 1 | AutoNAT | All providers at connect | Classifies: publicly reachable / cone NAT (punchable) / symmetric NAT (relay required) |
 | 2 | DCUtR (Direct Connection Upgrade through Relay) | Cone NAT — common on Indian home routers | Relay coordinates simultaneous dial from both sides. 97.6% of successes happen on the first attempt. Retry count set to 1 (not the libp2p default of 3). |
 | 3 | Circuit Relay v2 | Symmetric NAT — approximately 30% of providers | All traffic routed through a Vyomanaut-operated relay. Relay overhead < 50 ms for Indian cloud-hosted relays; fits within audit deadline. |
@@ -748,7 +757,7 @@ Each provider daemon generates an Ed25519 key pair at installation. The libp2p P
 The Kademlia DHT handles chunk-address lookup (finding which provider holds which fragment). It does not handle provider discovery — that goes through the microservice.
 
 | Parameter | Value | Reason |
-|---|---|---|
+| --- | --- | --- |
 | k-bucket size | 16 | S/Kademlia disjoint-path design: k = 2×d where d=8 |
 | Parallel lookups (alpha) | 3 | Produces O(log n / 3) round trips; sub-second median lookup |
 | DHT mode for providers | Server (full participant) | Desktop providers must be reachable for challenge dispatch |
@@ -791,6 +800,7 @@ where AVG and VAR are the exponentially weighted mean and variance of that provi
 ### Provider response
 
 The provider receives the challenge and:
+
 1. Looks up the chunk_id in RocksDB. If absent, returns FAIL immediately (no disk I/O needed).
 2. Reads the chunk from the vLog using the stored offset.
 3. Verifies `SHA-256(chunk_data) == stored_content_hash`. If wrong, returns FAIL — disk corruption detected.
@@ -806,7 +816,7 @@ The microservice verifies the provider's Ed25519 signature over the receipt fiel
 ### The Audit receipt schema
 
 | Field | Purpose |
-|---|---|
+| --- | --- |
 | receipt_id (UUIDv7) | Time-ordered primary key; no coordinator needed |
 | schema_version | Forward compatibility |
 | chunk_id | Content address of the chunk |
@@ -826,6 +836,7 @@ The microservice verifies the provider's Ed25519 signature over the receipt fiel
 ### Crash-safe receipt writing
 
 The microservice uses a two-phase write to survive crashes between challenge validation and receipt countersignature:
+
 1. Write a PENDING row (audit_result = NULL) with the full provider_sig. This is durable before any further processing.
 2. Validate the response_hash.
 3. Update the row: set audit_result = PASS|FAIL, service_sig, service_countersign_ts.
@@ -952,7 +963,7 @@ On the 23rd of each month, the microservice computes each provider's releasable 
 The release multiplier is determined by the provider's 30-day reliability score:
 
 | 30-day score | Release multiplier |
-|---|---|
+| --- | --- |
 | ≥ 0.95 | 1.00 — full release |
 | 0.80–0.94 | 0.75 — partial release |
 | 0.65–0.79 | 0.50 — partial release |
@@ -965,6 +976,7 @@ If the 7-day score drops more than 0.20 below the 30-day score (the deterioratio
 ### Escrow seizure on departure
 
 When a provider is declared silently departed (72 hours without contact):
+
 1. The microservice freezes the provider's account.
 2. All earnings in the 30-day rolling window are transferred to the repair reserve fund (SEIZURE event appended to `escrow_events`).
 3. A Razorpay Route reversal is issued if any transfer has not yet settled.
@@ -997,7 +1009,7 @@ Three replicas with a (3, 2, 2) quorum: reads require 2 replicas to respond; wri
 ### Key API endpoints
 
 | Endpoint | Method | Purpose |
-|---|---|---|
+| --- | --- | --- |
 | `/api/v1/provider/register` | POST | Provider registration; initiates Razorpay Linked Account creation |
 | `/api/v1/provider/heartbeat` | POST | 4-hourly signed address update |
 | `/api/v1/upload/assign` | POST | Returns 56 provider assignments for a new file segment |
@@ -1087,7 +1099,7 @@ Of approximately 20 core database operations in the system, 14 are coordination-
 **Coordinated (6 operations) — all go through the single payment microservice:**
 
 | Operation | Why it cannot be distributed |
-|---|---|
+| --- | --- |
 | Decrement reliability score on audit fail | Score floor ≥ 0 cannot be maintained across independent replicas |
 | Decrement escrow balance on payment release | Balance floor ≥ 0 (paise) |
 | Seize escrow on departure | Same floor invariant |
@@ -1137,20 +1149,20 @@ If the availability service fails to republish a provider's DHT record within th
 ### Key metrics (microservice)
 
 | Metric | What it indicates |
-|---|---|
+| --- | --- |
 | `audit_challenges_issued_total` | Challenge throughput |
-| `audit_results_total{result="PASS|FAIL|TIMEOUT"}` | Network reliability |
+| `audit_results_total{result="PASS | FAIL | TIMEOUT"}` | Network reliability |
 | `provider_score_histogram` | Distribution of reliability scores |
 | `repair_queue_depth` | Repair backlog |
 | `repair_jobs_completed_total` | Repair throughput |
-| `escrow_events_total{type="DEPOSIT|RELEASE|SEIZURE"}` | Payment volume |
+| `escrow_events_total{type="DEPOSIT | RELEASE | SEIZURE"}` | Payment volume |
 | `microservice_replica_count{state="healthy"}` | Quorum health |
 | `db_read_p99_latency_ms` | Foreground latency (triggers background throttle at 50 ms) |
 
 ### Key metrics (provider daemon)
 
 | Metric | What it indicates |
-|---|---|
+| --- | --- |
 | `chunks_stored_total` | Stored chunk count |
 | `audit_responses_sent_total` | Challenge volume |
 | `audit_response_latency_ms_p99` | Response time distribution |
@@ -1161,12 +1173,13 @@ If the availability service fails to republish a provider's DHT record within th
 ### Operational alerts
 
 | Alert | Threshold | Action |
-|---|---|---|
+| --- | --- | --- |
 | Repair queue depth | > 1,000 jobs | Investigate departure rate; check bandwidth budget |
 | TIMEOUT rate | > 5% of challenges | Check relay infrastructure; check heartbeat address freshness |
 | Content hash failures | > 0 on any provider in 7-day window | Trigger accelerated re-audit of all that provider's chunks |
 | Microservice healthy replicas | < 3 | Investigate replica failure |
-| Release multiplier 0.00 rate | > 10% of active providers | Investigate systemic score degradation |
+
+*(V3-deferred: a "Release multiplier 0.00 rate > 10% of active providers" alert. See §26.)*
 
 ---
 
@@ -1317,7 +1330,7 @@ a technology on this list must open a new ADR explaining why the original reject
 no longer applies before any PR can be merged.
 
 | Technology | Considered for | Rejection reason | ADR / Source |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | Blockchain / smart contracts | Payment trigger, immutable audit log, public dispute | NBFC registration required for Razorpay Escrow+; token price volatility; Swarm SWAP structural failure in production | ADR-011, Paper 07 |
 | Razorpay Escrow+ | Native escrow product | Requires NBFC registration and trustee approval Vyomanaut does not qualify for | ADR-011, Paper 35 |
 | UPI Collect | Data owner deposit flow | Deprecated by NPCI 28 Feb 2026 — all flows must use UPI Intent or QR | NFR-029, Paper 35 |
@@ -1353,6 +1366,8 @@ These are explicit design decisions, each with a documented reason and a V3 path
 
 **India-only payments.** Razorpay and UPI require Indian bank accounts. The `PaymentProvider` interface in ADR-011 is designed for international gateways (e.g., Stripe Connect) to be added as implementations without rewriting payment logic.
 
+**No "release multiplier 0.00 rate" alert.** [Flagged and resolved, build.md Session OBS.3.1, A10 option (b)] NFR-027 lists four mandatory alert thresholds; this table previously carried a fifth ("Release multiplier 0.00 rate > 10% of active providers"), which has no backing NFR-025 metric — no counter or gauge anywhere in the frozen NFR-025/NFR-046 metric contract tracks how many providers currently have `release_multiplier(score) = 0.00` (ADR-024 §3). Rather than inventing an unfrozen metric name during a Grafana-only session, the alert is deferred to V3. The V3 path: `internal/payment/release.go` already computes this value internally as `releaseMultiplierBasisPoints` (`multiplierNoneBP = 0`) during the monthly release calculation — a V3 session would add a `vyomanaut_payment_zero_multiplier_providers_total` (or similar) counter/gauge at that call site, register it under NFR-025/NFR-046, and only then restore this alert to §23's table.
+
 ---
 
 ## 27. Capacity Planning
@@ -1364,7 +1379,7 @@ trace to cited papers or ADRs. Recompute whenever any value in that table change
 **Value status labels:**
 
 | Label | Meaning |
-|---|---|
+| --- | --- |
 | `DESIGN` | Deliberate parameter set in an ADR. Changing it requires a new ADR. |
 | `DERIVED` | Computed from other values by formula. Changes when inputs change. |
 | `MEASURED` | Taken from empirical data in a cited paper or benchmark. |
@@ -1377,7 +1392,7 @@ trace to cited papers or ADRs. Recompute whenever any value in that table change
 #### Erasure coding and storage geometry
 
 | Name | Symbol | Value | Unit | Status | Source |
-|---|---|---|---|---|---|
+| --- | --- | --- | --- | --- | --- |
 | Reconstruction threshold | s | 16 | shards | DESIGN | ADR-003 |
 | Redundancy fragments | r | 40 | shards | DESIGN | ADR-003 |
 | Total shards per segment | n | 56 | shards | DERIVED (s+r) | ADR-003 |
@@ -1393,7 +1408,7 @@ trace to cited papers or ADRs. Recompute whenever any value in that table change
 #### Provider MTTF and bandwidth
 
 | Name | Value | Unit | Status | Source |
-|---|---|---|---|---|
+| --- | --- | --- | --- | --- |
 | Minimum acceptable provider MTTF | 180 | days | DESIGN | ADR-010 |
 | Target provider MTTF (planning) | 300 | days | DESIGN | ADR-003 |
 | Maximum observed MTTF (NAS) | 380 | days | DESIGN | ADR-010 |
@@ -1410,7 +1425,7 @@ trace to cited papers or ADRs. Recompute whenever any value in that table change
 #### Audit system
 
 | Name | Value | Unit | Status | Source |
-|---|---|---|---|---|
+| --- | --- | --- | --- | --- |
 | Audit frequency per chunk | 1 | per 24 h | DESIGN | ADR-006 |
 | Audit receipt row size (on-disk est.) | ~450 | bytes | ASSUMED (raw ~297 B + Postgres overhead ~50%) | — |
 | Postgres single-instance INSERT ceiling | 5,000–10,000 | rows/sec | ASSUMED — **must be benchmarked on actual schema before V2 GA; see NFR-043** | — |
@@ -1418,7 +1433,7 @@ trace to cited papers or ADRs. Recompute whenever any value in that table change
 #### Provider storage engine
 
 | Name | Value | Unit | Status | Source |
-|---|---|---|---|---|
+| --- | --- | --- | --- | --- |
 | vLog entry size | 262,212 | bytes | DERIVED (32+4+262,144+32) | ADR-023 |
 | RocksDB index entry size | 44 | bytes | DERIVED (32+8+4) | ADR-023 |
 | Write amplification at lf=256 KB | ~1.0 | × | MEASURED (WiscKey Figure 10) | Paper 27 |
@@ -1429,7 +1444,7 @@ trace to cited papers or ADRs. Recompute whenever any value in that table change
 #### Network and connectivity
 
 | Name | Value | Unit | Status | Source |
-|---|---|---|---|---|
+| --- | --- | --- | --- | --- |
 | Hole-punch success rate (DCUtR) | 70 | % | MEASURED (4.4M attempts) | Paper 30 |
 | Relay-dependent fraction (global) | ~30 | % | MEASURED | Paper 30 |
 | Relay-dependent fraction (Indian CGNAT est.) | 30–45 | % | ASSUMED — tracked in Q20-1 | Paper 30 |
@@ -1449,7 +1464,7 @@ Storage efficiency is 28.57% (s/n = 16/56): for every 3.5 GB a provider contribu
 is accessible file data. The remainder is the cost of 40-fragment fault tolerance.
 
 | Active providers | Storage/provider | Raw network storage | Usable file data |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | 56 (floor) | 50 GB | 2.8 TB | 800 GB |
 | 56 (floor) | 500 GB | 28 TB | 8 TB |
 | 500 | 50 GB | 25 TB | 7.1 TB |
@@ -1474,7 +1489,7 @@ The `audit_receipts` table is INSERT-only and grows permanently. Monthly partiti
 mandatory from day one.
 
 | Providers | Chunks/provider | Rows/day | Storage/year (@ 450 B/row) |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | 56 | 200,000 | 11.2 M | 1.8 TB |
 | 500 | 200,000 | 100 M | 16.4 TB |
 | 1,000 | 10,000 | 10 M | 1.6 TB |
@@ -1496,7 +1511,7 @@ per-provider data load, not total network size. Increasing N while holding per-p
 storage constant does not increase BWavg.
 
 | MTTF | BWavg (N=1,000, 50 GB/peer) | Within 100 Kbps budget? |
-|---|---|---|
+| --- | --- | --- |
 | 90 days (mobile — out of scope) | ~130 Kbps/peer | No — exceeds budget |
 | 180 days (desktop minimum) | ~65 Kbps/peer | Yes — 35 Kbps headroom |
 | 300 days (planning target) | ~39 Kbps/peer | Yes — 61 Kbps headroom |
@@ -1505,7 +1520,7 @@ storage constant does not increase BWavg.
 **Per-provider storage ceiling at 100 Kbps budget (N=1,000):**
 
 | MTTF | Max chunk data per provider |
-|---|---|
+| --- | --- |
 | 180 days (worst case V2) | ~70 GB |
 | 300 days (planning target) | ~130 GB |
 
@@ -1520,7 +1535,7 @@ Qpeek ≈ 793 GB total network transfer per failure event θ = Qpeek / (N × 100
 Repair window at multiple scales:
 
 | N providers | Storage/provider | Qpeek | θ (@ 100 Kbps/peer) | Within 12h? |
-|---|---|---|---|---|
+| --- | --- | --- | --- | --- |
 | 56 | 50 GB | 44 GB | ~22 hours | **No** |
 | 200 | 50 GB | 222 GB | ~25 hours | **No** |
 | 500 | 50 GB | 396 GB | ~18 hours | **Borderline** |
@@ -1545,9 +1560,8 @@ limits the maximum correlated failure to ~11 simultaneous departures from any si
 
 Challenges/sec = (N_providers × chunks_per_provider) / 86,400
 
-
 | Providers | Chunks/provider | Challenges/day | Challenges/sec |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | 56 | 10,000 | 560,000 | 6.5 /sec |
 | 56 | 200,000 | 11.2 M | 130 /sec |
 | 1,000 | 10,000 | 10 M | 116 /sec |
@@ -1580,7 +1594,7 @@ per-chunk audit frequency before deployment.
 Kademlia lookup takes O(log₂ N / α) round trips with α = 3:
 
 | N providers | Approx. hops | Est. lookup latency |
-|---|---|---|
+| --- | --- | --- |
 | 56 | ~2 | ~1.2 s |
 | 500 | ~3 | ~1.9 s |
 | 1,000 | ~3–4 | ~2.5 s |
@@ -1593,7 +1607,7 @@ DHT lookup latency is logarithmic in N and is never a scaling bottleneck.
 Each assigned chunk generates one DHT provider record. At ~200 bytes per record:
 
 | Provider storage | Chunks | DHT record memory |
-|---|---|---|
+| --- | --- | --- |
 | 10 GB | ~40,000 | ~8 MB |
 | 50 GB | ~200,000 | ~40 MB |
 | 200 GB | ~800,000 | ~160 MB |
@@ -1610,7 +1624,7 @@ Required relay slots = N × relay_fraction × 1.5; add a relay node when require
 80% of available slots (relay_nodes × 128 × 0.80).
 
 | N providers | Relay-dependent (30%) | Slots needed | Slots available | Headroom |
-|---|---|---|---|---|
+| --- | --- | --- | --- | --- |
 | 56 | 17 | 26 | 384 | 93% spare |
 | 300 | 90 | 135 | 384 | 65% spare |
 | 570 (45% CGNAT) | 257 | 386 | 384 | **Oversubscribed — add 4th relay node** |
@@ -1631,7 +1645,7 @@ Monthly payout release (23rd of each month) processes ~5 operations per active p
 PATCH, 1 INSERT (`RELEASE` event).
 
 | N providers | Operations total | Sustained rate (4-hour window) | Within Razorpay rate limit (500 req/min)? |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | 1,000 | 5,000 | ~0.35/sec | Yes |
 | 10,000 | 50,000 | ~3.5/sec | Yes |
 | 120,000 | 600,000 | ~41.7/sec | At limit — distribute release window |
@@ -1644,7 +1658,7 @@ it is never a scaling concern at any realistic V2 scale.
 ### 27.7 Hard Ceilings — What Breaks First
 
 | Constraint | Binds at | Symptom | Action |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | Relay slot exhaustion (45% Indian CGNAT) | ~570 providers | TIMEOUT rate rises for relay-dependent providers | Add relay nodes; each buys ~280 more providers |
 | Relay slot exhaustion (30% global baseline) | ~850 providers | Same | Same |
 | Repair window exceeds 12 h | < 500 providers | Qpeek > 12 h; second failure risk during repair | Monitor `repair_queue_depth`; manual oversight per departure until N > 500 |
@@ -1667,7 +1681,7 @@ must be enforced in provider onboarding, not discovered operationally.
 ### 27.8 Scale Milestones
 
 | Milestone | Condition | Key actions |
-|---|---|---|
+| --- | --- | --- |
 | M-cap-1: Network open | 56 providers | 1 simultaneous upload segment; repair window ~22 h — manual monitoring required; relay 93% spare |
 | M-cap-2: 300 providers | Growth | 5 simultaneous segments; relay 65% spare (30% CGNAT); watch Q20-1 telemetry |
 | M-cap-3: 570 providers | Indian CGNAT pressure | **Add 4th relay node** (if Q20-1 confirms ≥ 40% CGNAT fraction) |
@@ -1682,7 +1696,7 @@ must be enforced in provider onboarding, not discovered operationally.
 ## 28. ADR Reference Index
 
 | Component | ADRs |
-|---|---|
+| --- | --- |
 | Coordination architecture (hybrid microservice + Kademlia DHT) | [ADR-001](../decisions/ADR-001-coordination-architecture.md) |
 | Proof of storage / audit challenge design | [ADR-002](../decisions/ADR-002-proof-of-storage.md) |
 | Erasure coding parameters (RS s=16, r=40, r0=8, lf=256 KB) | [ADR-003](../decisions/ADR-003-erasure-coding.md) |
@@ -1713,4 +1727,4 @@ must be enforced in provider onboarding, not discovered operationally.
 | Provider heartbeat (4-hour address update) | [ADR-028](../decisions/ADR-028-provider-heartbeat.md) |
 | Bootstrap minimum viable network (7 conditions) | [ADR-029](../decisions/ADR-029-bootstrap-minimum-viable-network.md) |
 | Synthetic vetting chunks (repair-safe provider assessment) | [ADR-030](../decisions/ADR-030-synthetic-vetting-chunks.md) |
-| Demo / production mode: NetworkProfile, mode flag, demo specifications | ADR-031 | 
+| Demo / production mode: NetworkProfile, mode flag, demo specifications | ADR-031 |
