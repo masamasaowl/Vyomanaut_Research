@@ -3490,6 +3490,226 @@ VET:
 
 ---
 
+### Phase 11.9 — Audit Admin Endpoints
+
+**Reference:** OAS `paths./api/v1/audit/challenge`, `components/schemas/AuditChallengeDispatchRequest/Response`, FR-037, ADR-002, ADR-006, ADR-014
+
+#### Session 11.9.1 — Manual Audit Challenge (`POST /api/v1/audit/challenge`)
+
+**PRECONDITIONS:** Milestone 7 complete (`audit.ChallengeNonce`)
+
+**TASK:** AdminApiKey. Dispatches an immediate out-of-cycle challenge to `(provider_id, chunk_id)` — does **not** bypass the 24-hour (or `profile.PollingInterval` in demo) deduplication window. `202` with `challenge_nonce` (66 hex chars), `server_challenge_ts`, `deadline_ms = ceil((256 / p95_throughput_kbps) × 1500)`. `403` if provider is `DEPARTED`.
+
+**VERIFY:**
+
+```bash
+COMPILE:
+  $ go build ./internal/api/
+  EXPECT: exit 0
+
+USES_MILESTONE_7_CHALLENGENONCE:
+  $ grep -c "audit.ChallengeNonce\|ChallengeNonce(" internal/api/*.go
+  EXPECT: >= 1
+
+DEADLINE_FORMULA:
+  $ grep -c "1500\|× 1.5\|\* 1.5" internal/api/*.go
+  EXPECT: >= 1
+
+UNIT_TESTS:
+  $ go test -v -run TestManualAuditChallenge ./internal/api/
+  EXPECT: exit 0; tests include:
+    TestManualChallengeDoesNotBypassDedup
+    TestManualChallengeRejectsDepartedProvider   (403)
+    TestManualChallengeReturnsCorrectDeadlineMs
+
+VET:
+  $ go vet ./internal/api/
+  EXPECT: exit 0; zero output
+```
+
+---
+
+### Phase 11.10 — Admin Endpoints
+
+**Reference:** OAS `paths./api/v1/admin/*`, `components/schemas/AdminProvidersResponse`, `RepairQueueResponse`, `RepairJobItem`, `AuditStatsResponse`, `VettingStatusSummary`, NFR-027, FR-044, ADR-004, ADR-030
+
+#### Session 11.10.1 — Admin Providers List (`GET /api/v1/admin/providers`)
+
+**PRECONDITIONS:** Session 11.3.1 complete
+
+**TASK:** Filters: `status`, `asn`, `region`, `multiaddr_stale`, `accelerated_reaudit`, `vetting_gc_pending`, `limit` (1–200, default 100), `cursor`. Include `vetting_chunks_assigned`, `vetting_chunk_cap`, `vetting_gc_pending` for VETTING providers.
+
+**VERIFY:**
+
+```bash
+COMPILE:
+  $ go build ./internal/api/
+  EXPECT: exit 0
+
+UNIT_TESTS:
+  $ go test -v -run TestAdminProvidersList ./internal/api/
+  EXPECT: exit 0; tests include:
+    TestAdminProvidersFiltersByStatus
+    TestAdminProvidersFiltersByVettingGCPending
+    TestAdminProvidersRequiresAdminAPIKey
+
+VET:
+  $ go vet ./internal/api/
+  EXPECT: exit 0; zero output
+```
+
+#### Session 11.10.2 — Repair Queue (`GET /api/v1/admin/repair/queue`)
+
+**PRECONDITIONS:** Milestone 9 complete (`repair_jobs` queue populated)
+
+> **Flagged and corrected — wrong NFR citation.** The original task attributes "`emergency_queued > 0` fires immediately" to NFR-027. NFR-027 lists four alert thresholds and none of them is per-priority-tier queue depth — it covers `total_queued > 1,000` only. OAS's own `emergency_queued` field description cites FR-044/ADR-004 instead ("these represent files that may be unrecoverable if one more provider fails"). Fixed.
+
+**TASK:** Filters: `status` (default `QUEUED`), `priority`, `limit` (1–100, default 50), `cursor`. Counts by priority: `emergency_queued`, `permanent_departure_queued`, `pre_warning_queued`, `total_queued`. Alerts: `total_queued > 1000` (NFR-027); `emergency_queued > 0` fires immediately (FR-044, ADR-004 — corrected citation).
+
+**VERIFY:**
+
+```bash
+COMPILE:
+  $ go build ./internal/api/
+  EXPECT: exit 0
+
+CORRECT_CITATION_FOR_EMERGENCY_ALERT:
+  $ grep -c "FR-044\|ADR-004" internal/api/*.go
+  EXPECT: >= 1
+
+PRIORITY_COUNTS_PRESENT:
+  $ grep -c "emergency_queued\|permanent_departure_queued\|pre_warning_queued\|total_queued" internal/api/*.go
+  EXPECT: >= 4
+
+UNIT_TESTS:
+  $ go test -v -run TestRepairQueueAdmin ./internal/api/
+  EXPECT: exit 0; tests include:
+    TestRepairQueueCountsByPriority
+    TestRepairQueueFiltersByStatus
+
+VET:
+  $ go vet ./internal/api/
+  EXPECT: exit 0; zero output
+```
+
+#### Session 11.10.3 — Manual Repair Trigger (`POST /api/v1/admin/repair/trigger`)
+
+**PRECONDITIONS:** Milestone 9 Phase 9.1 complete (`repair.EnqueueJob`)
+
+**TASK:** Required: `chunk_id`, `segment_id`, `trigger_type`. Optional: `provider_id` (nullable for threshold-triggered repairs). `202` with the created `RepairJobItem`. Calls `repair.EnqueueJob` directly (with the profile parameter added in the Milestones 9–10 revision).
+
+**VERIFY:**
+
+```bash
+COMPILE:
+  $ go build ./internal/api/
+  EXPECT: exit 0
+
+WIRES_ENQUEUEJOB_WITH_PROFILE_PARAM:
+  $ grep -c "repair.EnqueueJob(" internal/api/*.go
+  EXPECT: >= 1
+  $ grep -A3 "repair.EnqueueJob(" internal/api/*.go | grep -c "profile"
+  EXPECT: >= 1
+
+UNIT_TESTS:
+  $ go test -v -run TestManualRepairTrigger ./internal/api/
+  EXPECT: exit 0; tests include:
+    TestManualRepairTriggerCreatesJob
+    TestManualRepairTriggerAllowsNullProviderID
+
+VET:
+  $ go vet ./internal/api/
+  EXPECT: exit 0; zero output
+```
+
+#### Session 11.10.4 — Audit Statistics (`GET /api/v1/admin/audit/stats`)
+
+**PRECONDITIONS:** Milestone 7 complete (`audit_receipts`)
+
+**TASK:** `from`/`to` (default last 1h), optional `provider_id`. Backed by `audit_receipts WHERE abandoned_at IS NULL`. Return `challenges_issued`, `{pass, fail, timeout, pending}`, `pass_rate = pass/(pass+fail+timeout)`, `timeout_rate`, `content_hash_failures`, `jit_flags_raised`. Alert: `timeout_rate > 0.05` (NFR-027 — correctly cited here).
+
+**VERIFY:**
+
+```bash
+COMPILE:
+  $ go build ./internal/api/
+  EXPECT: exit 0
+
+EXCLUDES_ABANDONED_ROWS:
+  $ grep -c "abandoned_at IS NULL" internal/api/*.go
+  EXPECT: >= 1
+
+UNIT_TESTS:
+  $ go test -v -run TestAuditStats ./internal/api/
+  EXPECT: exit 0; tests include:
+    TestAuditStatsDefaultsToLastHour
+    TestAuditStatsExcludesAbandonedRows
+    TestAuditStatsPassRateFormula
+
+VET:
+  $ go vet ./internal/api/
+  EXPECT: exit 0; zero output
+```
+
+#### Session 11.10.5 — Vetting Status (`GET /api/v1/admin/vetting/status`)
+
+**PRECONDITIONS:** Milestone 9 Phase 9.1 complete (`IsVettingChunk`)
+
+**TASK:** `include_gc_pending_only` (default false). Return `total_vetting_providers`, `total_synthetic_chunks_active`, `total_synthetic_chunks_pending_gc`, per-provider `vetting_summary` (`chunks_assigned`, `chunk_cap`, `cap_utilisation_pct`, `chunks_pending_gc`).
+
+**VERIFY:**
+
+```bash
+COMPILE:
+  $ go build ./internal/api/
+  EXPECT: exit 0
+
+UNIT_TESTS:
+  $ go test -v -run TestVettingStatus ./internal/api/
+  EXPECT: exit 0; tests include:
+    TestVettingStatusAggregatesAcrossProviders
+    TestVettingStatusIncludeGCPendingOnlyFilter
+
+VET:
+  $ go vet ./internal/api/
+  EXPECT: exit 0; zero output
+```
+
+#### Session 11.10.6 — Vetting GC Retry (`POST /api/v1/admin/vetting/gc/retry`)
+
+**PRECONDITIONS:** Milestone 14 stub acceptable at this stage (`vettingchunk.DeliverGCInstruction` may not exist yet — see note)
+
+**TASK:** Required: `provider_id` (must be `ACTIVE` with `chunks_pending_gc > 0`). Attempts immediate delivery. Returns `delivery_attempted`, `chunks_pending_gc_before`, `chunks_pending_gc_after`. `200` with `delivery_attempted: false` if unreachable (background retry continues). Wires to `vettingchunk.DeliverGCInstruction()` (Milestone 14 — built after this milestone in the dependency graph; stub the call here and revisit once Milestone 14 lands).
+
+**VERIFY:**
+
+```bash
+COMPILE:
+  $ go build ./internal/api/
+  EXPECT: exit 0
+
+REJECTS_NON_ACTIVE_OR_NO_PENDING_GC:
+  $ grep -c "chunks_pending_gc > 0\|ChunksPendingGC > 0" internal/api/*.go
+  EXPECT: >= 1
+
+UNIT_TESTS:
+  $ go test -v -run TestVettingGCRetry ./internal/api/
+  EXPECT: exit 0; tests include:
+    TestVettingGCRetryRejectsNonActiveProvider     (400)
+    TestVettingGCRetryReturns200WhenUnreachable    (delivery_attempted: false, not an error)
+
+VET:
+  $ go vet ./internal/api/
+  EXPECT: exit 0; zero output
+```
+
+---
+
+### Phase 11.11 — Per-Provider Chunk Count Ceiling
+
+**Reference:** NFR-044, architecture.md §27.3 (`Per-provider storage ceiling at 100 Kbps budget` table — two reference points: 180d→~70GB, 300d→~130GB)
+
+> **Flagged and corrected — the given formula doesn't reproduce its own reference points.** The original task computes `storage_advisory_gb = ceil(mttf_days / 300 * 130)`. At `mttf_days=300` this correctly gives 130 GB, but at `mttf_days=180` it gives `ceil(0.6 × 130) = 78` GB — not the ~70 GB architecture.md §27.3 documents. The relationship between MTTF and the bandwidth-driven storage ceiling is not linear (Giroire's formula scales BWavg with `D/N` in a way that does
 ### Phase 11.5 — Owner Endpoints
 
 **Reference:** OAS `paths./api/v1/owner/*`, `components/schemas/OwnerRegisterRequest/Response`, `DepositInitiateRequest/Response`, `OwnerBalance`, `FileListItem`, `OwnerEscrowTransaction`, `WithdrawRequest/Response`, FR-001, FR-006, FR-014, FR-019, FR-021, FR-059, DM §4.9 (`owner_escrow_events` — see the flagged corrections below)
@@ -4133,227 +4353,7 @@ VET:
 ```
 
 ---
-
-### Phase 11.9 — Audit Admin Endpoints
-
-**Reference:** OAS `paths./api/v1/audit/challenge`, `components/schemas/AuditChallengeDispatchRequest/Response`, FR-037, ADR-002, ADR-006, ADR-014
-
-#### Session 11.9.1 — Manual Audit Challenge (`POST /api/v1/audit/challenge`)
-
-**PRECONDITIONS:** Milestone 7 complete (`audit.ChallengeNonce`)
-
-**TASK:** AdminApiKey. Dispatches an immediate out-of-cycle challenge to `(provider_id, chunk_id)` — does **not** bypass the 24-hour (or `profile.PollingInterval` in demo) deduplication window. `202` with `challenge_nonce` (66 hex chars), `server_challenge_ts`, `deadline_ms = ceil((256 / p95_throughput_kbps) × 1500)`. `403` if provider is `DEPARTED`.
-
-**VERIFY:**
-
-```bash
-COMPILE:
-  $ go build ./internal/api/
-  EXPECT: exit 0
-
-USES_MILESTONE_7_CHALLENGENONCE:
-  $ grep -c "audit.ChallengeNonce\|ChallengeNonce(" internal/api/*.go
-  EXPECT: >= 1
-
-DEADLINE_FORMULA:
-  $ grep -c "1500\|× 1.5\|\* 1.5" internal/api/*.go
-  EXPECT: >= 1
-
-UNIT_TESTS:
-  $ go test -v -run TestManualAuditChallenge ./internal/api/
-  EXPECT: exit 0; tests include:
-    TestManualChallengeDoesNotBypassDedup
-    TestManualChallengeRejectsDepartedProvider   (403)
-    TestManualChallengeReturnsCorrectDeadlineMs
-
-VET:
-  $ go vet ./internal/api/
-  EXPECT: exit 0; zero output
-```
-
----
-
-### Phase 11.10 — Admin Endpoints
-
-**Reference:** OAS `paths./api/v1/admin/*`, `components/schemas/AdminProvidersResponse`, `RepairQueueResponse`, `RepairJobItem`, `AuditStatsResponse`, `VettingStatusSummary`, NFR-027, FR-044, ADR-004, ADR-030
-
-#### Session 11.10.1 — Admin Providers List (`GET /api/v1/admin/providers`)
-
-**PRECONDITIONS:** Session 11.3.1 complete
-
-**TASK:** Filters: `status`, `asn`, `region`, `multiaddr_stale`, `accelerated_reaudit`, `vetting_gc_pending`, `limit` (1–200, default 100), `cursor`. Include `vetting_chunks_assigned`, `vetting_chunk_cap`, `vetting_gc_pending` for VETTING providers.
-
-**VERIFY:**
-
-```bash
-COMPILE:
-  $ go build ./internal/api/
-  EXPECT: exit 0
-
-UNIT_TESTS:
-  $ go test -v -run TestAdminProvidersList ./internal/api/
-  EXPECT: exit 0; tests include:
-    TestAdminProvidersFiltersByStatus
-    TestAdminProvidersFiltersByVettingGCPending
-    TestAdminProvidersRequiresAdminAPIKey
-
-VET:
-  $ go vet ./internal/api/
-  EXPECT: exit 0; zero output
-```
-
-#### Session 11.10.2 — Repair Queue (`GET /api/v1/admin/repair/queue`)
-
-**PRECONDITIONS:** Milestone 9 complete (`repair_jobs` queue populated)
-
-> **Flagged and corrected — wrong NFR citation.** The original task attributes "`emergency_queued > 0` fires immediately" to NFR-027. NFR-027 lists four alert thresholds and none of them is per-priority-tier queue depth — it covers `total_queued > 1,000` only. OAS's own `emergency_queued` field description cites FR-044/ADR-004 instead ("these represent files that may be unrecoverable if one more provider fails"). Fixed.
-
-**TASK:** Filters: `status` (default `QUEUED`), `priority`, `limit` (1–100, default 50), `cursor`. Counts by priority: `emergency_queued`, `permanent_departure_queued`, `pre_warning_queued`, `total_queued`. Alerts: `total_queued > 1000` (NFR-027); `emergency_queued > 0` fires immediately (FR-044, ADR-004 — corrected citation).
-
-**VERIFY:**
-
-```bash
-COMPILE:
-  $ go build ./internal/api/
-  EXPECT: exit 0
-
-CORRECT_CITATION_FOR_EMERGENCY_ALERT:
-  $ grep -c "FR-044\|ADR-004" internal/api/*.go
-  EXPECT: >= 1
-
-PRIORITY_COUNTS_PRESENT:
-  $ grep -c "emergency_queued\|permanent_departure_queued\|pre_warning_queued\|total_queued" internal/api/*.go
-  EXPECT: >= 4
-
-UNIT_TESTS:
-  $ go test -v -run TestRepairQueueAdmin ./internal/api/
-  EXPECT: exit 0; tests include:
-    TestRepairQueueCountsByPriority
-    TestRepairQueueFiltersByStatus
-
-VET:
-  $ go vet ./internal/api/
-  EXPECT: exit 0; zero output
-```
-
-#### Session 11.10.3 — Manual Repair Trigger (`POST /api/v1/admin/repair/trigger`)
-
-**PRECONDITIONS:** Milestone 9 Phase 9.1 complete (`repair.EnqueueJob`)
-
-**TASK:** Required: `chunk_id`, `segment_id`, `trigger_type`. Optional: `provider_id` (nullable for threshold-triggered repairs). `202` with the created `RepairJobItem`. Calls `repair.EnqueueJob` directly (with the profile parameter added in the Milestones 9–10 revision).
-
-**VERIFY:**
-
-```bash
-COMPILE:
-  $ go build ./internal/api/
-  EXPECT: exit 0
-
-WIRES_ENQUEUEJOB_WITH_PROFILE_PARAM:
-  $ grep -c "repair.EnqueueJob(" internal/api/*.go
-  EXPECT: >= 1
-  $ grep -A3 "repair.EnqueueJob(" internal/api/*.go | grep -c "profile"
-  EXPECT: >= 1
-
-UNIT_TESTS:
-  $ go test -v -run TestManualRepairTrigger ./internal/api/
-  EXPECT: exit 0; tests include:
-    TestManualRepairTriggerCreatesJob
-    TestManualRepairTriggerAllowsNullProviderID
-
-VET:
-  $ go vet ./internal/api/
-  EXPECT: exit 0; zero output
-```
-
-#### Session 11.10.4 — Audit Statistics (`GET /api/v1/admin/audit/stats`)
-
-**PRECONDITIONS:** Milestone 7 complete (`audit_receipts`)
-
-**TASK:** `from`/`to` (default last 1h), optional `provider_id`. Backed by `audit_receipts WHERE abandoned_at IS NULL`. Return `challenges_issued`, `{pass, fail, timeout, pending}`, `pass_rate = pass/(pass+fail+timeout)`, `timeout_rate`, `content_hash_failures`, `jit_flags_raised`. Alert: `timeout_rate > 0.05` (NFR-027 — correctly cited here).
-
-**VERIFY:**
-
-```bash
-COMPILE:
-  $ go build ./internal/api/
-  EXPECT: exit 0
-
-EXCLUDES_ABANDONED_ROWS:
-  $ grep -c "abandoned_at IS NULL" internal/api/*.go
-  EXPECT: >= 1
-
-UNIT_TESTS:
-  $ go test -v -run TestAuditStats ./internal/api/
-  EXPECT: exit 0; tests include:
-    TestAuditStatsDefaultsToLastHour
-    TestAuditStatsExcludesAbandonedRows
-    TestAuditStatsPassRateFormula
-
-VET:
-  $ go vet ./internal/api/
-  EXPECT: exit 0; zero output
-```
-
-#### Session 11.10.5 — Vetting Status (`GET /api/v1/admin/vetting/status`)
-
-**PRECONDITIONS:** Milestone 9 Phase 9.1 complete (`IsVettingChunk`)
-
-**TASK:** `include_gc_pending_only` (default false). Return `total_vetting_providers`, `total_synthetic_chunks_active`, `total_synthetic_chunks_pending_gc`, per-provider `vetting_summary` (`chunks_assigned`, `chunk_cap`, `cap_utilisation_pct`, `chunks_pending_gc`).
-
-**VERIFY:**
-
-```bash
-COMPILE:
-  $ go build ./internal/api/
-  EXPECT: exit 0
-
-UNIT_TESTS:
-  $ go test -v -run TestVettingStatus ./internal/api/
-  EXPECT: exit 0; tests include:
-    TestVettingStatusAggregatesAcrossProviders
-    TestVettingStatusIncludeGCPendingOnlyFilter
-
-VET:
-  $ go vet ./internal/api/
-  EXPECT: exit 0; zero output
-```
-
-#### Session 11.10.6 — Vetting GC Retry (`POST /api/v1/admin/vetting/gc/retry`)
-
-**PRECONDITIONS:** Milestone 14 stub acceptable at this stage (`vettingchunk.DeliverGCInstruction` may not exist yet — see note)
-
-**TASK:** Required: `provider_id` (must be `ACTIVE` with `chunks_pending_gc > 0`). Attempts immediate delivery. Returns `delivery_attempted`, `chunks_pending_gc_before`, `chunks_pending_gc_after`. `200` with `delivery_attempted: false` if unreachable (background retry continues). Wires to `vettingchunk.DeliverGCInstruction()` (Milestone 14 — built after this milestone in the dependency graph; stub the call here and revisit once Milestone 14 lands).
-
-**VERIFY:**
-
-```bash
-COMPILE:
-  $ go build ./internal/api/
-  EXPECT: exit 0
-
-REJECTS_NON_ACTIVE_OR_NO_PENDING_GC:
-  $ grep -c "chunks_pending_gc > 0\|ChunksPendingGC > 0" internal/api/*.go
-  EXPECT: >= 1
-
-UNIT_TESTS:
-  $ go test -v -run TestVettingGCRetry ./internal/api/
-  EXPECT: exit 0; tests include:
-    TestVettingGCRetryRejectsNonActiveProvider     (400)
-    TestVettingGCRetryReturns200WhenUnreachable    (delivery_attempted: false, not an error)
-
-VET:
-  $ go vet ./internal/api/
-  EXPECT: exit 0; zero output
-```
-
----
-
-### Phase 11.11 — Per-Provider Chunk Count Ceiling
-
-**Reference:** NFR-044, architecture.md §27.3 (`Per-provider storage ceiling at 100 Kbps budget` table — two reference points: 180d→~70GB, 300d→~130GB)
-
-> **Flagged and corrected — the given formula doesn't reproduce its own reference points.** The original task computes `storage_advisory_gb = ceil(mttf_days / 300 * 130)`. At `mttf_days=300` this correctly gives 130 GB, but at `mttf_days=180` it gives `ceil(0.6 × 130) = 78` GB — not the ~70 GB architecture.md §27.3 documents. The relationship between MTTF and the bandwidth-driven storage ceiling is not linear (Giroire's formula scales BWavg with `D/N` in a way that doesn't reduce to simple proportionality in MTTF alone), so a naive straight-line formula between the two points silently produces a wrong number for any MTTF that isn't exactly 300 days. Fixed to use the two documented reference points as a lookup, rather than interpolating past a formula that already fails at one of its own two anchors.
+n't reduce to simple proportionality in MTTF alone), so a naive straight-line formula between the two points silently produces a wrong number for any MTTF that isn't exactly 300 days. Fixed to use the two documented reference points as a lookup, rather than interpolating past a formula that already fails at one of its own two anchors.
 
 #### Session 11.11.1 — Enforce chunk ceiling in assignment service
 
