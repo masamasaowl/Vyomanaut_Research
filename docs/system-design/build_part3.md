@@ -780,6 +780,7 @@ GATE_RUNS_GREEN_ON_CURRENT_TREE:
 ## Milestone 13 — Provider Daemon Core (`cmd/provider`)
 
 **Deliverable:** provider daemon with stream handlers for all four libp2p protocols, startup identity, heartbeat, and the corrected pre-install RAM check.
+
 **Reference:** IC §4.1, §4.2, §4.4.1, §4.5, §3.1, §4 (transport auth, 0-RTT, framing), §12/§12.2 (DHT), MVP §5.3/§8.3.
 
 **One Flag:** `cmd/provider/main.go` is currently the M0 stub (`fmt.Printf("[STARTUP]...mode=STUB")`) —
