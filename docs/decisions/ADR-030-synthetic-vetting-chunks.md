@@ -57,7 +57,7 @@ chunkID := sha256.Sum256(syntheticData)
 
 The `chunkID` (SHA-256 of the random data) is stored in `chunk_assignments.chunk_id` and transmitted to the provider daemon in the standard chunk upload stream (`/vyomanaut/chunk-upload/1.0.0`). The provider stores it, verifies `SHA-256(syntheticData) == chunkID`, and writes it to the vLog. From the daemon's perspective this is indistinguishable from a real shard.
 
-The synthetic data itself does not need to be retained by the microservice after the upload is confirmed. The `chunk_id`(SHA-256) in `chunk_assignments` is the only record needed to issue future audit challenges: the microservice generates a fresh challenge nonce and expects the provider to prove they still hold the data by returning `SHA-256(syntheticData || nonce)`. The microservice cannot verify the response hash directly (same as real chunks — it never holds the chunk data). The Ed25519 signature verification and the economic deterrence of score penalties together remain the validation mechanism.
+The synthetic data itself does not need to be retained by the microservice after the upload is confirmed. The `chunk_id`(SHA-256) in `chunk_assignments` is the only record needed to issue future audit challenges: the microservice generates a fresh challenge nonce and expects the provider to prove they still hold the data by returning `SHA-256(syntheticData || nonce)`. The microservice generates the synthetic chunk's authenticators (ADR-059) at generation time, retains (k_prf, α₁…α₆₄) for that chunk, and discards the data. Synthetic-chunk challenges are therefore fully verifiable — more so than real chunks, whose keys arrive from the owner. This removes the earlier reliance on economic deterrence alone for the vetting path.
 
 ### Storage cap
 
@@ -123,6 +123,7 @@ This protocol uses the same 0-RTT prohibition as audit challenges (the instructi
 
 **Open constraints:**
 
+- The 80-consecutive-pass ACTIVE threshold counted chunk-audits. Under ADR-060 a pass is an aggregated (provider, file, day) audit covering a 1% sample. 80 passes is now roughly 80 days rather than 80 chunk-checks, and the confidence it certifies is a different quantity. Re-derive before ADR-053's confidence-gated duration is finalised.
 - The vetting GC instruction delivery (step 2 of the ACTIVE transition) is best-effort at the time of transition: if the provider is offline, the instruction is queued and retried on the next heartbeat connection. Until the provider comes back online and completes GC, the old vetting chunk rows remain in `status = 'ACTIVE'` but no further challenges are issued for them (the audit scheduler checks `status = 'ACTIVE'` — transitioning them to `'PENDING_DELETION'` on ACTIVE-transition is the correct mechanism; see data-model.md).
 - Pricing for vetting chunk storage cost to the microservice operator (disk on provider machines is real) is covered by the standard per-audit-pass payout. The 10% cap keeps this reasonable.
 

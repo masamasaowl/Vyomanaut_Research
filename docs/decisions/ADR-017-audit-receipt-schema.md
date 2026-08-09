@@ -20,15 +20,17 @@ The schema is designed to be identical in structure to AWS CloudTrail and Google
 audit_receipts (
   receipt_id              UUIDv7       PRIMARY KEY,
   schema_version          SMALLINT     NOT NULL DEFAULT 1,
-  chunk_id                BYTEA(32)    NOT NULL,  -- SHA256 of chunk content (content address)
-  file_id                 UUID         NOT NULL,  -- pseudonymous file handle (not plaintext CID)
+  file_id                 UUID           NOT NULL,  -- the receipt now covers a (provider, file, day)
+  challenge_seed      BYTEA(32)      NOT NULL,  -- fresh per audit; sampled chunk set and every
   provider_id             UUID         NOT NULL,  -- FK → providers, soft delete only
   challenge_nonce         BYTEA(33)    NOT NULL,  -- HMAC(server_secret, chunk_id + server_ts)
   server_challenge_ts     TIMESTAMPTZ  NOT NULL,  -- set by server, not provider
   response_hash           BYTEA(32)    NOT NULL,  -- SHA256(chunk_data || challenge_nonce)
   response_latency_ms     INT          NOT NULL,  -- JIT detector: time between challenge sent and response received
   audit_result            ENUM(PASS, FAIL, TIMEOUT) NOT NULL,
-  provider_sig            BYTEA(64)    NOT NULL,  -- Ed25519 over all fields above
+  sampled_chunk_count INTEGER        NOT NULL,  -- cardinality of the derived set, for payment and for dispute reproduction
+  response_proof      BYTEA(1040)    NOT NULL,  -- (mu_1..mu_64 || sigma), 65 x 16-byte Z_p elements
+  provider_sig        BYTEA(64)      NOT NULL,  -- unchanged, now over the fields above
   service_sig             BYTEA(64)    NOT NULL,  -- Ed25519 over (provider_sig + service_ts)
   service_countersign_ts  TIMESTAMPTZ  NOT NULL
   jit_flag  BOOLEAN  NOT NULL DEFAULT false   -- set by microservice at receipt evaluation

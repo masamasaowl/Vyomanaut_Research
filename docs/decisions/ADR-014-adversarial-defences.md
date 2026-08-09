@@ -54,7 +54,8 @@ Anomaly handling:
 Challenge timing is randomised — providers cannot predict when the next challenge will arrive. The challenge nonce is `HMAC(server_secret, chunk_id + server_timestamp)` where server_timestamp is set by the server, not the provider. Response latency is recorded in the audit receipt and used as a just-in-time detector (`response_latency_ms` field in [ADR-017](ADR-017-audit-receipt-schema.md)).
 
 **Defence 4 — False audit responses (provider sends a plausible-looking response without having the chunk):**
-The response must be `SHA256(chunk_data || challenge_nonce)`. Without the chunk, the provider cannot compute a valid response. Verified by the microservice which independently has the expected hash.
+The response is a homomorphic aggregate proof over every block of each sampled chunk (ADR-059). Without the chunk data the provider cannot compute a passing response, and the microservice verifies it from the file's authenticator keys alone — it holds neither the chunk data nor any precomputed answer. The per-challenge coefficients are derived from a seed generated fresh at challenge time, so no forward caching is possible.
+Prohibited: the per-challenge coefficients must never be set to 1 or omitted. Paper 68 Appendix B gives an attack in which a provider storing n−1 of n blocks answers ~9% of coefficient-free challenges correctly, with stored state information-theoretically consistent with any value for any block.
 
 **Defence 5 — Service-denial attack (provider stores data, passes audits, refuses retrieval):**
 A provider can submit valid SHA256(chunk_data || challenge_nonce) responses indefinitely — proving data is stored — while refusing libp2p retrieval connections from the data owner. PoR audits cannot detect this.

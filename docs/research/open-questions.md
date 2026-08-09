@@ -344,14 +344,4 @@ Q68-3 — How does a reconstructed shard get valid authenticators when the data 
 
 Raised by: Paper 68 (Shacham & Waters), reading-list-v2 Domain A / R-03 Status: open — hard blocker on the repair path; unsolved in all three papers Blocked on: literature the corpus does not have (R-03: proof transfer on repair). A shard that migrates intact keeps valid authenticators — tags bind to block content and file-global index, not to provider identity. A shard that is reconstructed by ADR-004's repair is new bytes at the same stripe position with no valid authenticators, and generating them requires (k_prf, α₁…α₆₄), which the owner holds and which the owner is offline by design. Three shapes of answer exist and none is costed: give the repairing party the authenticator keys (they are independent of the encryption key, so this leaks no plaintext — but it lets a repairing provider forge proofs for the position it just wrote); have the microservice hold the keys and tag reconstructed shards itself (it already holds them under ADR-059, so this is nearly free — but it requires the microservice to see the reconstructed shard bytes, which contradicts the pure-P2P transfer model of ADR-021); or leave reconstructed shards unauditable until the owner next comes online, which is unbounded. Until this resolves, every repaired shard is unauditable, and repair is a routine event, not an exceptional one. This is the largest remaining hole in Domain A and it should go to the council with F-01 rather than after it.
 
-Part 3 — Reading-list bookkeeping
-
-reading-list-v2.md Domain A, entry R-01 (Foundational PDP / PoR constructions) is closed by Papers 66–68. Its non-negotiable accept criterion — a construction where the verifier holds neither the data nor a precomputed answer, with challenge-time fresh nonces — is met by ADR-059.
-
-R-02 (sampling-based audit with formal detection bounds) is substantially closed by Paper 66's P_X bound and Paper 67's λ < (1 − ε)^(q_c), both of which ADR-060 substitutes at Vyomanaut's parameters. What remains is the union bound across a 56-shard stripe (Q67-1), which is a derivation rather than a search.
-
-R-08 (verification with sub-chunk locality) is closed by construction rather than by literature: challenging every block of a sampled chunk makes the challenged region exactly one contiguous 256 KB vLog record. The reading list's instruction to read R-08 with Domain A rather than after it was correct and is what produced the chunk-granularity sampling design.
-
-R-03 (proof transfer on repair) is not closed and is now urgent — see Q68-3. It was ranked third in Domain A; on this reading it should be first among what remains.
-
-R-04 (publicly verifiable / third-party audit) is not closed and is now load-bearing — it is the resolution path for Q68-1 and for F-22 simultaneously, which was not visible before ADR-059 made the private scheme's symmetric-secret property concrete.
+---

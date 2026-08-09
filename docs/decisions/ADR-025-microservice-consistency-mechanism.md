@@ -61,6 +61,7 @@ Background tasks (Merkle log compaction, materialised view refresh, repair job q
 
 **Positive:**
 
+- The audit verifier under ADR-059 is stateless — any replica holding a file's authenticator keys can issue and verify a challenge independently, with no counter or spent-challenge state shared across the cluster. The audit path adds no operation to ADR-013's six coordinated operations and stays outside F-35's and F-76's blast radius. Had the Juels–Kaliski sentinel family been adopted, a spent-sentinel counter would have been a seventh.
 - One replica failure does not interrupt service — availability is maintained with N=3, R=2, W=2
 - Gossip membership is self-healing: replicas added or removed without manual intervention beyond seed configuration
 - Client-driven coordination removes load-balancer as a latency source for hot paths (30+ ms improvement at 99.9th percentile, Dynamo Section 6.4)
