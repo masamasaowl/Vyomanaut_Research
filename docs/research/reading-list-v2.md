@@ -127,6 +127,24 @@ survived.
 holds **neither the data nor a precomputed per-challenge answer**, and must support **challenge-time
 fresh nonces**. That is what separates a usable scheme from the current one.
 
+**Status update.** R-01 and R-02 closed with Papers 66–68 (ADR-059, ADR-060, both Proposed). **R-03 and
+R-04 are now closed with Papers 69 and 70 respectively** — closed in the sense of "the canonical source
+has been read and its answer recorded," not in the sense of the underlying questions being resolved.
+R-03 (Paper 69, DPDP): the paper formalises authenticated updates but does not resolve the
+tag-generation-authority trilemma at Q68-3's centre — narrows, does not close. R-04 (Paper 70, OPOR):
+Fortress is a costed, adoptable liability mechanism for the already-chosen private scheme, contingent on
+infrastructure (a `GetRandomness`-equivalent) Vyomanaut does not yet have — see Q70-1's cross-reference
+into Domain G. **Domain A's open items are now council questions (F-01, Q68-1, Q68-3), not reading gaps.**
+
+**Two papers read outside R-01–R-04's stated scope, triaged this round:** Paper 71 (Li, Chu & Hu, CIA) —
+a multi-replica multi-CSP collaborative auditing scheme; considered and **not recommended**, since it
+assumes full replicas across CSPs (Vyomanaut has none — RS(16,56) gives every provider a unique shard)
+and its peer-auditing topology is the one Paper 37/ADR-002 already evidenced against. Documented for
+completeness; produces no ADR. Paper 72 (Zeng et al., PQ-Audit) — a 2026 hash-based post-quantum
+sampling audit; not adoptable as specified (breaks the constant-response-size property ADR-060 depends
+on), but usefully corroborates ADR-059's private-scheme choice as the lower-quantum-risk option in
+Q68-1. Filed as a V3/future-facing awareness item (Q72-1), not a Domain A gap.
+
 ---
 
 ## Domain P — Confidentiality-preserving repair `[GAP]` — **NEW, BLOCKER**
