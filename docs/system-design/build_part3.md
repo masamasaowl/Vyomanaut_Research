@@ -2998,6 +2998,288 @@ both feed directly into the LTS.
 
 ---
 
+## Stashing the demo cleanly, and the GitHub question
+
+### Should you create a dedicated GitHub account? — No. Create an **Organization**
+
+A second personal account is the wrong shape for what you are building, for four concrete reasons:
+
+| | Second personal account | **GitHub Organization** (recommended) |
+| --- | --- | --- |
+| **Bus factor** | One person's credentials, one recovery email, one 2FA device. If that is lost, the project is lost | Multiple owners; ownership transfers without moving repositories |
+| **Multi-repo** | Works, but there is no shared identity between `Vyomanaut_V2` and `Vyomanaut_Research` | Both under one namespace, one settings surface, one CODEOWNERS policy |
+| **Collaborators** | Per-repo invitations; no teams | Teams with role-based access — which matters the moment lab-mates or a college supervisor is involved |
+| **Institutional and investor optics** | `github.com/masamasaowl/Vyomanaut_V2` | `github.com/vyomanaut/Vyomanaut_V2` — and this is the URL that ends up in a whitepaper and a pitch deck |
+
+**Concretely:** create the free organization `vyomanaut`. Transfer both existing repositories into it
+(GitHub preserves stars, issues, history, and installs redirects from the old URLs, so nothing
+breaks). Add yourself as Owner, and add **one trusted second Owner** — that is the whole point.
+
+**Do this before the M18 tag, not after.** Transferring a repository is trivial; transferring one
+that has already been archived requires un-archiving, transferring, and re-archiving, and the
+release artifacts' download URLs change underneath anyone who has already cited them.
+
+Final layout:
+
+```
+github.com/vyomanaut/
+  ├── Vyomanaut_Research     (active — shared by both tracks; does NOT fork, per your ruling)
+  ├── Vyomanaut_V2           (ARCHIVED read-only at demo-v1.0.0 — the stash)
+  └── Vyomanaut_LTS          (active — forked from demo-v1.0.0)
+```
+
+### What "cleanly stashed" has to mean
+
+The bar is not "the code is on GitHub." It is: **in three years, someone who has never met you can
+rebuild and re-run this demo from scratch, and can tell exactly what it proved.** Five things must
+be true, and each has a distinct failure mode:
+
+| Requirement | Failure mode it prevents |
+| --- | --- |
+| **Offline-buildable** | `go build` fails in 2029 because a module was yanked, a proxy went away, or the two hand-repackaged `golang.org/x/*` zips are unobtainable |
+| **Toolchain-pinned** | Builds fine, behaves differently, because Go 1.31 changed something. `vendor/` pins modules; it does **not** pin the compiler |
+| **Runnable without reconstruction** | The code builds but nobody can stand up Postgres with the right schema, the right env vars, and the right startup order |
+| **Self-describing** | It runs, and nobody can say whether the audit it performed meant anything. `docs/DEMO.md` |
+| **Immutable** | Someone pushes a "small fix" in 2027 and the stash is no longer the thing that was demonstrated |
+
+### The procedure
+
+**Step 1 — Vendor and verify offline.**
+
+```bash
+go mod vendor
+git add vendor/ && git commit -m "chore: vendor dependencies for demo freeze"
+# The real test — no network at all:
+GOFLAGS=-mod=vendor GOPROXY=off GONOSUMDB='*' go build ./...
+GOFLAGS=-mod=vendor GOPROXY=off go test ./... -count=1
+```
+
+If either fails, the freeze is not reproducible. This is ADR-062's named failure mode and the
+council flagged it as the way a freeze silently goes wrong.
+
+**Step 2 — Pin the toolchain.** Add a `toolchain go1.26.2` line to `go.mod` and record the version
+in `docs/DEMO.md`. Also record the OS and architecture the artifacts were built on.
+
+**Step 3 — Build release binaries.**
+
+```bash
+for os in linux windows; do
+  for cmd in client provider microservice; do
+    GOOS=$os GOARCH=amd64 GOFLAGS=-mod=vendor \
+      go build -trimpath -o dist/vyomanaut-$cmd-$os-amd64 ./cmd/$cmd
+  done
+done
+sha256sum dist/* > dist/SHA256SUMS
+```
+
+`-trimpath` matters: without it the binaries embed your local filesystem paths, which is both a
+minor information leak and a reproducibility break.
+
+**Step 4 — Build the demo container image.** This is the single highest-value item in the whole
+procedure and the one most often skipped. `deployments/demo/docker-compose.yml` should bring up
+Postgres with the demo schema, the microservice, and a five-instance provider, so that the entire
+demo runs from **one command** with no environment reconstruction:
+
+```bash
+docker compose -f deployments/demo/docker-compose.yml up
+```
+
+Export it (`docker save | gzip`) and attach it to the release. In three years this will work when
+nothing else does.
+
+**Step 5 — Sign and tag.**
+
+```bash
+git tag -s demo-v1.0.0 -m "Vyomanaut V2 demo — frozen at Milestone 18.
+Demo profile only, CLI only, RS(3,5), mock payments.
+Substituted dependencies and known limitations: see docs/DEMO.md."
+git push origin demo-v1.0.0
+```
+
+A **signed, annotated** tag — not a lightweight one. A lightweight tag is a movable pointer; a
+signed annotated tag is evidence of what was frozen and by whom.
+
+**Step 6 — Create the GitHub Release**, attaching: the six binaries, `SHA256SUMS`, the container
+image tarball, `docs/DEMO.md`, and both run records. Release assets are content-addressed and
+survive repository archival.
+
+**Step 7 — Archive the repository.** Settings → Archive. Read-only, still browsable, still
+cloneable. This is what makes step 5's immutability requirement real rather than aspirational.
+
+**Step 8 — Fork the LTS *before* archiving.** Create `Vyomanaut_LTS` from `demo-v1.0.0` and delete
+`vendor/` in its first commit (the council's recommendation 2: `vendor/` is prohibited on the LTS
+track). Do this first — forking an archived repository is possible but awkward.
+
+**Step 9 — Write `docs/demo/STASH.md`** in the demo repo: the recovery procedure, in the imperative,
+for someone with no context. Clone, checkout the tag, `docker compose up`, run these six commands,
+expect this output. One page.
+
+---
+
+## Running a large-scale demo on a single desktop
+
+Your question: **can we do 10,000 nodes on one machine, paid or free?**
+
+Short answer: **yes for around 10,000 nodes, but not by running 10,000 provider daemons — and the
+distinction is the whole answer.** What breaks is not CPU. It is memory, and specifically the
+storage engine.
+
+### The arithmetic, at Vyomanaut's actual parameters
+
+A full provider daemon's working set, from the measurements the corpus already gives us:
+
+```
+Storage engine block cache (ADR-046: WithBlockCacheSize(64<<20))     64 MB
+Storage engine memtables / SST readers / vlog buffers            ~ 32–64 MB
+DHT record cache (NFR-045: 200 B/chunk, 1 chunk per 256 KB)
+    at --declared-storage-gb=1  →  4,096 × 200 B                  0.8 MB
+Go runtime, transport, heartbeat/audit goroutines                ~ 30–60 MB
+                                                                 ───────────
+Full daemon working set                                          ~ 130–190 MB
+```
+
+Which gives the hard result:
+
+```
+10,000 full daemons × 150 MB  =  1,500 GB
+```
+
+**No desktop does this. No single cloud instance does this.** The storage engine alone is
+98% of it, and it exists to serve a workload — thousands of chunks per provider — that a
+coordination-plane scale test does not exercise.
+
+Now strip the storage engine and the transport host, keeping only what the microservice can actually
+observe:
+
+```
+Ed25519 identity + registration state                             ~  1 KB
+Heartbeat timer + capability token cache                          ~  4 KB
+DHT record accounting (no real records, just counts)              ~ 10 KB
+Go goroutine stacks (2 per node) + HTTP client                    ~ 16 KB
+Per-node slack                                                    ~ 200 KB
+                                                                  ─────────
+Synthetic provider working set                                    ~ 250 KB
+ 
+10,000 synthetic providers × 250 KB  =  2.5 GB
+```
+
+**That fits on a laptop.** And it is not a cheat, because of what you are measuring at 10,000.
+
+### What a 10,000-node test is actually for
+
+At five nodes you are testing storage, erasure coding, and transport. At ten thousand you are
+testing something else entirely — the **coordination plane**:
+
+- Does Postgres sustain the audit-receipt INSERT rate? (NFR-043 — a launch blocker whose ceiling is
+  still the `5,000–10,000 rows/sec` *planning estimate*, never measured)
+- Does audit dispatch keep up, or does the queue grow without bound?
+- Does the scoring EWMA converge across 10,000 providers?
+- Does the repair queue drain faster than churn creates work?
+- Does the readiness evaluator's ASN-diversity query stay fast at 10,000 rows?
+- Does relay slot demand cross the threshold `architecture.md §27.5` predicts?
+**None of those need a real storage engine on the provider side.** They need 10,000 entities that
+register, heartbeat, answer audit challenges correctly, and occasionally leave. That is the design.
+
+### The proposal — a three-tier population
+
+| Tier | Count | What it runs | Per-node RAM | What it proves |
+| --- | --- | --- | --- | --- |
+| **Real** | 5–20 | Full daemon: storage engine, transport, audits, repair | ~150 MB | The storage and erasure path is genuinely exercised. Files really are stored and retrieved |
+| **Lightweight** | 100–500 | Full transport and protocol; storage engine replaced by an **in-memory chunk store** with a fixed cap | ~5 MB | Transport, DHT, and NAT behaviour at a population where routing tables actually fill |
+| **Synthetic** | up to ~10,000 | Protocol surface only — register, heartbeat, capability tokens, audit responses computed from a **deterministic seeded generator** rather than stored bytes | ~250 KB | Coordination-plane scaling: Postgres, dispatch, scoring, repair queue, readiness |
+
+The synthetic tier's audit responses are the mechanism that makes it honest. A synthetic provider
+does not store chunks; it stores a seed, and computes
+`chunk_bytes = PRF(seed ‖ chunk_id)` on demand. Its audit response is **cryptographically
+indistinguishable from a real provider's** — because it can produce the same bytes — while costing
+nothing to store. The microservice cannot tell the difference, which is exactly what you want when
+the microservice is the system under test.
+
+Budget on a **32 GB desktop**:
+
+```
+20 real       × 150 MB  =  3.0 GB
+200 lightweight × 5 MB  =  1.0 GB
+10,000 synthetic × 250 KB = 2.5 GB
+Postgres (shared_buffers 4 GB + work_mem)  ≈ 6.0 GB
+Microservice + OS + page cache             ≈ 4.0 GB
+                                            ────────
+                                             16.5 GB   — comfortable headroom
+```
+
+**A 32 GB desktop is sufficient. A 16 GB desktop reaches roughly 4,000 synthetic nodes.**
+
+### The three limits that will actually bite, and how to clear them
+
+These are the ones that turn into a lost afternoon if you meet them without warning.
+
+**File descriptors.** Each synthetic node holds at least one connection to the microservice. Linux
+defaults to 1024 per process.
+
+```bash
+ulimit -n 1048576
+# and in /etc/security/limits.conf:  * soft nofile 1048576
+```
+
+**Ephemeral ports.** 10,000 outbound connections from one IP to one `(dest_ip, dest_port)` pair will
+exhaust the ephemeral range.
+
+```bash
+sysctl -w net.ipv4.ip_local_port_range="10000 65535"
+sysctl -w net.ipv4.tcp_tw_reuse=1
+```
+
+**Better fix, and the one that scales:** Linux treats the entire `127.0.0.0/8` block as loopback —
+**16.7 million usable addresses**. Bind each synthetic node to its own `127.x.y.z`, and the
+per-source-IP port limit disappears entirely. This single trick is what makes five figures workable
+on one machine, and it costs one line in the harness.
+
+**Postgres connections.** 10,000 nodes must not mean 10,000 Postgres connections. Put **PgBouncer**
+in transaction-pooling mode in front of it — 10,000 client connections onto ~50 server connections.
+Without this you will hit `max_connections` at around node 100 and misdiagnose it as a scaling
+failure in your own code.
+
+### Free and paid options, honestly costed
+
+**Free, and genuinely sufficient:**
+
+| Option | What you get | Verdict |
+| --- | --- | --- |
+| **Your own desktop, 32 GB** | ~10,000 synthetic nodes | **The recommended path.** Free, repeatable, debuggable, and no time limit |
+| **Oracle Cloud Always Free** | 4 ARM Ampere cores + **24 GB RAM**, permanently free | Genuinely the most generous free tier in existence. Runs the full topology minus a little headroom. ARM64 — verify your build cross-compiles |
+| **Google Cloud $300 / 90 days** | Any instance size within the credit | A `n2-highmem-8` (64 GB) runs the whole topology for weeks inside the credit |
+| **GitHub Actions** | 4 vCPU / 16 GB, 6 h job limit, 2,000 free min/month | Good for a **nightly 2,000-node regression**, not for a long soak. The 6-hour cap is the binding constraint |
+| **College lab, 150+ desktops** | Distributed across real machines | The most impressive demo available to you, and the closest to production. Needs the LTS's real libp2p to be meaningful — see the caveat below |
+
+**Paid, if you need beyond ~10,000:**
+
+| Option | Rough cost | When it is worth it |
+| --- | --- | --- |
+| AWS `r6i.4xlarge` spot (128 GB) | ~$0.30/h ≈ **₹25/h** | A 12-hour 50,000-node soak for about ₹300 |
+| GCP `n2-highmem-16` spot (128 GB) | ~$0.28/h | Same, often cheaper in `asia-south1` (Mumbai) — and Mumbai matters, because Indian-network latency is part of what you are modelling |
+| Hetzner dedicated (128 GB) | ~€50/month | If simulation becomes continuous rather than occasional |
+
+**A 50,000-node soak costs roughly ₹300 on spot instances.** That is not a budget question, and I
+would not let cost drive this decision either way.
+
+### Two caveats worth more than the rest of this section
+
+**Caveat 1 — do not run this on the demo track.** The demo's Kademlia is hand-rolled and has never
+been tested above five nodes (Q-D-3). A large-scale run on the demo build would mostly measure the
+substitute implementation's limits, and would tell you almost nothing about the product. **Scale
+simulation belongs on the LTS track, after real go-libp2p lands.** Running it earlier produces
+numbers that look like data and are not.
+
+**Caveat 2 — the college's 150 desktops are the better demo, and a *different* test.** Ten thousand
+synthetic nodes on one machine measures the coordination plane. One hundred and fifty real desktops
+measure something no simulation can: real NAT, real ISP paths, real disks, real power events, real
+users closing lids. The two are complementary, and if I had to rank them, **150 real desktops is the
+more valuable result and the far more persuasive demonstration** — for an investor, a research paper,
+and the college alike. Simulate to find the coordination-plane ceiling; deploy to the lab to prove
+the thing works where people actually are.
+
+---
+
 ## M18/M19 Forward-Compatibility: Desktop GUI Shell Readiness
 
 **Why this section exists.** `build.md`'s Milestone 18 ("Launch Readiness") is the last
