@@ -1,8 +1,8 @@
-# ADR-064 — Every runbook has an alert; every alert has a runbook
+# ADR-067 — Every runbook has an alert; every alert has a runbook
 
-**Status:** Proposed — blocked on ADR-063 (alert expressions must reference final metric names)
+**Status:** Accepted
 **Topic:** #17 Observability
-**Supersedes:** — *(extends NFR-027; adds a ninth runbook — see ADR-065)*
+**Supersedes:** — *(extends NFR-027; adds a ninth runbook — see ADR-068)*
 **Source:** This review; `MVP §8.5`; `IC §10`; live audit of `deployments/grafana/alerts.yaml`
 
 ## Context
@@ -16,6 +16,10 @@ This is not a documentation defect. A runbook nobody is paged into is a document
 The five without alerts are exactly the ones covering third-party and scheduled failure modes —
 Postgres, the secrets manager, Razorpay, the RBI holiday table, secret rotation — which is to say,
 the failures an on-call engineer is *least* likely to diagnose from first principles at 3 a.m.
+
+## Updates
+
+Q-M18-4 resolved: audit-secret rotation cadence is fixed at 90 days, with IC §8's 24-hour overlap window unchanged; AuditSecretRotationOverdue fires at 90 d. PostgresPrimaryUnreachable's dependency on a postgres_exporter becomes a required deployment component rather than an open constraint.
 
 ## Options considered
 
@@ -35,7 +39,7 @@ alert table:
 | `PostgresPrimaryUnreachable` | `up{job="postgres"} == 0 for 2m` | critical | `postgres-failover.md` | exporter `up` — exists |
 | `SecretsManagerUnavailable` | `increase(vyomanaut_cluster_secret_fetch_failures_total[15m]) > 0` | critical | `secrets-manager-outage.md` | **new** — IC §8 already defines `ErrSecretManagerUnavailable`/`ErrSecretExpired`; this counts them |
 | `RazorpayAPIErrorRateHigh` | `rate(vyomanaut_payment_razorpay_errors_total[15m]) / rate(vyomanaut_payment_razorpay_requests_total[15m]) > 0.05` | critical | `razorpay-api-outage.md` | **new** |
-| `RBIHolidayTableStale` | `vyomanaut_payment_rbi_holiday_table_year < year(now())+1` | warning | `rbi-holiday-table-update.md` | **new** (dimensionless, ADR-063) |
+| `RBIHolidayTableStale` | `vyomanaut_payment_rbi_holiday_table_year < year(now())+1` | warning | `rbi-holiday-table-update.md` | **new** (dimensionless, ADR-066) |
 | `AuditSecretRotationOverdue` | `time() - vyomanaut_cluster_audit_secret_rotated_timestamp_seconds > 90d` | warning | `audit-secret-rotation.md` | **new** |
 
 `RBIHolidayTableStale` is the one I would most defend on its own merits: NFR-031's annual December
@@ -52,7 +56,7 @@ exists. Both directions.
 
 ## Consequences
 
-Nine runbooks (eight plus ADR-065's), nine-plus alerts, bidirectionally verified. Three new
+Nine runbooks (eight plus ADR-068's), nine-plus alerts, bidirectionally verified. Three new
 counters and two new gauges enter the NFR-025 frozen set and must be added to it in the same PR.
 
 **Open constraints:**

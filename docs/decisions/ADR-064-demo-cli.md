@@ -1,6 +1,6 @@
 # ADR-064 — Demo CLI: all eight subcommands, mock-backed escrow
 
-**Status:** Proposed — blocked on ADR-062
+**Status:** Accepted
 **Track:** DEMO
 **Topic:** #14 Client Interface *(new topic)*
 **Supersedes:** — *(implements `MVP §8.3`'s `cmd/client` subcommand table)*
@@ -19,7 +19,11 @@ reversed that** (N-06): upload is gated on escrow balance at `internal/api/uploa
 `MockProvider.InitiateEscrow` credits the ledger **synchronously** in demo mode. So `deposit` is not
 an optional production nicety — it is a hard prerequisite of the demo's first upload.
 
-### Options considered
+## Updates
+
+Open constraint on recover resolved: ship both passphrase and mnemonic paths — both are built in internal/client/account, so the cost is one flag. Q-D-4 resolved: percentage progress only; ADR-037's progress/ETA contract is LTS. Now delivered by M17, not M18.
+
+## Options considered
 
 | Option | Pros | Cons |
 | --- | --- | --- |
@@ -27,7 +31,7 @@ an optional production nicety — it is a hard prerequisite of the demo's first 
 | **All eight per MVP §8.3 — chosen** | Matches a specification that already exists, so no new design; every subpackage already built and tested; the demo is operable by someone who did not write it | Three subcommands (`ls`, `rm`, `balance`) are not on the critical path — accepted, they are thin wrappers over `internal/client/manage`, already built |
 | **Add demo-only convenience commands (auto-fund, one-shot end-to-end)** | Fastest possible live demo | New surface area outside MVP §8.3, in a version that is about to be frozen. A `--seed-escrow` flag on `deposit` gets the same result inside the existing spec |
 
-### Decision
+## Decision
 
 **1. All eight subcommands per `MVP §8.3`**, each a thin wiring layer over its mapped subpackage.
 `cmd/` remains wiring only (IC §11) — any behaviour worth testing belongs in `internal/client`.
@@ -51,7 +55,7 @@ once to stdout with a confirmation step, never to a log, never to a file, and ne
 **6. Errors render `interface-contracts.md §14` copy codes**, never raw Go error strings — the same
 table the future GUI will read.
 
-### Consequences
+## Consequences
 
 The demo becomes demonstrable by a human. The integration test gains the option of driving the real
 binary. Cost: one session's worth of wiring over already-tested packages — the cheapest remaining

@@ -1,6 +1,6 @@
 # ADR-063 — Demo-track dependency substitutions: declare, do not fix
 
-**Status:** Proposed — blocked on ADR-062
+**Status:** Accepted
 **Track:** DEMO *(with a stated LTS reversal obligation)*
 **Topic:** #6 Network Layer / #3 Erasure Coding
 **Supersedes:** — *(amends ADR-021, ADR-001, ADR-003 for the demo track only)*
@@ -21,7 +21,11 @@ exists to guard. The 0-RTT deny-list is preserved under TLS session-ticket resum
 property IC §4 actually cares about. This ADR is not a criticism of that work; it is the missing
 record of it.
 
-### Options considered
+## Updates
+
+Gains the council's module-provenance disclosure obligation: the two hand-repackaged golang.org/x/* modules must be named in docs/DEMO.md, since their go.sum entries attest to locally built artifacts. Q-D-2 resolved — RS(16,56) correctness is settled by M19 Session 19.2.1's differential test, not left open. Q-D-3 resolved — the from-scratch Kademlia is not to be scale-tested; ADR-069 §6 makes that a compile-time guard. LTS obligation points to the LTS Foundation milestone by name.
+
+## Options considered
 
 | Option | Pros | Cons |
 | --- | --- | --- |
@@ -29,7 +33,7 @@ record of it.
 | **Leave as-is, documented only in `doc.go`** | Zero work | Violates IC §11's own disclosure standard; a future reader of the frozen demo cannot tell which properties were proven and which were approximated; N-05's three checks stay silently mis-rationalised |
 | **Declare in an ADR and in `architecture.md §4.1`; bind the LTS to reverse it — chosen** | The freeze stays honest; N-05's checks get correct rationales; the LTS inherits an explicit, scoped obligation instead of an inherited assumption | Requires the demo scope record (Session 18.3.1) to be written carefully — an under-written one is worse than none |
 
-### Decision
+## Decision
 
 **1. Both substitutions are ratified for the demo track**, and recorded in `architecture.md §4.1`
 with the mechanism-by-mechanism table from N-02 above, not a summary sentence.
@@ -54,7 +58,7 @@ exist on this track and that the validator rules are the guarded property.
 **4. The LTS reverses every row before any M20+ work depends on it.** This is Milestone 19's entire
 subject.
 
-### Consequences
+## Consequences
 
 The frozen demo becomes self-describing: anyone who opens it in two years can tell exactly what it
 proved. IC §11's disclosure standard is met. Milestone 19 gets a checklist instead of an

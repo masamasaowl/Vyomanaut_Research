@@ -1,6 +1,6 @@
-# ADR-062 — Launch gates are code, not shell thresholds
+# ADR-065 — Launch gates are code, not shell thresholds
 
-**Status:** Proposed — blocked on your B-01 ruling (which audit primitive M18 certifies)
+**Status:** Accepted
 **Topic:** #18 Launch Readiness *(new topic)*
 **Supersedes:** — *(amends `requirements.md §7.4`, `MVP §8.5`)*
 **Source:** This review; `requirements.md §7.4/§7.5`; `architecture.md §27.4`; NFR-043; the
@@ -23,7 +23,11 @@ There is a second, sharper problem. NFR-043 says the measured Postgres ceiling *
 edit gating GA**, with nothing that fails if it is skipped. `architecture.md §27.1` still carries
 the row `ASSUMED — must be benchmarked before V2 GA`. Nothing in CI notices.
 
-### Options considered
+## Updates
+
+The B-01 clause is deleted — the demo freeze resolved it permanently. Q-M18-2 resolved: the benchmark result machine schema is fixed as `{cpu_model, cores, base_clock_mhz, aes_ni: bool, sha_ni: bool, ram_gb, disk_class: ssd}`
+
+## Options considered
 
 | Option | Pros | Cons |
 | --- | --- | --- |
@@ -32,7 +36,7 @@ the row `ASSUMED — must be benchmarked before V2 GA`. Nothing in CI notices.
 | **`internal/launchgate` Go package: struct literal + result JSON + verdict tool — chosen** | Compiler enforces completeness (all fields in a struct literal, ADR-031's own OR-03 mechanism); one number, one place; each run emits a durable signed-shaped artifact; write-back becomes CI-checkable | Bench machine needs the Go toolchain — acceptable: `aont_encode` and `argon2id` are already Go-path benchmarks, and the minimum-spec machine runs Ubuntu 22.04 |
 | **Full benchmark harness (Go `testing.B` + benchstat)** | Idiomatic; statistical rigour for free | `rocksdb_hdd`, `postgres_insert_ceiling` and `e2e_upload` are cross-process, multi-machine measurements that do not fit `testing.B`; would force two mechanisms anyway |
 
-### Decision
+## Decision
 
 **1. `internal/launchgate/gate.go` holds every launch threshold as a single struct literal**, with a
 compiler-enforced completeness test mirroring `TestProfileBothFullySpecified`:
@@ -70,7 +74,7 @@ the string `5,000–10,000`, or while `§27.1`'s ceiling row still reads `ASSUME
 
 **6. `CertifiedAuditPrimitive`** — a frozen constant in the same package, resolving B-01 (§1).
 
-### Consequences
+## Consequences
 
 Seven thresholds collapse to one location. D-05 and D-13 become structurally impossible rather than
 individually fixed. Every launch certification produces a durable artifact tied to a git SHA and a

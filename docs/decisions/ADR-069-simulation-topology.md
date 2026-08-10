@@ -1,7 +1,6 @@
 # ADR-069 — Three-tier scale simulation topology
 
-**Status:** Proposed — blocked on M19 (real `go-libp2p`; simulating on the substituted stack
-measures the substitute)
+**Status:** Accepted
 **Track:** LTS
 **Topic:** #16 Simulation & Scale *(new topic)*
 **Supersedes:** — *(extends `MVP §8.3`'s `--sim-count`)*

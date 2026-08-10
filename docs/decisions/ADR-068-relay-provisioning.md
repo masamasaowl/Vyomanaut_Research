@@ -1,6 +1,6 @@
-# ADR-065 — Relay capacity telemetry and pre-emptive provisioning
+# ADR-068 — Relay capacity telemetry and pre-emptive provisioning
 
-**Status:** Proposed — blocked on ADR-064 (shares the alert/runbook mechanism)
+**Status:** Accepted
 **Topic:** #6 Network Layer / #17 Observability
 **Supersedes:** — *(instruments `architecture.md §27.5`, §27.7, §27.8; closes the telemetry half of Q20-1)*
 **Source:** This review; `architecture.md §27.5/§27.7/§27.8`; `IC §4.3`; NFR-006
@@ -40,6 +40,10 @@ There is a second payoff. §27.5 says *"Q20-1 telemetry at private beta resolves
 fraction"* — the 30%-vs-45% assumption that swings the binding point by 280 providers. Nothing
 currently collects that telemetry either. The same metric closes both.
 
+## Updates
+
+ Q-M18-5 resolved: relay nodes do not refuse reservations below hard exhaustion — rejecting a reservation rejects a provider from the network, and the 70% warning plus 85% critical give sufficient lead time. slots_total reads the configured limit at runtime, never the assumed 128. Now additionally gated on M19 Session 19.1.3, which is where Circuit Relay v2 reservations first exist.
+
 ## Options considered
 
 | Option | Pros | Cons |
@@ -53,7 +57,7 @@ currently collects that telemetry either. The same metric closes both.
 **1. Three new metrics.** On each relay node (`cmd/microservice --relay-mode`):
 
 ```
-vyomanaut_relay_reservation_slots_used     gauge, dimensionless (ADR-063)
+vyomanaut_relay_reservation_slots_used     gauge, dimensionless (ADR-066)
 vyomanaut_relay_reservation_slots_total    gauge, dimensionless
 vyomanaut_relay_reservations_rejected_total  counter
 ```
@@ -85,7 +89,7 @@ urgency and different failure modes, and MVP §8.5's eight-file list conflates t
 
 **4. `architecture.md §27.5` gains a measured-vs-assumed column** on the CGNAT fraction, updated
 from `vyomanaut_cluster_relay_dependent_providers` once private beta has 30+ days of data — the same
-measure-then-freeze discipline ADR-062 applies to benchmarks and NFR-043 applies to the Postgres
+measure-then-freeze discipline ADR-068 applies to benchmarks and NFR-043 applies to the Postgres
 ceiling.
 
 ## Consequences

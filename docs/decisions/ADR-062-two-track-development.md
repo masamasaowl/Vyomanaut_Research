@@ -1,6 +1,6 @@
 # ADR-062 — Two-track development: Demo freeze at M18, LTS from M19
 
-**Status:** Proposed — blocked on your confirmation of the repository topology in §Decision 2
+**Status:** Accepted
 **Topic:** #0 Project Governance *(new topic)*
 **Supersedes:** — *(governs `build.md`'s dependency graph from M17 onward)*
 **Research source:** Karma's ruling, August 2026; completeness sweep of `Vyomanaut_V2` @ working copy
@@ -19,7 +19,11 @@ directly in front of the demo's finish line). LTS work gets started against demo
 inherits them silently (the P2P substitution, N-02, is the live example). And a stashed demo gets
 demonstrated years later with nobody able to say what it did and did not prove.
 
-### Options considered
+## Updates
+
+Vyomanaut_Research does not fork — one research corpus, one ADR series, track tags do the separation (Q-D-1 resolved). The old M17 is relocated, not deferred, and M17 is now Demo Completion. Second open constraint (reproducibility) resolved into a required M18 Session 18.4.1 step. Milestone references above 19 removed.
+
+## Options considered
 
 | Option | Pros | Cons |
 | --- | --- | --- |
@@ -27,7 +31,7 @@ demonstrated years later with nobody able to say what it did and did not prove.
 | **Branch within one repository** | Shared history; cherry-picking fixes is trivial | The demo must be *frozen*, and a live branch in an active repo is not frozen. CI check 10's ADR ceiling, the `NetworkProfile` prod half, and the migration prod profile all drift under the demo's feet |
 | **Separate repository forked at the demo tag — chosen** | The freeze is real; the demo's ADR ceiling, dependency set and CI gate are fixed at fork time; LTS is free to make breaking changes without a compatibility argument | Fixes do not flow automatically. Accepted deliberately: after the freeze, the demo should not receive fixes — a demo that keeps changing is not a stash |
 
-### Decision
+## Decision
 
 **1. Two tracks, with different completion bars, stated once and referenced thereafter.**
 
@@ -64,7 +68,7 @@ before any M20+ work depends on it, and the demo's `SoloMembership` / `envSecret
 fork time. LTS ADRs (065+) referenced in demo source are a check-10 failure — which is the desired
 behaviour: it makes accidental back-porting loud.
 
-### Consequences
+## Consequences
 
 The demo ships. M17's production hardening stops blocking it. Every future "is this demo or LTS?"
 question resolves against a table instead of a debate. The cost is a second repository and the
