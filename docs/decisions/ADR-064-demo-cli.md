@@ -7,7 +7,7 @@
 **Research source:** N-01 and N-06 above; `MVP §8.3`; `internal/payment/mock.go`;
 `internal/client/{account,upload,retrieve,manage}` @ working copy
 
-#### Context
+## Context
 
 N-01: the CLI does not exist and no session builds it. `MVP §8.3` specifies eight subcommands and
 maps each to an `internal/client` subpackage; all four subpackages are built and tested. The gap is
@@ -19,7 +19,7 @@ reversed that** (N-06): upload is gated on escrow balance at `internal/api/uploa
 `MockProvider.InitiateEscrow` credits the ledger **synchronously** in demo mode. So `deposit` is not
 an optional production nicety — it is a hard prerequisite of the demo's first upload.
 
-#### Options considered
+### Options considered
 
 | Option | Pros | Cons |
 | --- | --- | --- |

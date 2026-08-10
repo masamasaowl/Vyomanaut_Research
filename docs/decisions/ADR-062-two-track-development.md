@@ -5,7 +5,7 @@
 **Supersedes:** — *(governs `build.md`'s dependency graph from M17 onward)*
 **Research source:** Karma's ruling, August 2026; completeness sweep of `Vyomanaut_V2` @ working copy
 
-#### Context
+## Context
 
 Every planning document in the repository assumes a single artifact progressing M0 → M18 to
 production launch. `build.md`'s dependency graph ends `M17 → M18`; MVP §8.5 gates runbooks on
@@ -19,7 +19,7 @@ directly in front of the demo's finish line). LTS work gets started against demo
 inherits them silently (the P2P substitution, N-02, is the live example). And a stashed demo gets
 demonstrated years later with nobody able to say what it did and did not prove.
 
-#### Options considered
+### Options considered
 
 | Option | Pros | Cons |
 | --- | --- | --- |

@@ -7,7 +7,7 @@
 **Research source:** `internal/p2p/doc.go`, `internal/erasure/doc.go` (substitution records written
 at build time); IC §11 (vendoring-disclosure rule); this document's N-02
 
-#### Context
+## Context
 
 N-02 above, in full. Two load-bearing external dependencies were replaced with stdlib
 implementations because the build environment could not reach them, and both replacements are
@@ -21,7 +21,7 @@ exists to guard. The 0-RTT deny-list is preserved under TLS session-ticket resum
 property IC §4 actually cares about. This ADR is not a criticism of that work; it is the missing
 record of it.
 
-#### Options considered
+### Options considered
 
 | Option | Pros | Cons |
 | --- | --- | --- |
@@ -29,7 +29,7 @@ record of it.
 | **Leave as-is, documented only in `doc.go`** | Zero work | Violates IC §11's own disclosure standard; a future reader of the frozen demo cannot tell which properties were proven and which were approximated; N-05's three checks stay silently mis-rationalised |
 | **Declare in an ADR and in `architecture.md §4.1`; bind the LTS to reverse it — chosen** | The freeze stays honest; N-05's checks get correct rationales; the LTS inherits an explicit, scoped obligation instead of an inherited assumption | Requires the demo scope record (Session 18.3.1) to be written carefully — an under-written one is worse than none |
 
-#### Decision
+### Decision
 
 **1. Both substitutions are ratified for the demo track**, and recorded in `architecture.md §4.1`
 with the mechanism-by-mechanism table from N-02 above, not a summary sentence.
