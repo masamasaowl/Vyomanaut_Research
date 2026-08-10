@@ -2140,295 +2140,387 @@ VET:
 
 ---
 
-## Milestone 17 — Production Hardening (LTS Deffered)
+## MILESTONE 17 — Demo Completion *(rewritten; replaces Production Hardening)*
 
-**Status:** *(corrected per A-12)* All deployment-topology detail this milestone needs is
-present in `architecture.md` §13, §18, §24, §27.5 — nothing here is blocked on missing
-documentation. The one genuine gap found during this review was the absence of an
-authentication contract for inter-replica gossip sync (A-9); it is resolved by
-**ADR-048** (approved, drafted in full alongside this document) and is folded into Session
-17.2.1 below as a marked addendum, in the same base-task-plus-addendum shape Milestones
-13/14 already use for ADR-036.
+**Deliverable:** a demo a human can run. The CLI exists, `scripts/test/` is complete, and the old
+M17's production content is formally relocated to the LTS track.
 
-**Reference:** IC §4.3 (circuit relay), IC §8 (secrets manager — path/rotation contract),
-architecture.md §13 (P2P transfer layer — relay tiers, node placement), §18 (coordination
-microservice — gossip, quorum, routing, background throttling), §24 (deployment topology),
-§27.5 (network/DHT scaling); ADR-048 (gossip authentication — new)
+**Status:** `internal/client/{account,upload,retrieve,manage}` are built and tested (M15).
+`cmd/client/main.go` is an eight-line stub. No session in any build document has ever revisited it.
+This milestone is the wiring.
+
+**Dependency:** M16 → **M17** → M18.
+**Reference:** `MVP §8.3` (subcommand table), IC §5.9 (`UploadOrchestrator`), IC §11 (`cmd/` is
+wiring only), IC §14 (copy codes), ADR-035 (`intent_url` server-owned), ADR-064.
+**Sessions:** 5.
 
 ---
 
-### Phase 17.1 — Secrets Manager Adapters
+### Phase 17.1 — The Data Owner CLI *(closes N-01)*
 
-**Reference:** IC §8, `mvp.md` §6.2 (IR-03)
+#### Session 17.1.1 — CLI skeleton, `register`, `recover`
 
-#### Session 17.1.1 — Implement secrets manager adapters
+**PRECONDITIONS** — M16 complete. `internal/client/account` builds; its tests pass.
 
-**TASK:** Implement `SecretsManagerClient` (IC §8 interface — `GetSecret(ctx, path)
-([]byte, error)`) for three backends:
+**TASK**
 
-- HashiCorp Vault (`internal/secrets/vault.go`)
-- AWS SSM Parameter Store (`internal/secrets/aws_ssm.go`)
-- GCP Secret Manager (`internal/secrets/gcp_secret.go`)
-Each adapter reads the secret at path `/vyomanaut/audit-secret/v{N}` (IC §8 path
-convention). Each must handle the 24-hour rotation overlap window: read both `v{N}` and
-`v{N+1}` when both exist (IC §8 rotation contract). Selection among adapters is via
-`VYOMANAUT_SECRETS_BACKEND`. **Forward-compatibility note (A-10/A-11):** these same three
-adapters, unchanged, are what Session 17.2.1 below reads the new
-`/vyomanaut/cluster-replica-pubkeys/v{N}` path through — no fourth adapter, no interface
-change; write the path handling generically (accept any `/vyomanaut/{topic}/v{N}` shape)
-rather than hardcoding `audit-secret` into the adapter logic itself, so the new path Session
-17.2.1 needs costs nothing extra here.
-
-**FILES** — `internal/secrets/vault.go`, `aws_ssm.go`, `gcp_secret.go`, `secrets_test.go`
+1. Replace `cmd/client/main.go`'s stub with a subcommand dispatcher over the eight `MVP §8.3` names:
+   `register`, `recover`, `upload`, `retrieve`, `ls`, `rm`, `balance`, `deposit`. Unknown
+   subcommand → usage text, exit 2.
+2. Global flags: `--mode` (falls back to `VYOMANAUT_MODE`; flag wins, MVP §5.3),
+   `--microservice-url` (required), `--data-dir` (default `$HOME/.vyomanaut`), `--json`.
+3. `register` → `account.Register`. Argon2id at `profile.Argon2Time/Memory/Threads` — never
+   hardcoded. Mnemonic displayed **once** to stdout behind an explicit confirmation prompt.
+4. `recover` → `account.Recover`, with `--passphrase` and `--mnemonic` paths.
+5. **The mnemonic never enters `--json` output, any log line, or any file.**
+6. One `renderError` helper maps every error to an IC §14 copy code.
+**FILES** — `cmd/client/main.go` (rewrite), `cmd/client/dispatch.go`, `cmd/client/account_cmds.go`,
+`cmd/client/render.go`
 
 **VERIFY**
 
 ```bash
 COMPILE:
-  $ go build ./internal/secrets/
+  $ go build ./cmd/client/
   EXPECT: exit 0
  
-IMPORT_CONSTRAINTS:                    # A-3 — internal/secrets is a leaf, like crypto/erasure
-  $ grep -cE "Vyomanaut_V2/internal/(audit|scoring|repair|payment|storage|cluster|client)" internal/secrets/*.go
+STUB_IS_GONE:                               # N-01
+  $ grep -c "mode=STUB" cmd/client/main.go
+  EXPECT: 0
+  $ grep -c "TODO: wire subsystems" cmd/client/main.go
   EXPECT: 0
  
-ALL_THREE_BACKENDS_IMPLEMENT_GETSECRET:
-  $ grep -cE "func.*GetSecret\(ctx" internal/secrets/vault.go internal/secrets/aws_ssm.go internal/secrets/gcp_secret.go
-  EXPECT: 3
+ALL_EIGHT_SUBCOMMANDS_DISPATCHED:           # MVP §8.3
+  $ grep -cE '"(register|recover|upload|retrieve|ls|rm|balance|deposit)"' cmd/client/dispatch.go
+  EXPECT: >= 8
  
-PATH_CONVENTION_NOT_HARDCODED_TO_AUDIT_SECRET:      # forward-compat for ADR-048's new path
-  $ grep -nE '"/vyomanaut/audit-secret' internal/secrets/vault.go internal/secrets/aws_ssm.go internal/secrets/gcp_secret.go
-  EXPECT: no matches inside GetSecret itself — the path is a caller-supplied argument, not a package-level constant
+UNKNOWN_SUBCOMMAND_EXITS_2:
+  $ go run ./cmd/client nonsense >/dev/null 2>&1; echo "exit=$?"
+  EXPECT: exit=2
  
-ROTATION_OVERLAP_READS_BOTH_VERSIONS:
-  $ grep -cE "v\{N\}|vN|version.*\+.*1|N\+1" internal/secrets/vault.go
+MODE_FLAG_OVERRIDES_ENV:                    # MVP §5.3
+  $ grep -c "VYOMANAUT_MODE" cmd/client/main.go
   EXPECT: >= 1
  
-BACKEND_SELECTED_VIA_ENV_VAR:
-  $ grep -c "VYOMANAUT_SECRETS_BACKEND" internal/secrets/*.go
-  EXPECT: >= 1
+CMD_IS_WIRING_ONLY:                         # IC §11
+  $ grep -cE "func (Derive|Encode|Decode|Sign|Compute|Validate)[A-Z]" cmd/client/*.go
+  EXPECT: 0
  
-SENTINEL_ERRORS_PRESENT:
-  $ grep -cE "ErrSecretNotFound|ErrSecretManagerUnavailable|ErrSecretExpired" internal/secrets/*.go
-  EXPECT: >= 3
+MNEMONIC_NEVER_LOGGED_OR_SERIALISED:
+  $ grep -cE "log\.|slog\.|os.WriteFile" cmd/client/account_cmds.go
+  EXPECT: 0
+  $ grep -cE 'json:"[a-z_]*mnemonic' cmd/client/*.go
+  EXPECT: 0
+ 
+ARGON2_PARAMS_FROM_PROFILE:
+  $ grep -cE "profile\.Argon2(Time|Memory|Threads)" cmd/client/account_cmds.go
+  EXPECT: >= 1
+  $ grep -cE "argon2\.IDKey\([^)]*, ?3, ?65536|64 \* 1024" cmd/client/*.go
+  EXPECT: 0
  
 UNIT_TESTS:
-  $ go test -v -run TestSecretsManager ./internal/secrets/
+  $ go test -v ./cmd/client/
   EXPECT: exit 0; tests include:
-    TestVaultGetSecretReturnsDecodedBytes
-    TestAWSSSMGetSecretReturnsDecodedBytes
-    TestGCPSecretManagerGetSecretReturnsDecodedBytes
-    TestRotationOverlapReadsBothVAndVPlusOne
-    TestBackendSelectionRespectsEnvVar
-    TestUnreachableManagerReturnsErrSecretManagerUnavailable
+    TestDispatchRecognisesAllEightSubcommands
+    TestUnknownSubcommandExitsTwo
+    TestModeFlagOverridesEnvVar
+    TestMnemonicAbsentFromJSONOutput
  
 VET:
-  $ go vet ./internal/secrets/
+  $ go vet ./cmd/client/
   EXPECT: exit 0; zero output
 ```
 
 ---
 
-### Phase 17.2 — HA Microservice & Relay Nodes
+#### Session 17.1.2 — `upload` and `retrieve`
 
-#### Session 17.2.1 — Implement gossip cluster (`internal/cluster`) *(base task unchanged; security addendum added — A-9/ADR-048)*
+**PRECONDITIONS** — 17.1.1 complete. `internal/client/upload` and `internal/client/retrieve` pass.
 
-**Reference:** ARCH §18; ADR-048 (new)
+**TASK**
 
-**TASK — base (matches ARCH §18 as currently written):**
-
-Create `internal/cluster/gossip.go` implementing the three-replica gossip membership per
-`architecture.md` §18. The `GossipCluster` struct must expose:
-
-- `HealthyCount() int` — returns the count of peers with a last-seen timestamp within
-  `profile.GossipHealthyWindow` (ADR-048 §6 — a named profile field, not the bare `5
-  seconds` literal the original spec used).
-- `MemberAddresses() []url.URL` — returns the current membership list for client-driven
-  routing.
-- A `reconcile()` loop running at 1-second intervals: select one randomly-chosen peer,
-  exchange membership histories via `POST /internal/membership/sync` carrying a vector
-  clock.
-- Two pre-configured seed node addresses read from `VYOMANAUT_SEED_NODE_1` and
-  `VYOMANAUT_SEED_NODE_2`; these prevent partition on restart (architecture.md §18).
-Quorum check: `HealthyCount() >= 2` satisfies the (3,2,2) write quorum (architecture.md
-§18). A read or write that cannot reach 2 replicas must return `ErrQuorumUnavailable`.
-
-Add `internal/cluster/router.go` implementing `ResponsibleReplica(opType string) *url.URL`
-per the client-driven routing description in M12 Session 12.1.1.
-
-Add `internal/cluster/mock_cluster.go` (build tag `test`) providing `MockClusterMembership`
-that returns configurable healthy counts for unit testing without a live cluster.
-
-Wire into `cmd/microservice/main.go`: after guard rails pass, initialise `GossipCluster`,
-wait for 2-peer ack, then start the readiness evaluator.
-
-**⛔ SECURITY ADDENDUM — apply after ADR-048 accepted (A-9):** the base task above matches
-`architecture.md §18` as currently written, but §18 itself never specifies authentication
-for `POST /internal/membership/sync`, and `interface-contracts.md` §2's own rule treats
-this link as out of scope without an ADR — closed by ADR-048, now approved and drafted.
-Once accepted:
-
-1. **Replica identity at startup.** Each replica generates (or loads, if already present)
-   an Ed25519 key pair, persisted locally the same way `internal/p2p/identity.go` persists
-   a provider's identity (ADR-048 §2). Load the other two replicas' public keys from
-   `/vyomanaut/cluster-replica-pubkeys/v{N}` via the existing `SecretsManagerClient` (Session
-   17.1.1 — no new interface), cached on the same 5-minute TTL as the audit secret.
-2. **Extend `MembershipSyncRequest`/`-Response`** with `request_ts_ms`(8B) and
-   `replica_sig`(64B) — Ed25519 by the sender's own replica key over
-   `SHA-256("vyomanaut-gossip-sync-v1" ‖ replica_id ‖ vector_clock ‖ request_ts_ms)`
-   (ADR-048 §4). Sign **both** the outgoing request and the outgoing response — this is a
-   bidirectional exchange, and a forged response is exactly as dangerous as a forged
-   request (ADR-048 §4).
-3. **Handler ordering, before any vector-clock merge** (ADR-048 §5 — authz-before-mutation,
-   the same ordering pattern already enforced in `cmd/provider/handler_vetting_gc.go` for
-   ADR-036): (a) `replica_id` ∈ the cached two-key set → else discard silently; (b)
-   `|now − request_ts_ms| ≤ profile.AuthRequestFreshnessWindow` (reused from ADR-036, not a
-   new field) → else discard as stale; (c) `replica_sig` verifies → else discard. Only then
-   merge.
-4. Add the `MS ↔ MS` self-edge to `interface-contracts.md` §2's diagram and cross-reference
-   table (ADR-048 §1 / A-10) — this is a documentation PR, not a code change, but it is a
-   precondition IC §2 itself states before this session's code path is in scope at all.
-**FILES** — `internal/cluster/gossip.go`, `router.go`, `mock_cluster.go` (build tag `test`),
-`internal/cluster/identity.go` (new — addendum only), `gossip_test.go`
+1. `upload <path>` → `upload.UploadFile` (IC §5.9). Prints `file_id` to stdout. Percentage progress
+   to **stderr**, keeping stdout parseable.
+2. `retrieve <file_id> [-o out]` → `retrieve.RetrieveFile`. Default filename from the pointer file.
+3. `--resume <session_id>` → `upload.ResumeUpload`.
+4. Error paths render IC §14 codes only: `ErrInsufficientEscrow` (with shortfall and a pointer to
+   `deposit`), `ErrNetworkNotReady` (readiness gate unsatisfied — a normal state, not an alarm),
+   `ErrTooFewShards`, `ErrCanaryMismatch`.
+5. **Apply D-10.** `internal/client/retrieve/decode.go:43` returns the package-local
+   `ErrCanaryMismatch` **without wrapping**, so `errors.Is(err, crypto.ErrCanaryMismatch)` is false
+   above the client boundary. Change to `fmt.Errorf("retrieve: %w", crypto.ErrCanaryMismatch)`.
+   The buffer-zeroing behaviour is already correct — **do not touch it**.
+6. **Apply D-07.** `internal/payment`'s doc comment cites `NFR-046` for the no-float rule. The
+   no-float rule is **NFR-038**; NFR-046 is metric naming.
+**FILES** — `cmd/client/transfer_cmds.go`, `internal/client/retrieve/decode.go` (edit),
+`internal/payment/ledger.go` (edit — comment)
 
 **VERIFY**
 
 ```bash
 COMPILE:
-  $ go build ./internal/cluster/
+  $ go build ./cmd/client/ ./internal/client/... ./internal/payment/
   EXPECT: exit 0
  
-IMPORT_CONSTRAINTS:                    # A-3's proposed row for internal/cluster
-  $ grep -cE "Vyomanaut_V2/internal/(audit|scoring|repair|payment|storage)" internal/cluster/*.go
+CLI_CALLS_THE_SDK_NOT_REIMPLEMENTS_IT:
+  $ grep -cE "upload\.(UploadFile|ResumeUpload)" cmd/client/transfer_cmds.go
+  EXPECT: >= 2
+  $ grep -c "retrieve.RetrieveFile" cmd/client/transfer_cmds.go
+  EXPECT: >= 1
+ 
+PROGRESS_ON_STDERR_STDOUT_PARSEABLE:
+  $ grep -c "os.Stderr" cmd/client/transfer_cmds.go
+  EXPECT: >= 1
+ 
+FOUR_ERROR_PATHS_RENDERED:
+  $ grep -cE "ErrInsufficientEscrow|ErrNetworkNotReady|ErrTooFewShards|ErrCanaryMismatch" cmd/client/transfer_cmds.go
+  EXPECT: >= 4
+ 
+NO_RAW_GO_ERRORS_TO_STDOUT:                 # IC §14
+  $ grep -c "err.Error()" cmd/client/transfer_cmds.go
   EXPECT: 0
  
-HEALTHYCOUNT_USES_NAMED_PROFILE_FIELD_NOT_LITERAL_5S:
-  $ grep -c "profile.GossipHealthyWindow" internal/cluster/gossip.go
-  EXPECT: >= 1
-  $ grep -cE '5 \* time\.Second\b' internal/cluster/gossip.go
-  EXPECT: 0
- 
-RECONCILE_1S_INTERVAL_AND_SEED_NODES:
-  $ grep -c "time.NewTicker(1 \* time.Second)\|1 \* time.Second" internal/cluster/gossip.go
-  EXPECT: >= 1
-  $ grep -cE "VYOMANAUT_SEED_NODE_1|VYOMANAUT_SEED_NODE_2" internal/cluster/gossip.go
-  EXPECT: 2
- 
-QUORUM_THRESHOLD_IS_TWO:
-  $ grep -c "HealthyCount() >= 2" internal/cluster/*.go
-  EXPECT: >= 1
-  $ grep -c "ErrQuorumUnavailable" internal/cluster/*.go
-  EXPECT: >= 1
- 
-MOCK_CLUSTER_BUILD_TAGGED_TEST_ONLY:
-  $ head -1 internal/cluster/mock_cluster.go | grep -c "go:build test"
+D10_CANARY_ERROR_NOW_WRAPS:
+  $ grep -c 'fmt.Errorf("retrieve: %w", crypto.ErrCanaryMismatch)' internal/client/retrieve/decode.go
   EXPECT: 1
  
-UNIT_TESTS_BASE:
-  $ go test -v -run "TestGossip|TestRouter" ./internal/cluster/
+D10_BUFFER_ZEROING_UNCHANGED:               # regression guard
+  $ grep -cE "for i := range|zero\(|clear\(" internal/client/retrieve/decode.go
+  EXPECT: >= 1
+ 
+D07_FLOAT_RULE_CITES_NFR038:
+  $ grep -c "NFR-046" internal/payment/ledger.go
+  EXPECT: 0
+  $ grep -c "NFR-038" internal/payment/ledger.go
+  EXPECT: >= 1
+ 
+UNIT_TESTS:
+  $ go test -v ./cmd/client/ ./internal/client/retrieve/
   EXPECT: exit 0; tests include:
-    TestHealthyCountUsesProfileWindow
-    TestReconcileTicksEverySecond
-    TestQuorumUnavailableBelowTwoHealthy
-    TestResponsibleReplicaClientDrivenRouting
-    TestMockClusterMembershipConfigurableHealthyCounts
+    TestUploadPrintsFileIDOnStdoutOnly
+    TestRetrieveDefaultsToPointerFilename
+    TestInsufficientEscrowRendersIC14CodeAndPointsAtDeposit
+    TestCanaryMismatchIsErrorsIsCryptoSentinel
  
-# ── VERIFY (enable after ADR-048 accepted) — the security-critical checks ──
-REPLICA_IDENTITY_LOADED_AT_STARTUP:
-  $ grep -c "ed25519.GenerateKey\|ed25519.NewKeyFromSeed" internal/cluster/identity.go
-  EXPECT: >= 1
-  $ grep -c "cluster-replica-pubkeys" internal/cluster/identity.go
-  EXPECT: >= 1
- 
-SYNC_REQUEST_AND_RESPONSE_BOTH_SIGNED:
-  $ grep -c "replica_sig\|ReplicaSig" internal/cluster/gossip.go
-  EXPECT: >= 2                        # request AND response paths both reference it
- 
-AUTHZ_BEFORE_ANY_MERGE:
-  $ awk '/replica_id.*cached|verifyReplicaID/{a=NR} /mergeVectorClock|MergeMembership/{m=NR} END{print (a>0 && m>0 && a<m)?"PASS":"FAIL"}' internal/cluster/gossip.go
-  EXPECT: PASS
- 
-FRESHNESS_WINDOW_REUSES_ADR036_FIELD_NOT_A_NEW_ONE:
-  $ grep -c "profile.AuthRequestFreshnessWindow" internal/cluster/gossip.go
-  EXPECT: >= 1
-  $ grep -cE "GossipFreshnessWindow|SyncFreshnessWindow" internal/config/*.go
-  EXPECT: 0                           # must not introduce a second, redundant freshness field
- 
-UNIT_TESTS_ADR048:
-  $ go test -v -run "TestGossipRejectsUnknownReplica|TestGossipRejectsStaleSync|TestGossipRejectsForgedSig|TestGossipVerifiesResponseSignatureToo" ./internal/cluster/
+VET_AND_RACE:
+  $ go vet ./cmd/client/ && go test -race ./internal/client/...
   EXPECT: exit 0
- 
-VET:
-  $ go vet ./internal/cluster/
-  EXPECT: exit 0; zero output
 ```
 
-#### Session 17.2.2 — Relay node binary and deployment configuration
+---
 
-**Reference:** architecture.md §13, §24, §27.5
+#### Session 17.1.3 — `ls`, `rm`, `balance`, `deposit`
 
-**TASK:** Create `cmd/relay/main.go` as the relay node binary. The relay runs a libp2p host
-with Circuit Relay v2 enabled and no DHT, chunk storage, or audit logic. Configuration:
+**PRECONDITIONS** — 17.1.2 complete. `internal/client/manage` passes.
 
-- 128 concurrent relay reservations per node (architecture.md §13, §27.5).
-- Reservation TTL: 30 minutes (libp2p default).
-- Relay multiaddrs are reported via `GET /relay/status` → `{"reservation_count": N,
-  "capacity": 128}`.
-- Metrics: expose `vyomanaut_relay_reservations_active` gauge at `/metrics` (naming per IC
-  §10's `vyomanaut_{subsystem}_{name}_{unit}` convention — `relay` as subsystem).
-Create `deployments/production/relay/docker-compose.yml` for the three-node relay
-deployment:
+**TASK**
 
-- Node 1: Mumbai AZ1 (`ap-south-1a`)
-- Node 2: Mumbai AZ2 (`ap-south-1b`)
-- Node 3: Chennai/Hyderabad (`ap-south-2` or `ap-southeast-1`)
-- Minimum spec per node: 1 vCPU, 1 GB RAM, 1 Gbps network (architecture.md §24).
-**FILES** — `cmd/relay/main.go`, `deployments/production/relay/docker-compose.yml`
+1. `ls` → `manage.ListFiles`. Table output; availability labels from **IC §14.2**, never invented.
+2. `rm <file_id>` → `manage.DeleteFile`, confirmation prompt unless `--yes`.
+3. `balance` → `manage.Balance`, through the single paise formatter.
+4. `deposit --amount-paise=N` → `manage.Deposit`. **Demo-critical, not production-only.** Upload is
+   gated on escrow balance at `internal/api/upload.go:238`, and `MockProvider.InitiateEscrow`
+   credits the ledger **synchronously** in demo mode — its own comment records *"no async webhook in
+   demo mode."* So `deposit` is the prerequisite of the first upload. Print the mock VPA and QR URL;
+   render `intent_url` **exactly as returned** — ADR-035 makes it server-owned and the client must
+   never construct a `upi://pay?…` string.
+5. **One paise formatter, `int64`, no floating point anywhere** (IC §11, NFR-038).
+**FILES** — `cmd/client/manage_cmds.go`, `cmd/client/money.go`
 
 **VERIFY**
 
 ```bash
 COMPILE:
-  $ go build ./cmd/relay/
+  $ go build ./cmd/client/
   EXPECT: exit 0
  
-NO_DHT_STORAGE_OR_AUDIT_LOGIC:                # relay must be minimal per its own spec
-  $ grep -cE "Vyomanaut_V2/internal/(storage|audit|scoring|repair|payment)" cmd/relay/main.go
+FOUR_SUBCOMMANDS_CALL_THE_SDK:
+  $ grep -cE "manage\.(ListFiles|DeleteFile|Balance|Deposit)" cmd/client/manage_cmds.go
+  EXPECT: >= 4
+ 
+NO_FLOAT_ON_THE_MONEY_PATH:                 # IC §11, NFR-038
+  $ grep -cE "float64|float32|ParseFloat|%\.2f" cmd/client/money.go cmd/client/manage_cmds.go
   EXPECT: 0
-  $ grep -ciE "dht\." cmd/relay/main.go
+ 
+SINGLE_PAISE_FORMATTER:
+  $ grep -c "func formatPaise(paise int64) string" cmd/client/money.go
+  EXPECT: 1
+  $ grep -rc "/ 100" cmd/client/ | grep -v "money.go" | grep -v ":0" | wc -l
   EXPECT: 0
  
-RESERVATION_CAPACITY_128:
-  $ grep -c "128" cmd/relay/main.go
+INTENT_URL_RENDERED_NOT_CONSTRUCTED:        # ADR-035
+  $ grep -cE "intent_url|IntentURL" cmd/client/manage_cmds.go
   EXPECT: >= 1
+  $ grep -crE "upi://pay\?|\bpa=|\bpn=|\bam=" cmd/client/ | grep -v ":0" | wc -l
+  EXPECT: 0
  
-RESERVATION_TTL_30MIN:
-  $ grep -cE "30 \* time.Minute|1800" cmd/relay/main.go
+AVAILABILITY_LABELS_FROM_IC14_2:
+  $ grep -oE '"[A-Z][A-Z_]{3,}"' cmd/client/manage_cmds.go | tr -d '"' | sort -u \
+      | while read c; do grep -q "$c" docs/system-design/interface-contracts.md \
+          || echo "NOT_IN_IC14 $c"; done
+  EXPECT: no NOT_IN_IC14 lines
+ 
+RM_CONFIRMS_UNLESS_YES:
+  $ grep -c -- "--yes\|skipConfirm" cmd/client/manage_cmds.go
   EXPECT: >= 1
- 
-STATUS_ENDPOINT_SHAPE:
-  $ grep -c "reservation_count\|/relay/status" cmd/relay/main.go
-  EXPECT: >= 2
- 
-METRIC_NAME_FOLLOWS_IC10_CONVENTION:
-  $ grep -c "vyomanaut_relay_reservations_active" cmd/relay/main.go
-  EXPECT: >= 1
- 
-DOCKER_COMPOSE_THREE_AZ_NODES:
-  $ grep -cE "ap-south-1a|ap-south-1b|ap-south-2|ap-southeast-1" deployments/production/relay/docker-compose.yml
-  EXPECT: >= 3
  
 UNIT_TESTS:
-  $ go test -v -run TestRelay ./cmd/relay/
+  $ go test -v ./cmd/client/
   EXPECT: exit 0; tests include:
-    TestRelayEnforces128ReservationCap
-    TestRelayStatusEndpointReturnsCorrectShape
-    TestRelayExportsReservationsActiveGauge
-    TestRelayHostHasNoDHTServerMode
+    TestFormatPaiseRendersIntegerRupees
+    TestFormatPaiseRejectsFloatInputAtTypeLevel
+    TestDepositRendersServerSuppliedIntentURLVerbatim
+    TestListUsesIC14AvailabilityLabels
+    TestRemoveRequiresConfirmationWithoutYesFlag
  
 VET:
-  $ go vet ./cmd/relay/
+  $ go vet ./cmd/client/
   EXPECT: exit 0; zero output
+```
+
+---
+
+### Phase 17.2 — `scripts/test/` completeness *(closes N-04)*
+
+#### Session 17.2.1 — CLI-driven end-to-end harness
+
+**PRECONDITIONS** — Phase 17.1 complete.
+
+**Why this session exists.** `scripts/test/` is empty in the live tree. M16 Session 16.1.1 fills it
+with `demo_timeline_test.go`, which drives the **SDK**. That proves the code path. It does not prove
+the artifact you will demonstrate, because the CLI did not exist when 16.1.1 was written. This
+session adds the CLI-driven harness and — defensively — verifies 16.1.1's deliverable is actually
+present, since a milestone under construction is not a milestone finished.
+
+**TASK**
+
+1. Verify `scripts/test/demo_timeline_test.go` exists and passes. **If M16.1.1 was not completed,
+   this session builds it to the M16.1.1 spec before proceeding** — `scripts/test/` must be complete
+   when M17 closes.
+2. Add `scripts/test/demo_cli_test.go`, tagged `//go:build integration`, driving the **compiled
+   `cmd/client` binary** through the full sequence: `register` → `deposit` → `upload` → `ls` →
+   `retrieve` → byte-compare → `balance` → `rm`.
+3. Every assertion parses `--json` output — no screen-scraping of human-readable text.
+4. Assert the retrieved bytes are **identical** to the uploaded bytes. This is the single most
+   important assertion on the demo track.
+5. Assert `ReadinessResponse.mode == "demo"` and that no `prod` profile path is reachable.
+**FILES** — `scripts/test/demo_cli_test.go`, `scripts/test/demo_timeline_test.go` (verify/create),
+`scripts/test/helpers_test.go`
+
+**VERIFY**
+
+```bash
+SCRIPTS_TEST_IS_NOT_EMPTY:                  # N-04
+  $ ls scripts/test/*.go | wc -l
+  EXPECT: >= 2
+ 
+COMPILE:
+  $ go build -tags integration ./scripts/test/
+  EXPECT: exit 0
+ 
+BUILD_TAGS_PRESENT:
+  $ head -1 scripts/test/demo_cli_test.go | grep -c "go:build integration"
+  EXPECT: 1
+ 
+M16_TIMELINE_TEST_PRESENT_AND_PASSING:
+  $ test -f scripts/test/demo_timeline_test.go && echo PASS
+  EXPECT: PASS
+  $ go test -tags integration -run TestDemoTimeline ./scripts/test/
+  EXPECT: exit 0
+ 
+CLI_BINARY_DRIVEN_NOT_SDK:                  # the artifact under test must be the artifact demoed
+  $ grep -cE "exec.Command|clientBin" scripts/test/demo_cli_test.go
+  EXPECT: >= 1
+  $ grep -cE "internal/client/(upload|retrieve|manage)" scripts/test/demo_cli_test.go
+  EXPECT: 0
+ 
+ALL_SEVEN_SUBCOMMANDS_EXERCISED:
+  $ grep -cE '"(register|deposit|upload|ls|retrieve|balance|rm)"' scripts/test/demo_cli_test.go
+  EXPECT: >= 7
+ 
+BYTE_IDENTITY_ASSERTED:
+  $ grep -cE "bytes.Equal|sha256.Sum256.*==|cmp\(" scripts/test/demo_cli_test.go
+  EXPECT: >= 1
+ 
+JSON_OUTPUT_PARSED_NOT_SCRAPED:
+  $ grep -c -- "--json" scripts/test/demo_cli_test.go
+  EXPECT: >= 5
+  $ grep -c "json.Unmarshal" scripts/test/demo_cli_test.go
+  EXPECT: >= 1
+ 
+DEMO_MODE_ONLY:
+  $ grep -c '"demo"' scripts/test/demo_cli_test.go
+  EXPECT: >= 1
+  $ grep -cE "prod|VYOMANAUT_MODE=prod" scripts/test/demo_cli_test.go
+  EXPECT: 0
+ 
+UNIT_TESTS:
+  $ go test -tags integration -v -run TestDemoCLI ./scripts/test/
+  EXPECT: exit 0; tests include:
+    TestDemoCLIFullLifecycle
+    TestDemoCLIRetrievedBytesIdenticalToUploaded
+    TestDemoCLIUploadFailsBeforeDeposit
+    TestDemoCLIReadinessReportsDemoMode
+ 
+VET:
+  $ go vet -tags integration ./scripts/test/
+  EXPECT: exit 0; zero output
+```
+
+---
+
+### Phase 17.3 — Relocation record *(closes N-03)*
+
+#### Session 17.3.1 — Relocate production hardening to the LTS track
+
+**PRECONDITIONS** — ADR-062 accepted.
+
+**TASK**
+
+1. In `build_part3.md`, replace the old Milestone 17 body with a **relocation notice** naming what
+   moved and where its content now lives: secrets-manager adapters (Vault / AWS SSM / GCP Secret
+   Manager, IC §8), the three-replica gossip cluster (ARCH §18), ADR-048's gossip-authentication
+   addendum, `cmd/relay`, and `internal/cluster`'s real routing.
+2. The relocated content is written verbatim into `build_part4.md` under **LTS — Production
+   Hardening**, with **no milestone number assigned** (per your instruction 8; numbering follows the
+   demo run outcomes).
+3. Update `build.md`'s dependency graph: the demo edge is `M16 → M17 → M18`.
+4. Update `internal/cluster/`'s and `internal/secrets/`'s package doc comments — both currently
+   point at "Milestone 17 Session 17.2.1" and "Milestone 17 Phase 17.1", which now refer to the CLI
+   milestone. Point them at the LTS Production Hardening milestone by name, not by number.
+5. Same for `deployments/dev/docker-compose.yml`'s three `TRANSITION RULES` comments, one of which
+   says *"M17 — replace relay placeholder with cmd/relay binary."*
+**FILES** — `docs/system-design/build_part3.md` (edit), `docs/system-design/build_part4.md` (new),
+`docs/system-design/build.md` (edit graph), `internal/cluster/membership.go` (comment),
+`internal/cluster/router.go` (comment), `internal/secrets/doc.go` (comment),
+`deployments/dev/docker-compose.yml` (comment)
+
+**VERIFY**
+
+```bash
+OLD_M17_CONTENT_RELOCATED_NOT_DELETED:
+  $ grep -cE "Vault|AWS SSM|GCP Secret Manager|GossipCluster|cmd/relay" docs/system-design/build_part4.md
+  EXPECT: >= 5
+ 
+M17_IS_NOW_DEMO_COMPLETION:
+  $ grep -cE "^## Milestone 17 — Demo Completion" docs/system-design/build_part3.md
+  EXPECT: 1
+ 
+DEPENDENCY_GRAPH_UPDATED:
+  $ grep -cE "M16 ?(──▶|->|→) ?M17 ?(──▶|->|→) ?M18" docs/system-design/build.md
+  EXPECT: >= 1
+ 
+NO_STALE_M17_POINTERS_IN_CODE:              # these now mean the CLI milestone
+  $ grep -rcE "Milestone 17 (Phase 17\.1|Session 17\.2\.1)" internal/ deployments/ | grep -v ":0" | wc -l
+  EXPECT: 0
+ 
+NO_HARDCODED_LTS_MILESTONE_NUMBERS:         # instruction 8
+  $ grep -cE "Milestone 2[0-9]|M2[0-9]\b" docs/system-design/build_part4.md
+  EXPECT: 0
+ 
+BUILD_STILL_GREEN:
+  $ go build ./... && go vet ./...
+  EXPECT: exit 0
 ```
 
 ---
