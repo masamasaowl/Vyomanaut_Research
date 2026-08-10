@@ -5,7 +5,7 @@
 **Supersedes:** — *(extends NFR-027; adds a ninth runbook — see ADR-065)*
 **Source:** This review; `MVP §8.5`; `IC §10`; live audit of `deployments/grafana/alerts.yaml`
 
-#### Context
+## Context
 
 Two documents state that Grafana alerts link to runbooks by name, and that this coupling is why the
 eight filenames are frozen. The coupling does not exist: no rule in `alerts.yaml` carries a
@@ -17,7 +17,7 @@ The five without alerts are exactly the ones covering third-party and scheduled 
 Postgres, the secrets manager, Razorpay, the RBI holiday table, secret rotation — which is to say,
 the failures an on-call engineer is *least* likely to diagnose from first principles at 3 a.m.
 
-#### Options considered
+## Options considered
 
 | Option | Pros | Cons |
 | --- | --- | --- |
@@ -25,7 +25,7 @@ the failures an on-call engineer is *least* likely to diagnose from first princi
 | **Define the five missing alerts; leave linkage as convention** | Closes the detection gap | Convention is what produced the current state; nothing prevents drift |
 | **Define the missing alerts and make the bijection CI-enforced — chosen** | Detection gap closed *and* held closed; the frozen-filename rule finally does the job it was written for | Five new alerts need backing metrics, two of which do not exist yet |
 
-#### Decision
+## Decision
 
 **1. Five new alerts**, added to `deployments/grafana/alerts.yaml` and to `architecture.md §23`'s
 alert table:
@@ -50,7 +50,7 @@ runbook file.
 `runbooks/` is referenced by ≥1 alert's `runbook_url`; every `runbook_url` resolves to a file that
 exists. Both directions.
 
-#### Consequences
+## Consequences
 
 Nine runbooks (eight plus ADR-065's), nine-plus alerts, bidirectionally verified. Three new
 counters and two new gauges enter the NFR-025 frozen set and must be added to it in the same PR.
