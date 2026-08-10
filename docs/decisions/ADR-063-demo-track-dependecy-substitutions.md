@@ -54,7 +54,7 @@ exist on this track and that the validator rules are the guarded property.
 **4. The LTS reverses every row before any M20+ work depends on it.** This is Milestone 19's entire
 subject.
 
-#### Consequences
+### Consequences
 
 The frozen demo becomes self-describing: anyone who opens it in two years can tell exactly what it
 proved. IC §11's disclosure standard is met. Milestone 19 gets a checklist instead of an
