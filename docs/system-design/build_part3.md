@@ -2869,6 +2869,135 @@ TAG_AND_SIGNOFF:
 
 ---
 
+## The five-desktop rig — specification, wiring, and expected outcomes
+
+### What this rig is for, and what it is not
+
+Session 18.2.1 already proves the code path. Five goroutines in one process share a loopback, a
+clock, a page cache, and a filesystem — so what 18.2.1 does **not** prove is anything about the
+network. This rig exists to exercise four things that only appear on real hardware:
+
+| What only real machines test | Why it matters |
+| --- | --- |
+| The **substituted transport** across real NICs | The demo's TLS-over-TCP stack and hand-rolled NAT tiers (ADR-063) have never crossed a physical link |
+| **Independent clocks** | Every signed request carries `request_ts_ms` and is validated against `profile.AuthRequestFreshnessWindow` (ADR-036). One process = one clock; five machines = five, with real drift |
+| **Real process death** | Killing a goroutine is not killing a machine. Departure detection at `profile.DepartureThreshold` behaves differently when the TCP peer vanishes without a FIN |
+| **Independent disks** | Five real storage engines with real fsync latency, not five directories on one SSD |
+
+It is **not** a scale test. Five nodes at RS(3,5) is the demo profile, exactly. Scale is §8.
+
+### Machine roles and specifications
+
+Six roles across five machines — the coordinator doubles as the operator console.
+
+| ID | Role | Runs | Minimum spec | Notes |
+| --- | --- | --- | --- | --- |
+| **DESK-00** | Coordinator + operator | Postgres 16 (Docker), `cmd/microservice --mode=demo`, `cmd/client` | 4-core, 8 GB RAM, SSD | Needs the most RAM — Postgres plus the microservice. Static IP. |
+| **DESK-01…05** | Providers | `cmd/provider --mode=demo` | **2-core, 4 GB RAM, 20 GB free disk** | One real daemon each, no `--sim-count` |
+
+**Provider RAM arithmetic, from NFR-045** — DHT record cache is 200 bytes per chunk, one chunk per
+256 KB:
+
+```
+--declared-storage-gb=1  →  1 GiB / 256 KiB   = 4,096 chunks
+                         →  4,096 × 200 B     = 819 KB DHT cache
+Storage engine (ADR-046 tuning: 64 MB block cache) ≈ 64–128 MB
+Go runtime + transport + heartbeat goroutines      ≈ 30–60 MB
+                                                   ─────────────
+Per-provider working set                           ≈ 200 MB
+```
+
+So 4 GB is generous and 2 GB would work. **Use `--declared-storage-gb=1`** — the demo moves a single
+file; declaring more only inflates the DHT cache for no benefit.
+
+**Heterogeneity is a feature here, not a problem.** If the lab machines differ in CPU, RAM, or disk,
+use them as they are and record the differences. Identical machines would hide exactly the timing
+variance this rig exists to surface.
+
+**Operating system:** whatever the lab runs. If Windows, this rig additionally exercises the
+BadgerDB path (ADR-046) on real hardware — which is otherwise untested and is a genuinely valuable
+side effect. Record which engine each machine used.
+
+### Network wiring
+
+```
+                        ┌────────────────────────┐
+                        │  DESK-00  Coordinator  │
+                        │  192.168.50.10         │
+                        │  ├ Postgres :5432      │
+                        │  ├ microservice :8080  │
+                        │  └ cmd/client          │
+                        └───────────┬────────────┘
+                                    │
+                    ┌───────────────┴───────────────┐
+                    │   Unmanaged gigabit switch    │
+                    │   (isolated — no uplink)      │
+                    └─┬────┬────┬────┬────┬─────────┘
+                      │    │    │    │    │
+                   .11  .12  .13  .14  .15
+                 DESK-01 …………………………… DESK-05
+                 cmd/provider --mode=demo
+```
+
+**Wiring rules, and why each one is there:**
+
+1. **One flat `192.168.50.0/24` subnet, static IPs.** No DHCP — a lease renewal mid-run is an
+   unexplained departure event you will waste an hour diagnosing.
+2. **Isolate the switch from the campus network.** No uplink. This removes campus DNS, captive
+   portals, and any firewall that might silently drop the provider↔provider links. It also makes the
+   run repeatable.
+3. **Disable Wi-Fi on every machine.** A dual-homed machine will route unpredictably and you will
+   see intermittent failures that are not the software's.
+4. **Synchronise clocks before the run**, then let them drift. Point all six at DESK-00 running
+   `chrony`/`w32time`. Signed requests are validated against `profile.AuthRequestFreshnessWindow`
+   (ADR-036), so an unsynchronised machine fails authentication in a way that looks like a signature
+   bug. Sync once at the start; do **not** keep them locked — natural drift is part of the test.
+5. **Open the ports explicitly** on each provider: the libp2p listen port (`4001` default) and
+   outbound to `192.168.50.10:8080`. Windows Firewall blocks inbound by default and will otherwise
+   make every provider look unreachable.
+6. **Deliberately, this rig has no NAT.** Everything is directly reachable, so the hole-punch and
+   relay tiers should never activate. **That is the expected result, and confirming it is a
+   finding** — if a provider goes through the relay tier on a flat L2 subnet, the reachability probe
+   has a bug. Record which tier each provider used.
+
+### Procedure
+
+| Step | Machine | Action | Expected |
+| --- | --- | --- | --- |
+| 1 | DESK-00 | `docker compose up -d postgres`; apply `001_initial_schema_demo.sql` | `\dx` shows `btree_gist` |
+| 2 | DESK-00 | Start microservice with `VYOMANAUT_CLUSTER_MASTER_SEED` set | `/readyz` responds; `mode: "demo"` |
+| 3 | DESK-01…05 | `cmd/provider --mode=demo --microservice-url=http://192.168.50.10:8080 --declared-storage-gb=1` | Five registrations; five distinct Peer IDs |
+| 4 | DESK-00 | Poll `/readyz` | `active_vetted_providers 5/5`, `distinct_asns 5/5`, `microservice_quorum 1/1`, `relay_nodes_deployed 0/0`. **~10–12 min** — vetting must complete |
+| 5 | DESK-00 | `client register` | Mnemonic shown once |
+| 6 | DESK-00 | `client deposit --amount-paise=1000000` | Balance ₹10,000.00 immediately (`MockProvider` credits synchronously) |
+| 7 | DESK-00 | `client upload demo.bin` (1 MB) | `file_id` returned; **5 shards on 5 distinct machines** |
+| 8 | DESK-00 | `client ls` | One file, `AVAILABLE` |
+| 9 | DESK-00 | `client retrieve <file_id> -o out.bin`; `cmp` | **Byte-identical** |
+| 10 | **DESK-03** | **Pull the power cable.** Not `Ctrl-C` — a hard kill, no FIN | — |
+| 11 | DESK-00 | Watch `repair_jobs` | Departure detected within `DepartureThreshold` (**10 min, demo**); repair job created and completed |
+| 12 | DESK-00 | `client retrieve` again; `cmp` | **Byte-identical with one machine dead.** This is the durability claim, demonstrated rather than asserted |
+| 13 | DESK-03 | Power back on, restart provider | Rejoins; identity persists from the encrypted keystore |
+
+### Expected outcomes, and what each one buys you
+
+| # | Outcome | What it proves | If it fails |
+| --- | --- | --- | --- |
+| **O-1** | Five independent daemons register with five distinct Peer IDs and five synthetic ASNs | The demo is a real five-node network, not one process pretending | Identity derivation or ASN assignment is machine-dependent — a real bug |
+| **O-2** | Readiness gate satisfied in **~10–12 min** | Vetting timing (MVP §7.3) holds on real hardware | Vetting is faster in-process than across a network; the demo timeline needs revising |
+| **O-3** | A file uploaded on one machine retrieves **byte-identically** on the same machine, with shards on five others | **The project works.** This is the single sentence the demo exists to earn | Stop and diagnose. Nothing else matters |
+| **O-4** | Retrieval still byte-identical after a machine is **physically killed** | RS(3,5) durability is real, not arithmetic on a slide | Erasure decode or shard placement is wrong — the highest-severity possible finding |
+| **O-5** | Departure detected within `DepartureThreshold`; repair completes | Failure detection works without a graceful close | Departure detection depends on a clean TCP FIN — which real machines do not send |
+| **O-6** | **No provider used the relay or hole-punch tier** | The reachability probe correctly identifies a directly-reachable peer | The probe has a bug. Free finding — this rig is the only place it surfaces before the LTS |
+| **O-7** | Clock drift over ~40 minutes does not break signed requests | `AuthRequestFreshnessWindow` (ADR-036) is wide enough for real hardware | The window is too tight for machines that are not sharing a clock |
+| **O-8** | DESK-03 rejoins with its **original identity** after a power cut | Encrypted keystore persistence survives an unclean shutdown | Identity persistence has an fsync gap |
+| **O-9** | Per-machine peak RSS recorded | First real datum for NFR-045's RAM model, and the input to §8's arithmetic | — |
+
+**Record every outcome in `docs/demo/run-five-desktop.md`, including failures.** A rig that produces
+only successes was not stressed. O-6 and O-7 in particular are things you will only learn here, and
+both feed directly into the LTS.
+
+---
+
 ## M18/M19 Forward-Compatibility: Desktop GUI Shell Readiness
 
 **Why this section exists.** `build.md`'s Milestone 18 ("Launch Readiness") is the last
