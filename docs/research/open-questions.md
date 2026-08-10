@@ -375,3 +375,17 @@ Raised by: Paper 68 (Shacham & Waters), reading-list-v2 Domain A / R-03 Status: 
 **Raised by:** Paper 72 (Zeng et al.) **Status:** open — V3/future-facing, not blocking any current decision **Blocked on:** no current requirement exists; this is a standing awareness item, not an active question. PQ-Audit's hash-based signature approach cannot be adopted at chunk granularity without abandoning ADR-059/060's constant-response-size property (22–143 MB/provider/day versus the current 1,040 bytes). If a post-quantum mandate ever does arrive, the audit primitive is not obviously the first thing that needs to move — Ed25519 provider-signing is used throughout the system, not only in the audit path, and a partial migration that leaves Ed25519 in place elsewhere would be incoherent. This question exists so that "post-quantum" is not answered piecemeal by whichever ADR happens to be open when the requirement lands.
 
 ---
+
+| ID | Question | Track | Blocks | Priority |
+| --- | --- | --- | --- | --- |
+| **Q-M17-1** | Was M16 Session 16.1.1 (`demo_timeline_test.go`) actually completed, or does M17 Session 17.2.1 build it? | Demo | Session 17.2.1's scope — the session handles either case, but the answer changes its size | Medium |
+| **Q-M18-1** | SHA-256 throughput on minimum-spec hardware without SHA-NI | LTS | The corrected AONT threshold at the Launch Gates milestone | Medium |
+| **Q-M18-6** | Does the corrected NFR-009 threshold change ADR-003's segment-size decision? If measured p50 at 4 MiB is far under budget, a larger segment reduces per-file pointer overhead | LTS | Design council, after Q-M18-1 | Medium |
+| **Q-M19-1** | Do the demo's hand-rolled RS shards decode under `klauspost/reedsolomon`? | LTS | If not, `docs/inherited/DEMO.md` needs a correction — the stash produced non-standard shards | High |
+| **Q-M19-2** | Does the observed Circuit Relay v2 reservation slot limit match `architecture.md §27.5`'s assumed 128? | LTS | The entire relay capacity model, and ADR-068's alert arithmetic | High |
+| **Q-M19-3** | Does `internal/p2p`'s exported surface survive the libp2p swap unchanged, as `doc.go` claims? | LTS | Session 19.1.1 — if not, it is a finding about the demo, not a refactor | High |
+| **Q-ORG-1** | Who is the **second Owner** of the `vyomanaut` GitHub organisation? | Both | The org's bus factor; do this before the M18 tag | High |
+| **Q-SIM-1** | Should the synthetic tier's PRF share a construction with the AONT key stream, or be independent? | LTS | ADR-069's implementing session | Low |
+| **Q-LAB-1** | Are the college's 150+ lab desktops available for a fleet run, and under what access terms? | LTS | The fleet-scale milestone, and the strategy discussion still queued | Medium |
+
+---
