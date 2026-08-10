@@ -2525,155 +2525,347 @@ BUILD_STILL_GREEN:
 
 ---
 
-## Milestone 18 — Launch Readiness
+## MILESTONE 18 — Demo Freeze & Stash *(polished)*
 
-**Status:** Runbooks and benchmark scripts are structurally defined by document references.
+**Deliverable:** two recorded demo runs, an honest scope record, and a vendored, tagged,
+offline-reproducible archive.
 
-**Reference:** MVP §8.5 (runbooks list), MVP §8.5 (benchmark scripts), IC §10 (runbook
-filenames — must match exactly)
+**Dependency:** M17 → **M18** → `demo-v1.0.0`.
+**Reference:** MVP §8.4 (16 CI checks), MVP §3.6 (demo timeline), IC §8, ADR-062, ADR-063, ADR-064.
+**Sessions:** 5.
 
----
-
-### Phase 18.1 — Runbooks
-
-**Reference:** IC §10 (naming conventions — exact filenames), MVP §8.5 (list of 8
-required runbooks, all must exist before M8 private beta)
-
-#### Session 18.1.1 — Create the 8 required runbooks
-
-**Task:** Create all 8 runbook files in `runbooks/` using EXACT filenames per IC §10
-(Grafana alert links depend on these names):
-
-1. `microservice-failover.md`
-2. `postgres-failover.md`
-3. `relay-node-replacement.md`
-4. `secrets-manager-outage.md`
-5. `razorpay-api-outage.md`
-6. `provider-mass-departure.md`
-7. `rbi-holiday-table-update.md`
-8. `audit-secret-rotation.md`
-
-Each runbook must include:
-
-- Trigger conditions (Prometheus alert name)
-- Step-by-step recovery procedure
-- Rollback procedure
-- For `rbi-holiday-table-update.md`: the annual update procedure for `rbi_holidays.go`
-  (IC §11 — hardcoded RBI holiday data is forbidden outside that file)
-- For `audit-secret-rotation.md`: the full rotation procedure per IC §8 rotation contract
-  (24-hour overlap window, `v{N}` and `v{N+1}` both present during overlap)
+**What the old M18 contained and where it went:** the eight runbooks, the seven benchmark scripts
+and the security verification checklist all certify a production network. All three are relocated to
+the LTS **GA Launch Readiness** milestone in `build_part4.md`. What survives is the sixteen-check CI
+gate, now scope-tagged.
 
 ---
 
-### Phase 18.2 — Benchmark Scripts
+### Phase 18.1 — CI gate scoping *(closes N-05)*
 
-**Reference:** MVP §8.5 (four benchmark scripts, minimum-spec hardware requirements)
+#### Session 18.1.1 — Tag every CI check with its track, and restate the libp2p-dependent rationales
 
-#### Session 18.2.1 — Create benchmark scripts
+**PRECONDITIONS** — M17 complete.
 
-**Task:** Create `scripts/benchmarks/` with the four scripts from MVP §8.5:
+**Why this session exists.** Three verification claims currently assert properties of a stack that
+is not present. `internal/p2p/doc.go` records that go-libp2p was never imported: the transport is
+stdlib TLS 1.3 over TCP, the DHT is from-scratch Kademlia, and AutoNAT/DCUtR/Circuit Relay v2 are
+hand-rolled. The checks are not wrong — they assert real properties — but their **stated rationales**
+name mechanisms that do not exist here, and a check that passes for a reason nobody wrote down is
+how a false certification survives a repository fork.
 
-- `aont_encode.sh` (Q16-1): AONT encode benchmarks on minimum-spec hardware
-  (dual-core, no AES-NI, 2 GB RAM, 7200 RPM HDD)
-- `argon2id.sh` (Q18-1): Argon2id performance benchmarks (must show demo vs prod params)
-- `rocksdb_ssd.sh` (Q27-1 SSD): RocksDB throughput on SSD
-- `rocksdb_hdd.sh` (Q27-1 HDD): RocksDB throughput on HDD
+**TASK**
 
-Each script must output pass/fail against the following thresholds from `requirements.md §7.4`:
+1. Add a **Track** column to `MVP §8.4`'s sixteen-check table. Values: `DEMO+LTS` (the check is
+   meaningful on both) or `LTS` (the check's subject does not exist on the demo track).
+| # | Check | Track | Note |
+| --- | --- | --- | --- |
+| 1–4 | build / vet / lint / test -race | `DEMO+LTS` | — |
+| 5 | `TestDHTKeyValidatorPersists` | `DEMO+LTS` | **Rationale restated.** Guards IC §12's validator accept/reject rules, implemented byte-for-byte. Its documented trigger — *"re-run after every go-libp2p upgrade"* — has no subject on the demo track. |
+| 6 | `TestNoFloatArithmetic` | `DEMO+LTS` | — |
+| 7 | Migration apply + rollback | `DEMO+LTS` | **Demo profile only** on this track; the prod half is LTS |
+| 8 | no `challenge_nonce BYTEA(32)` | `DEMO+LTS` | — |
+| 9 | no float in payment | `DEMO+LTS` | — |
+| 10 | no ADR reference above ceiling | `DEMO+LTS` | Ceiling frozen at **ADR-064** on the demo track (ADR-062 §6) |
+| 11 | no UPI Collect endpoint | `DEMO+LTS` | — |
+| 12 | Mermaid render | `DEMO+LTS` | — |
+| 13 | Hyperlink check | `DEMO+LTS` | — |
+| 14 | `TestProfileShardSizeIsConstant` | `DEMO+LTS` | — |
+| 15 | `TestProfileBothFullySpecified` | `DEMO+LTS` | — |
+| 16 | `TestNoOrphanMetricName` | `DEMO+LTS` | Grammar conformance (ADR-066) is `LTS` |
 
-- **`aont_encode.sh` (Q16-1):** median ≤ 200 ms, p99 ≤ 400 ms. If median > 200 ms in the Go implementation, re-evaluate segment size; any change requires a coordinated ADR-003 + ADR-004 update.
-- **`argon2id.sh` (Q18-1):** median ≤ 500 ms at production parameters (t=3, m=64 MB, p=4). Acceptable with spinner UI up to 1000 ms. Fallback ladder: try t=2/m=64 MB, then t=3/m=32 MB, then t=2/m=32 MB. Do not go below m=32768 KiB (OWASP 2023 minimum). Demo parameters (t=1, m=4 MB, p=1) are not benchmarked on this script.
-- **`rocksdb_ssd.sh` (Q27-1 SSD):** p99 audit latency ≤ 100 ms at the highest RocksDB rate limiter setting that does not violate it. Write throughput at the chosen rate must be ≥ 2 MB/s.
-- **`rocksdb_hdd.sh` (Q27-1 HDD):** p99 audit latency ≤ 200 ms on a 7200 RPM consumer HDD under concurrent compaction.
+2. Two **unnumbered** claims are tagged `LTS` and their demo-track meaning restated in the test files
+   themselves, not only in a document:
+   - `TestTransportAuthentication` (NFR-016) — asserts authenticated transport bound to peer
+     identity, over **TLS 1.3/TCP with a self-signed Ed25519 certificate**. Not QUIC. Not Noise XX.
+     The cryptographic property holds; the named mechanism does not.
+   - NFR-006's *"relay overhead < 50 ms RTT"* — **not measurable on the demo track**; no Circuit
+     Relay v2 reservations exist. Tag `LTS`, and state that it is unmeasured rather than passing.
+3. Add `scripts/ci/track_scope.sh` (CI check 17, demo track): every check in `MVP §8.4` carries a
+   Track value, and every test whose doc comment names `go-libp2p`, `QUIC`, `Noise`, or
+   `Circuit Relay` carries a `// TRACK: LTS` or a restated-rationale comment.
+4. Run the full sixteen-check gate green.
+**FILES** — `docs/system-design/mvp.md` (edit §8.4), `internal/p2p/dht_test.go` (comment),
+`internal/p2p/host_test.go` (comment), `scripts/ci/track_scope.sh` (new),
+`.github/workflows/ci.yml` (edit)
 
-A fifth script must be added:
+**VERIFY**
 
-- **`postgres_insert_ceiling.sh` (NFR-043):** measure the sustained INSERT rate on the `audit_receipts` schema with row security policy enabled at which p99 write latency first exceeds 50 ms. This measured ceiling must be written back into `architecture.md §27.4` replacing the `5,000–10,000 rows/sec` planning estimate. This benchmark is a V2 launch blocker per NFR-043.
-
-A sixth script for end-to-end upload latency:
-
-- **`e2e_upload.sh` (NFR-033):** measure p50 time from upload start (encoding begins) to all 56 signed receipts collected and pointer file stored. Pass criterion: p50 ≤ 3 minutes for a 100 MB file on a provider network where p50 upload throughput is 10 Mbps (requirements.md §5.9 NFR-033).
+```bash
+EVERY_CHECK_HAS_A_TRACK_VALUE:              # N-05
+  $ awk -F'|' '/^\| *[0-9]+ *\|/ {if ($4 !~ /(DEMO\+LTS|LTS)/) print "NO_TRACK:" $2}' docs/system-design/mvp.md
+  EXPECT: no NO_TRACK lines
+ 
+SIXTEEN_CHECKS_TAGGED:
+  $ grep -cE "^\| *([1-9]|1[0-6]) *\|" docs/system-design/mvp.md
+  EXPECT: 16
+ 
+LIBP2P_DEPENDENT_TESTS_CARRY_RESTATED_RATIONALE:
+  $ for f in internal/p2p/dht_test.go internal/p2p/host_test.go; do \
+      grep -qE "TRACK: LTS|does not exist on the demo track|Not QUIC" "$f" || echo "UNRESTATED $f"; done
+  EXPECT: no UNRESTATED lines
+ 
+NFR006_MARKED_UNMEASURED_NOT_PASSING:
+  $ grep -cE "NFR-006.*(unmeasured|not measurable|LTS)" docs/system-design/mvp.md
+  EXPECT: >= 1
+ 
+TRACK_SCOPE_CHECK_REGISTERED:
+  $ grep -c "track_scope.sh" .github/workflows/ci.yml
+  EXPECT: >= 1
+  $ bash scripts/ci/track_scope.sh
+  EXPECT: exit 0
+ 
+FULL_SIXTEEN_CHECK_GATE_GREEN:
+  $ go build ./... && go vet ./... && golangci-lint run && go test ./... -race \
+      && VYOMANAUT_MODE=demo bash scripts/ci/migration_check.sh \
+      && bash scripts/ci/grep_checks.sh
+  EXPECT: exit 0
+ 
+CHECK_10_CEILING_FROZEN_AT_064:             # ADR-062 §6
+  $ grep -cE "ADR-0(6[5-9]|[7-9][0-9])" scripts/ci/grep_checks.sh
+  EXPECT: >= 1
+```
 
 ---
 
-### Phase 18.3 — Security Verification Checklist
+### Phase 18.2 — The demo runs
 
-**Reference:** MVP `§Security Verification Checklist` (referenced in IC §12 — the
-TestDHTKeyValidatorPersists test references this section)
+#### Session 18.2.1 — Single-machine run
 
-#### Session 18.3.1 — Document and run security checklist
+**PRECONDITIONS** — 18.1.1 green.
 
-**Task:** Create `docs/system-design/security-verification-checklist.md` with all
-verifiable security properties derivable from the three documents in context:
+**TASK**
 
-- [ ] `TestDHTKeyValidatorPersists` passes (IC §12, CI check 5)
-- [ ] `TestNoFloatArithmetic` passes (IC §11, CI check 6)
-- [ ] Grep: no `challenge_nonce BYTEA(32)` in any file (CI check 8)
-- [ ] All Ed25519 signing inputs use fixed-layout bytes, not JSON (IC §3.2)
-- [ ] `ErrTagMismatch` path returns no plaintext bytes (IC §5.1)
-- [ ] `ErrCanaryMismatch` path zeros the buffer before returning (IC §5.1)
-- [ ] AONT key K is fresh `crypto/rand` on every segment encode (IC §11)
-- [ ] 0-RTT disabled for audit-challenge and vetting-gc streams (IC §4)
-- [ ] `VYOMANAUT_CLUSTER_MASTER_SEED` absent in all production env configs (IC §8)
-- [ ] Razorpay error bodies never forwarded to API callers (IC §3.3)
-- [ ] No Razorpay live keys in source files (IC §11)
-- [ ] Demo and production databases are separate instances (MVP §6.2 IR-01)
-- [ ] `challenge_nonce CHECK (octet_length(challenge_nonce) = 33)` in schema (DM §3 Invariant 5)
-- [ ] `escrow_events` has no FLOAT columns (DM §3 Invariant 4)
-- [ ] Row security policies enabled on `audit_receipts` and `escrow_events` (DM §6)
-- [ ] `TestDHTKeyValidatorPersists` re-run after every `go-libp2p` upgrade (IC §12)
-- [ ] Relay overhead < 50ms RTT from Indian cloud nodes (IC §4.3 NFR-006) — measured
+1. Postgres via `deployments/dev/docker-compose.yml`; apply `001_initial_schema_demo.sql`.
+2. `cmd/microservice --mode=demo`, with `VYOMANAUT_CLUSTER_MASTER_SEED` set (IC §8 permits this in
+   demo and `--sim-count` modes; `cluster.SoloMembership` supplies the 1-replica quorum).
+3. `cmd/provider --mode=demo --sim-count=5 --sim-asn-count=5`.
+4. Wait for the readiness gate. Demo thresholds, per the OAS `DemoReady` example:
+   `active_vetted_providers=5`, `distinct_asns=5`, `distinct_metro_regions=1`,
+   `microservice_quorum=1`, `relay_nodes_deployed=0`.
+5. Drive the **real CLI binary**: `register` → `deposit` → `upload` → `ls` → `retrieve` →
+   byte-compare → `balance`.
+6. Record `docs/demo/run-single-machine.md` with timings and the `TestDemoTimeline` verdict.
+**FILES** — `scripts/demo/run_single_machine.sh`, `docs/demo/run-single-machine.md`
 
-Add the following entries to `docs/system-design/security-verification-checklist.md`:
+**VERIFY**
 
-**From requirements.md §5.4 (NFR-014 through NFR-020):**
-
-- [ ]  NFR-014: `grep -r "pointer_key\|pointer_enc_key\|file_key" internal/api/` returns zero results — decryption keys never flow through the microservice layer
-- [ ]  NFR-015: `ValidateResponse()` in `internal/audit/validate.go` only verifies the Ed25519 signature, never the `response_hash` preimage — and the comment `LIMITATION: microservice cannot verify response_hash` is present (IC §5.5)
-- [ ]  NFR-016: All libp2p connections use TLS 1.3 (QUIC) or Noise XX (TCP); `TestTransportAuthentication` passes in M6 test suite
-- [ ]  NFR-017: `DeriveD HTKey()` in `internal/crypto/hkdf.go` uses HMAC-SHA256 and the DHT validator rejects plaintext CID-format keys — `TestDHTKeyValidatorPersists` (CI check 5)
-- [ ]  NFR-018: `VYOMANAUT_CLUSTER_MASTER_SEED` is absent from all production environment configs; `TestProdModeEnvSecretGuard` (M1 Session 1.3.3) passes
-- [ ]  NFR-019: `DecryptPointerFile()` uses `crypto/subtle.ConstantTimeCompare` for the Poly1305 tag — confirmed by `TestConstantTimeTagComparison` in M2 Phase 2.5
-- [ ]  NFR-020: Every `ChallengeNonce()` call returns a `[33]byte` with version byte at index 0 — confirmed by CI grep check 8 and the return type annotation
-
-**From requirements.md §5.5 (NFR-021 through NFR-031):**
-
-- [ ]  NFR-021: The `audit_receipts` RSP (DM §6) allows only the single PENDING→terminal UPDATE; `TestAuditReceiptRSPBlocksDelete` in M4 migration check script passes
-- [ ]  NFR-022: No UPDATE or DELETE policy exists on `escrow_events`; `TestEscrowEventsRSPInsertOnly` passes
-- [ ]  NFR-023: `TestSingleWriterGoroutine` (CI check 4) passes with `race` flag
-- [ ]  NFR-024: `RecoverFromCrash()` is called before the writer goroutine starts; confirmed by startup sequence order in M13 Session 13.1.1
-- [ ]  NFR-029: No UPI Collect API endpoint strings in any source file — confirmed by CI grep check 11
-- [ ]  NFR-030: Every Razorpay payout call in `internal/payment/razorpay.go` includes `X-Payout-Idempotency` header — confirmed by `TestPayoutIdempotencyHeaderPresent`
-- [ ]  NFR-031: `rbi_bank_holidays_YYYY` table is present for the current year and next year in `internal/payment/`; the `rbi-holiday-table-update.md` runbook has been executed for the current December cycle
+```bash
+SCRIPT_EXECUTABLE:
+  $ test -x scripts/demo/run_single_machine.sh && echo PASS
+  EXPECT: PASS
+ 
+END_TO_END_RUN_SUCCEEDS:
+  $ bash scripts/demo/run_single_machine.sh; echo "exit=$?"
+  EXPECT: exit=0
+ 
+RETRIEVED_FILE_BYTE_IDENTICAL:              # the milestone's central assertion
+  $ cmp /tmp/vyomanaut-demo/original.bin /tmp/vyomanaut-demo/retrieved.bin && echo IDENTICAL
+  EXPECT: IDENTICAL
+ 
+READINESS_REPORTED_DEMO_MODE:
+  $ grep -c '"mode": *"demo"' docs/demo/run-single-machine.md
+  EXPECT: >= 1
+ 
+DEMO_THRESHOLDS_OBSERVED_NOT_ASSUMED:
+  $ grep -cE "active_vetted_providers.*5|distinct_asns.*5|microservice_quorum.*1|relay_nodes_deployed.*0" docs/demo/run-single-machine.md
+  EXPECT: >= 4
+ 
+REAL_BINARY_DRIVEN:
+  $ grep -cE "go run \./cmd/client|vyomanaut-client" scripts/demo/run_single_machine.sh
+  EXPECT: >= 5
+ 
+NO_PROD_PROFILE_IN_THE_RUN:
+  $ grep -cE "VYOMANAUT_MODE=prod|--mode=prod" scripts/demo/run_single_machine.sh
+  EXPECT: 0
+```
 
 ---
 
-### Phase 18.4 — Final CI Gate
+#### Session 18.2.2 — Five-desktop run
 
-**Reference:** MVP §8.4 (all 15 CI checks), MVP §6.4 MR-03 (migration checklist against both profiles)
+**PRECONDITIONS** — 18.2.1 passed. The five-machine rig from §6 built and wired.
 
-#### Session 18.4.1 — All-green CI verification
+**TASK** — execute the rig procedure in §6 and record `docs/demo/run-five-desktop.md`.
 
-**Task:** Verify all 15 CI checks from MVP §8.4 pass on a clean build:
+**VERIFY**
 
-1. `go build ./...` — zero warnings
-2. `go vet ./...` — zero output
-3. `golangci-lint run` — zero findings
-4. `go test ./... -race` — all pass
-5. `TestDHTKeyValidatorPersists` — pass
-6. `TestNoFloatArithmetic` — pass
-7. Migration apply + rollback against CI Postgres (both profiles per MVP §6.4 MR-03)
-8. Grep: no `challenge_nonce BYTEA(32)` — pass
-9. Grep: no float in payment — pass
-10. Grep: no non-existent ADR reference — pass
-11. Grep: no UPI Collect endpoint — pass
-12. Mermaid render check — pass
-13. Hyperlink check — pass
-14. `TestProfileShardSizeIsConstant` — pass
-15. `TestProfileBothFullySpecified` — pass
+```bash
+OPERATOR_RUNBOOK_EXISTS:
+  $ test -f scripts/demo/run_five_desktop.md && echo PASS
+  EXPECT: PASS
+ 
+FIVE_PHYSICAL_PROVIDERS_NOT_SIM:
+  $ grep -c -- "--sim-count" scripts/demo/run_five_desktop.md
+  EXPECT: 0
+  $ grep -cE "DESK-0[1-5]" docs/demo/run-five-desktop.md
+  EXPECT: >= 5
+ 
+RETRIEVED_FILE_BYTE_IDENTICAL:
+  $ grep -cE "IDENTICAL|sha256 match" docs/demo/run-five-desktop.md
+  EXPECT: >= 1
+ 
+DEPARTURE_AND_REPAIR_OBSERVED:
+  $ grep -cE "departure detected|DEPARTED" docs/demo/run-five-desktop.md
+  EXPECT: >= 1
+  $ grep -cE "repair job.*complete|repair_jobs.*COMPLETED" docs/demo/run-five-desktop.md
+  EXPECT: >= 1
+ 
+RETRIEVAL_AFTER_LOSS_SUCCEEDED:             # RS(3,5) tolerates two losses — prove it
+  $ grep -cE "retrieve.*after.*(kill|departure).*IDENTICAL" docs/demo/run-five-desktop.md
+  EXPECT: >= 1
+ 
+MACHINE_SPECS_AND_TOPOLOGY_RECORDED:
+  $ grep -cE "CPU|RAM|OS|switch|subnet" docs/demo/run-five-desktop.md
+  EXPECT: >= 5
+ 
+NAT_TIER_USAGE_RECORDED:                    # first real-network exercise of the substituted stack
+  $ grep -cE "relay|direct|hole.?punch" docs/demo/run-five-desktop.md
+  EXPECT: >= 1
+```
 
-All 15 must pass simultaneously. Document the passing state in a milestone sign-off
-commit with the message `milestone: M18 launch-readiness all-green CI`.
+---
+
+### Phase 18.3 — The scope record
+
+#### Session 18.3.1 — Write `docs/DEMO.md`
+
+**PRECONDITIONS** — Phase 18.2 complete. ADR-062, ADR-063 accepted.
+
+**TASK** — create `docs/DEMO.md` with exactly these sections:
+
+`## What this proved` — observed results from both runs, with numbers.
+
+`## What this is not` — explicit and unsoftened. Demo profile only (RS(3,5), not RS(16,56)). CLI
+only. `MockProvider`, no real money. One microservice replica; no HA, no gossip, no secrets manager.
+No relay nodes. No production benchmarks, runbooks, or security checklist. Audit primitive is
+ADR-002's hash-challenge, which **F-32 establishes cannot fail** — a provider that deleted every
+chunk would still pass every audit in this build.
+
+`## Substituted dependencies` — ADR-063's preserved-vs-approximated table verbatim, LTS obligation
+column intact.
+
+`## Module provenance` — **added by the design council verdict (§3).** Two `golang.org/x/*` modules
+were obtained by hand-repackaging GitHub archive zips into module-zip layout, per
+`internal/p2p/doc.go`. Their `go.sum` entries therefore attest to **locally constructed artifacts,
+not proxy-verified upstream ones.** Name both modules and versions. Nobody must mistake this
+`go.sum` for a `sum.golang.org`-verified one.
+
+`## Restated verification claims` — the three from Session 18.1.1.
+
+`## Known unresolved` — **F-32** (audits cannot fail), **F-69** (AONT-RS repair discloses plaintext
+to the repairer at k=16 — no collusion required), **F-34** (two colluding ASNs reach 22 ≥ 16 shards;
+the durability margin is 29 shards, the confidentiality margin is **5**). Each with its LTS tracking
+milestone named, not numbered.
+
+`## How to rebuild and re-run` — exact commands, plus the Go toolchain version (`go 1.26.2` per
+`go.mod` — vendoring pins modules, not the compiler) and the offline `-mod=vendor` procedure.
+
+**FILES** — `docs/DEMO.md`
+
+**VERIFY**
+
+```bash
+SEVEN_SECTIONS_PRESENT:
+  $ for s in "What this proved" "What this is not" "Substituted dependencies" "Module provenance" \
+             "Restated verification claims" "Known unresolved" "How to rebuild and re-run"; do \
+      grep -q "^## $s\$" docs/DEMO.md || echo "MISSING $s"; done
+  EXPECT: no MISSING lines
+ 
+SUBSTITUTIONS_DECLARED:
+  $ grep -cE "go-libp2p|QUIC|Noise XX|reedsolomon" docs/DEMO.md
+  EXPECT: >= 4
+ 
+MODULE_PROVENANCE_DISCLOSED:                # design council verdict, recommendation 5
+  $ grep -ciE "hand-repackaged|locally constructed|sum.golang.org" docs/DEMO.md
+  EXPECT: >= 2
+  $ grep -c "golang.org/x/" docs/DEMO.md
+  EXPECT: >= 2
+ 
+THREE_STRUCTURAL_FINDINGS_NAMED:
+  $ grep -cE "F-32|F-69|F-34" docs/DEMO.md
+  EXPECT: >= 3
+ 
+AUDIT_LIMITATION_STATED_PLAINLY:            # the most important sentence in the document
+  $ grep -ciE "cannot fail|would still pass every audit" docs/DEMO.md
+  EXPECT: >= 1
+ 
+NO_OVERSTATEMENT:
+  $ grep -ciE "production.ready|fully verified|no known gaps|launch.ready" docs/DEMO.md
+  EXPECT: 0
+ 
+TOOLCHAIN_VERSION_PINNED:
+  $ grep -c "1.26.2" docs/DEMO.md
+  EXPECT: >= 1
+ 
+NO_HARDCODED_LTS_MILESTONE_NUMBERS:
+  $ grep -cE "Milestone 2[0-9]|M2[0-9]\b" docs/DEMO.md
+  EXPECT: 0
+```
+
+---
+
+### Phase 18.4 — Freeze
+
+#### Session 18.4.1 — Vendor, tag, archive
+
+**PRECONDITIONS** — Phases 18.1–18.3 complete.
+
+**TASK** — the full procedure is in §7 (Stashing). In summary:
+
+1. `go mod vendor`; commit `vendor/`.
+2. Verify a clean-machine offline build: `GOFLAGS=-mod=vendor GOPROXY=off go build ./...`.
+3. Build release binaries for `linux/amd64` and `windows/amd64`; emit `SHA256SUMS`.
+4. Build and export the demo container image (§7.3).
+5. Annotated, signed tag `demo-v1.0.0`. GitHub Release with all artifacts attached.
+6. Archive the repository read-only.
+**FILES** — `vendor/` (new), `scripts/release/build_demo_artifacts.sh`,
+`docs/demo/STASH.md` (the recovery procedure)
+
+**VERIFY**
+
+```bash
+REPRODUCIBLE_OFFLINE_BUILD:                 # ADR-062's stated failure mode for the freeze
+  $ test -d vendor && echo PASS
+  EXPECT: PASS
+  $ GOFLAGS=-mod=vendor GOPROXY=off go build ./...
+  EXPECT: exit 0
+ 
+VENDOR_IS_COMPLETE:
+  $ GOFLAGS=-mod=vendor GOPROXY=off go test ./... -count=1
+  EXPECT: exit 0
+ 
+BOTH_PLATFORM_BINARIES_BUILT:
+  $ ls dist/vyomanaut-{client,provider,microservice}-{linux-amd64,windows-amd64.exe} 2>/dev/null | wc -l
+  EXPECT: 6
+ 
+CHECKSUMS_EMITTED:
+  $ test -f dist/SHA256SUMS && sha256sum -c dist/SHA256SUMS
+  EXPECT: exit 0; all OK
+ 
+CLI_IS_REAL_NOT_A_STUB:                     # N-01, final guard
+  $ grep -rc "mode=STUB" cmd/ | grep -v ":0" | wc -l
+  EXPECT: 0
+  $ ./dist/vyomanaut-client-linux-amd64 --help | grep -cE "register|upload|retrieve|deposit"
+  EXPECT: >= 4
+ 
+DEMO_DOCS_COMPLETE:
+  $ test -f docs/DEMO.md && test -f docs/demo/run-single-machine.md \
+      && test -f docs/demo/run-five-desktop.md && test -f docs/demo/STASH.md && echo PASS
+  EXPECT: PASS
+ 
+CONTAINER_IMAGE_RUNS_THE_DEMO:
+  $ docker compose -f deployments/demo/docker-compose.yml up --abort-on-container-exit
+  EXPECT: exit 0; retrieved file byte-identical
+ 
+TAG_AND_SIGNOFF:
+  $ git tag --list demo-v1.0.0
+  EXPECT: demo-v1.0.0
+  $ git tag -v demo-v1.0.0
+  EXPECT: signature verified
+  $ git log -1 --pretty=%s
+  EXPECT: milestone: M18 demo freeze — all-green (16 checks), tagged demo-v1.0.0
+```
 
 ---
 
