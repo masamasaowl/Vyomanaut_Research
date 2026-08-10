@@ -2140,7 +2140,7 @@ VET:
 
 ---
 
-## Milestone 17 — Production Hardening
+## Milestone 17 — Production Hardening (LTS Deffered)
 
 **Status:** *(corrected per A-12)* All deployment-topology detail this milestone needs is
 present in `architecture.md` §13, §18, §24, §27.5 — nothing here is blocked on missing

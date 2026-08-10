@@ -114,6 +114,7 @@ hackathon or investor meeting?*
 | Lazy repair trigger | s + r0 = 24 | **s + r0 = 4** |
 | Emergency floor | s = 16 | **s = 3** |
 | Max segment size | 14 MB (56 × 256 KB) | **1.25 MB (5 × 256 KB)** |
+| Max plaintext segment | 4 MiB | **768 KiB** |
 | Fault tolerance | 40-of-56 simultaneous failures | **2-of-5 simultaneous failures** |
 
 ### 3.3 Readiness gate thresholds

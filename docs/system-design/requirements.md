@@ -311,7 +311,7 @@ first quarter post-launch). Every P0 requirement is a launch blocker.
 | ---- | ------------- | ------ | -------- | ----- |
 | NFR-007 | Each provider must respond to an audit challenge within (256 KB / p95_measured_upload_throughput_kbps) × 1.5. For a provider with p95 throughput of 500 KB/s this is 768 ms. | Performance | Per-provider deadline | ADR-014 |
 | NFR-008 | The audit challenge lookup path on the provider daemon (Bloom filter check + RocksDB lookup + vLog read + hash verification) must complete within 100 ms at p99 on SSD hardware and 200 ms at p99 on HDD hardware, under concurrent upload load. | Performance | p99 ≤ 100 ms SSD / 200 ms HDD | ADR-023 |
-| NFR-009 | The AONT encoding pass for a full 14 MB segment must complete within 200 ms at p50 and a p99 target will be set after the Q16-1 benchmark protocol on hardware without AES-NI (minimum-spec Indian desktop: dual-core, no AES-NI, 2 GB RAM, 7200 RPM HDD). | Performance | p50 ≤ 200 ms | ADR-019, benchmarking-protocol.md |
+| NFR-009 | The AONT encoding pass for a full 14 MB segment must complete within 200 ms at p50 and a p99 target will be set after the Q16-1 benchmark protocol on hardware without AES-NI (minimum-spec Indian desktop: dual-core, no AES-NI, 2 GB RAM, 7200 RPM HDD). **per 4 MiB plaintext segment (16 × 256 KB), producing 14 MB of wire output.** | Performance | p50 ≤ 200 ms | ADR-019, benchmarking-protocol.md |
 | NFR-010 | The Argon2id master secret derivation at session start (t=3, m=64 MB, p=4) must complete within 500 ms at p50 on the minimum-spec target hardware. If it does not, parameters must be reduced per the fallback protocol in benchmarking-protocol.md. | Performance | p50 ≤ 500 ms | ADR-020 |
 | NFR-011 | The provider daemon must consume no more than 5% of CPU and remain within normal desktop I/O load during steady-state operation, defined as fewer than 5 concurrent chunk write operations and the standard daily audit cycle. Peak load during bulk onboarding (many simultaneous chunk assignments) is excluded from this constraint. | Performance | ≤ 5% CPU at steady state | ADR-009 |
 | NFR-012 | Steady-state repair bandwidth per provider must not exceed 100 Kbps at the target MTTF of 300 days and a network of 1,000 providers each storing 50 GB. At these parameters, BWavg ≈ 39 Kbps/peer per the Giroire formula. | Performance | ≤ 100 Kbps/provider | ADR-003, ADR-004 |
@@ -535,7 +535,7 @@ minimum-spec desktop hardware).
 
 #### Q16-1 — AONT Encoding Throughput (ChaCha20 path)
 
-**Closes:** NFR-009 (p50 ≤ 200 ms per 14 MB segment without AES-NI)
+**Closes:** NFR-009 (p50 ≤ 200 ms per 14 MB segment without AES-NI) **per 4 MiB plaintext segment (16 × 256 KB), producing 14 MB of wire output.**
 
 **Pre-condition:** Verify AES-NI is absent before running.
 
@@ -775,7 +775,7 @@ from a specific formula, measurement, or proof in the research log:
 - **NFR-007** (audit deadline): Derived from the Filecoin Seal timing principle (Paper 29 §3.4.2),
   adapted for timing-based (not cryptographic) outsourcing prevention.
 - **NFR-009** (AONT encoding): RFC 8439 (Paper 17) Table B.1 — ChaCha20 at 75 MB/s on OMAP-class
-  hardware gives 186 ms per 14 MB segment.
+  hardware gives 186 ms per 14 MB segment. **per 4 MiB plaintext segment (16 × 256 KB), producing 14 MB of wire output.**
 - **NFR-012** (repair bandwidth): Giroire Formula 1 at N=1,000, MTTF=300 days,
   D=50 TB gives BWavg ≈ 39 Kbps/peer.
 - **NFR-013** (write amplification): WiscKey (Paper 27) Figure 10 — write amplification ≈ 1.0
