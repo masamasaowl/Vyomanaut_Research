@@ -44,14 +44,11 @@
 - [Milestone 16 — Demo Mode Validation](#milestone-16--demo-mode-validation)
   - [Phase 16.1 — End-to-End Demo Test](#phase-161--end-to-end-demo-test)
   - [Phase 16.2 — Simulation Mode](#phase-162--simulation-mode)
-- [Milestone 17 — Production Hardening](#milestone-17--production-hardening)
-  - [Phase 17.1 — Secrets Manager Adapters](#phase-171--secrets-manager-adapters)
-  - [Phase 17.2 — HA Microservice & Relay Nodes](#phase-172--ha-microservice--relay-nodes)
-- [Milestone 18 — Launch Readiness](#milestone-18--launch-readiness)
-  - [Phase 18.1 — Runbooks](#phase-181--runbooks)
-  - [Phase 18.2 — Benchmark Scripts](#phase-182--benchmark-scripts)
-  - [Phase 18.3 — Security Verification Checklist](#phase-183--security-verification-checklist)
-  - [Phase 18.4 — Final CI Gate](#phase-184--final-ci-gate)
+- [Milestone 17 — Production Hardening](#milestone-17--demo-completion-rewritten-replaces-production-hardening)
+- [Milestone 18 — Launch Readiness](#milestone-18--demo-freeze--stash-polished)
+- [Desktop Setup for Demo](#the-five-desktop-rig--specification-wiring-and-expected-outcomes)
+- [Stashing the Demo version](#stashing-the-demo-cleanly-and-the-github-question)
+- [Running the Demo version](#running-a-large-scale-demo-on-a-single-desktop)
 
 ### Previous Milestones
 
