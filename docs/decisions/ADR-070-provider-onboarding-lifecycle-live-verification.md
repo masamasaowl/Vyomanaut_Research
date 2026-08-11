@@ -1,6 +1,7 @@
 # ADR-070 — Provider Onboarding Lifecycle: Live-Verification Findings (Registration → Heartbeat → Vetting → Active)
 
 **Status:** Accepted
+**Track:** DEMO
 **Topic:** #13 Provider Daemon Core, #16 Provider-Side Storage Engine (capability-token half only), #4 Microservice Coordination Loops
 **Supersedes:** —
 **Superseded by:** —
@@ -78,24 +79,32 @@ Already self-documented in `cmd/provider/handler_upload.go`'s header comment at 
 `internal/audit.ClusterSecretCache` has an intentional 5-minute TTL (IC §8) — by design: a real deployment must periodically re-validate the cluster audit secret against its secrets manager. `cmd/microservice/main.go` called `cache.Load(ctx)` exactly once, at startup, with no periodic re-call anywhere. Consequence: every audit dispatch succeeded for the cache's first 5 minutes, then every subsequent dispatch attempt failed closed with `ErrSecretExpired` for the rest of any run — regardless of the underlying secrets client (`envSecretsClient`, itself correctly implemented and always available) — because nothing ever asked it again. This has no startup-time symptom: `readiness.go`'s `cluster_audit_secret_loaded` condition checks only whether the cache was *ever* loaded, not whether it is still fresh, so a demo run can look fully green at minute 1 and have every audit silently stop dispatching by minute 6.
 **Fix:** new `cmd/microservice/cluster_secret_refresh_loop.go`, wired into `main.go` as "Step 20", re-calling `cache.Load` every 2 minutes (comfortably under the 5-minute TTL).
 
+### F-070-12 — Vetting GC delivery was never wired in either
+
+`internal/vettingchunk.GCDelivery.DeliverGCInstruction` (Milestone 14) — the call that removes a provider's synthetic vetting chunks on its `VETTING`→`ACTIVE` transition (IC §5.10) — was never called anywhere in `cmd/microservice`, the same shape of gap as F-070-8. The reason is structural: `internal/scoring.IncrementConsecutivePasses` performs the database transition but returns only `error`, with no way to signal "a transition just happened" to its caller (`runAuditDispatchLoop`). Nothing was ever positioned to react to the one moment IC §5.10 specifies.
+**Fix:** new `cmd/microservice/vetting_gc_loop.go`, wired into `main.go` as "Step 21" — rather than changing `IncrementConsecutivePasses`'s signature (an already-tested package; this fix stays entirely inside `cmd/microservice`, matching F-070-8's and F-070-11's discipline), it polls for the resulting state instead of the event: any `ACTIVE` provider that still has live (`status = 'ACTIVE'`) synthetic `chunk_assignments` has not yet had GC delivered, regardless of how long ago the transition happened.
+**Verification status:** fixed and confirmed via the isolated test suite (builds clean, `go vet` clean, zero regressions) — **not yet observed succeeding in a completed live end-to-end run**, since the run that would exercise it was blocked earlier in the timeline by the finding ADR-071 records (upload attempted before any provider reached `ACTIVE`). Once ADR-071's test re-sequencing lands, this is the next thing to confirm live.
+
 ## Decision
 
-The full chain — registration, heartbeat authentication, heartbeat address reporting, capability-token verification, vetting-chunk generation, vetting-duration tracking, and cluster-secret freshness — is now wired correctly and confirmed live: five real, independently-launched provider processes registered, heartbeated, transitioned `PENDING_ONBOARDING`→`VETTING`, received and uploaded real synthetic chunks, accumulated audit passes, and transitioned `VETTING`→`ACTIVE`, entirely through the real HTTP/wire protocols this codebase specifies — no step mocked, stubbed, or bypassed.
+The full chain — registration, heartbeat authentication, heartbeat address reporting, capability-token verification, vetting-chunk generation, vetting-duration tracking, vetting GC delivery, and cluster-secret freshness — is wired correctly. Eleven of twelve findings are confirmed live end-to-end: five real, independently-launched provider processes registered, heartbeated, transitioned `PENDING_ONBOARDING`→`VETTING`, received and uploaded real synthetic chunks, accumulated audit passes, and transitioned `VETTING`→`ACTIVE`, entirely through the real HTTP/wire protocols this codebase specifies — no step mocked, stubbed, or bypassed. F-070-12 (GC delivery) is fixed and unit-verified but awaits its own live confirmation, blocked on ADR-071's test fix landing first.
 
-Going forward: **a milestone that adds a new stage to a multi-stage provider lifecycle must be verified against the stage immediately before and after it, live, before the milestone is considered complete** — not merely unit-tested in isolation. Eleven of eleven findings in this ADR were exactly this shape: a component correctly implementing its own documented contract, defeated by a neighboring component that either didn't exist yet or disagreed with it at the boundary. Unit tests, by construction, cannot catch a disagreement between two components; only running the seam can.
+Going forward: **a milestone that adds a new stage to a multi-stage provider lifecycle must be verified against the stage immediately before and after it, live, before the milestone is considered complete** — not merely unit-tested in isolation. Twelve of twelve findings in this ADR were exactly this shape: a component correctly implementing its own documented contract, defeated by a neighboring component that either didn't exist yet or disagreed with it at the boundary. Unit tests, by construction, cannot catch a disagreement between two components; only running the seam can. See ADR-071 for a thirteenth instance of the same underlying pattern, one level up: a *planning document* disagreeing with an already-ratified decision (ADR-030) it was never reconciled against.
 
 ## Consequences
 
-**Closed by this ADR**, confirmed live: F-070-1 through F-070-11 (the provider_id half of F-070-9; see below for the file_id half).
+**Closed by this ADR**, confirmed live: F-070-1 through F-070-11. **Closed but not yet live-confirmed:** F-070-12. **F-070-9 fully closed** (both provider_id and file_id halves) via ADR-072, which also surfaced F-070-13 — a new, distinct, deterministic finding — not yet resolved.
 
 **Still open, explicitly, not silently worked around:**
 
-- **F-070-9's file_id half** — real (non-vetting) upload capability tokens still cannot verify; requires either an `UploadRequest` wire-format change to carry `file_id`, or dropping `file_id` from the signing input (a design-council question, not an implementation one).
+- ~~**F-070-9's file_id half**~~ — **CLOSED by ADR-072** (Design Council #2): dropped `file_id` from the capability-token signing input entirely rather than adding it to the wire format, since `chunk_id`'s own generation properties (fresh 256-bit randomness, never reused across files) already provide the binding `file_id` was meant to. See ADR-072 for the full verdict and F-070-13 below for what surfaced immediately once this unblocked real uploads.
+- **F-070-13 (new) — one shard deterministically fails capability-token verification on multi-segment files.** Once ADR-072 unblocked real uploads, 9 of 10 shards across a 2-segment test file verified and stored correctly — the first real shard data ever successfully stored in this codebase's history. The 10th (segment 1, shard 4 — the last shard of the file's final, partial segment) fails `0x03` deterministically and reproducibly, including under forced-sequential upload (ruling out a concurrency race, not merely leaving it untested). The `chunk_assignments` row is well-formed and consistent with every other row. Root cause not yet identified; most promising unexplored leads: the client SDK's session-state population (`internal/client/upload/transfer.go`'s `sess.ChunkIDs[segIdx][shardIndex]`) or the server's `assignSegment` handling specifically for a file's final, partial segment. **Not fixed. Next item for Session 16.1.1's continuation.**
 - **F-070-7's general case** — real NAT traversal / relay address discovery for non-local, non-loopback deployments.
 - **Provider registration has no retry loop** — a transient microservice outage at startup leaves a provider permanently unregistered until manually restarted.
 - **Heartbeat token refresh is a no-op** — safe given the 7-day JWT TTL relative to this codebase's current run durations, but a real `POST /api/v1/provider/token/refresh` call is unimplemented.
 - **Real ASN detection** — every registration in this codebase's current form is a simulation-mode registration (`demo_asn`); production ASN detection (`asn` field) is unimplemented.
 - **`--sim-count`'s single-process design cannot register more than one provider** — registration tokens are single-use and tied to one phone-derived subject; running N providers as one process sharing one `--registration-bearer-token` can only ever register the first to reach that code path. `--sim-only-index` (Session 16.2.1) — running N separate OS processes, each with its own token — is required for correct multi-provider registration, not merely for independent kill/departure testing as originally scoped.
+- **F-070-12's live confirmation** — see Verification status above.
 
 ## Verification
 
@@ -107,6 +116,7 @@ Live, end-to-end, five real provider processes against a real Postgres instance 
 - All 5 accumulated audit passes via the real `/vyomanaut/audit-challenge/1.0.0` protocol, past `VettingMinPasses:5`, with continuous cluster-secret availability across the full run (zero `ErrSecretExpired` occurrences).
 - All 5 transitioned `VETTING`→`ACTIVE`.
 - Readiness gate (`GET /api/v1/admin/readiness`) reported `all_conditions_met: true` throughout, with `active_vetted_providers: 5/5` reflecting genuinely active providers by the run's end.
-- Zero errors of any kind, on either the microservice or provider side, across the full run once all eleven findings were fixed.
+- Zero errors of any kind, on either the microservice or provider side, across the full run once F-070-1 through F-070-11 were fixed.
+- F-070-12 (GC delivery): fixed, isolated-suite-verified, live confirmation pending — see its own entry above.
 
 Every fix listed above additionally passed: `gofmt`, `go vet` (native and `GOOS=windows` where applicable), and the full existing test suite for every touched package (`cmd/provider`, `cmd/microservice`, `internal/p2p`) with zero regressions, verified in an isolated module mirroring each package's complete real dependency graph.
