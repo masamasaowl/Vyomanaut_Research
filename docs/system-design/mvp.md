@@ -175,7 +175,7 @@ hackathon or investor meeting?*
 T+00:00  — 5 provider daemons start, register, Ed25519 keys generated
 T+00:30  — Heartbeats arrive at microservice; all 5 providers in VETTING
 T+00:30  — Readiness gate passes (5 providers, 5 synthetic ASNs, instant cooling)
-T+01:00  — Data owner registers and deposits escrow; first upload attempt is rejected (HTTP 503, providers still VETTING) — client retries automatically per IC §5.9's documented backoff
+T+01:00  — Data owner registers and deposits escrow; first upload attempt is rejected (HTTP 503, providers still VETTING) — client retries automatically per IC §5.9's documented backoff (ADR-071)
 T+03:00  — First audit cycle fires; all 5 providers respond; first PASS logged
 T+05:00  — Vetting minimum duration (5 min) reached
 T+10:00  — 5th consecutive audit PASS; providers transition VETTING → ACTIVE
