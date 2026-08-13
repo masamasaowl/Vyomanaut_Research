@@ -17,6 +17,12 @@ Where this document conflicts with an ADR, the ADR wins. Where it conflicts with
 - [`requirements.md`](./requirements.md) — functional and non-functional requirements
 - [`ADR-001`](../decisions/ADR-001-coordination-architecture.md) through [`ADR-029`](../decisions/ADR-029-bootstrap-minimum-viable-network.md) — all architectural decisions
 
+> **Naming note — Demo / LTS.** As of Milestone 16, what this document calls **LTS** is the
+> track previously called "Production." Conceptual rename only — shipped wire values
+> (`VYOMANAUT_MODE=prod`, the `mode: "prod"` field in `ReadinessResponse`, `PROD_MODE_ENV_SECRET`)
+> are unchanged; renaming those is a separate, not-yet-made decision. Full explanation:
+> `architecture.md`, Naming note and §29.
+
 ---
 
 ## Table of Contents
@@ -140,7 +146,7 @@ flowchart LR
     RZ -- "HTTPS webhook POST\n(payment.captured,\npayout.reversed,\naccount.created)" --> MS
 ```
 
-**Demo topology.** In `VYOMANAUT_MODE=demo`, the relay node box and the secrets manager box are absent from the physical topology (MinRelayNodes=0, RequireSecretsManager=false). The logical communication links they represent still exist in the code; they are simply not exercised. The mock PaymentProvider replaces the Razorpay box. The diagram above shows the production topology. (ADR-031)
+**Demo topology.** In `VYOMANAUT_MODE=demo`, the relay node box and the secrets manager box are absent from the physical topology (MinRelayNodes=0, RequireSecretsManager=false). The logical communication links they represent still exist in the code; they are simply not exercised. The mock PaymentProvider replaces the Razorpay box. The diagram above shows the LTS topology. (ADR-031)
 
 ### Cross-reference: diagram links to ADRs
 
@@ -345,7 +351,7 @@ and `retry_after = 60`.
 
 **Condition evaluation contract:**
 
-| Condition | Data source | Production threshold | Demo threshold | Source |
+| Condition | Data source | LTS threshold | Demo threshold | Source |
 | --- | --- | --- | --- | --- |
 | Active vetted providers | `providers WHERE status IN ('VETTING','ACTIVE')` | ≥ 56 | ≥ 5 | `NetworkProfile.MinActiveProviders` |
 | Distinct ASNs | `providers WHERE status IN ('VETTING','ACTIVE')` | ≥ 5 | ≥ 5 | `NetworkProfile.MinDistinctASNs` |
@@ -1118,7 +1124,7 @@ Provides the WiscKey-style chunk storage engine: RocksDB index + append-only vLo
 called exclusively from a single writer goroutine. All other goroutines must submit write
 requests through a channel to that goroutine. Calling `AppendChunk` from multiple goroutines
 concurrently produces undefined vLog corruption. This is Invariant 5 in the storage engine
-design and is enforced in production by the daemon's upload manager.
+design and is enforced in LTS by the daemon's upload manager.
 
 ```go
 // Package storage implements the WiscKey key-value separated chunk storage engine.
@@ -1880,7 +1886,7 @@ the database layer; the contracts here document the intent for application-layer
 | Repair job creation for `is_vetting_chunk = TRUE` rows | Prohibited for all roles | Any code path that calls `repair.EnqueueJob` for a synthetic chunk is a bug. Invariant 6. `IsVettingChunk()` must be called before any EnqueueJob invocation in the departure handler and threshold monitor. |
 
 **Demo-mode shard_index range.** The `shard_index BETWEEN 0 AND 55` CHECK shown in the
-schema DDL reflects the production value (`TotalShards-1 = 55`). In demo mode
+schema DDL reflects the LTS value (`TotalShards-1 = 55`). In demo mode
 (`TotalShards=5`), the generated constraint is `shard_index BETWEEN 0 AND 4`. The row
 security policy and all DML permissions are identical in both modes; only the CHECK bound
 differs. (ADR-031, `migrations/generator.go`)
@@ -2090,7 +2096,7 @@ The microservice is a read-only consumer.
 
 **Local development / simulation mode:** The `VYOMANAUT_CLUSTER_MASTER_SEED` environment
 variable may substitute for the secrets manager in `dev` and `--sim-count` modes. This
-variable must be **absent** in all production deployments. Presence of this variable in a
+variable must be **absent** in all LTS deployments. Presence of this variable in a
 non-dev environment is a critical misconfiguration that the startup check must detect and halt.
 
 **Go interface for the secrets manager client:**
@@ -2322,7 +2328,7 @@ func heartbeatAndRepublish(profile NetworkProfile, store ChunkStore, dht DHT) {
   }
 ```
 
-Note: the daemon does not know `file_owner_key` for real production shards — that key belongs
+Note: the daemon does not know `file_owner_key` for real LTS shards — that key belongs
 to the data owner. For DHT republication, the daemon only needs to call PutProviderRecord
 with the pre-computed dht_key that was stored alongside the chunk at upload time. The
 `dht_key` is stored in the `chunk_assignments` row and included in the upload receipt, so the
@@ -2376,7 +2382,7 @@ coordination across the affected components before deployment**.
 - **Never change the framing without a version bump.** Changing the `length` field encoding
   or a message field's byte offset is always a breaking change.
 - `/vyomanaut/vetting-gc/1.0.0` — initial version. The GC instruction frame format (VettingGCRequest / VettingGCResponse) must increment the version string if any of the following change: the `chunk_count` field encoding, the batch size limit, the failure bitmap format, or the response status byte semantics. The protocol must remain in the daemon binary indefinitely: an `ACTIVE provider` that received GC instructions years earlier may need to re-run GC after a crash (the `PENDING_DELETION` rows will retrigger delivery on reconnect). Removing the protocol handler from the daemon requires a coordinated network-wide migration.
-- **Protocol strings are mode-invariant.** All libp2p protocol IDs (`/vyomanaut/chunk-upload/1.0.0`, `/vyomanaut/audit-challenge/1.0.0`, etc.) are identical in demo and production. The wire format, frame sizes, and 0-RTT policies documented in §4 apply in both modes. A demo provider daemon can interoperate with a production microservice at the protocol layer (though the readiness gate will prevent uploads until production conditions are met). (ADR-031)
+- **Protocol strings are mode-invariant.** All libp2p protocol IDs (`/vyomanaut/chunk-upload/1.0.0`, `/vyomanaut/audit-challenge/1.0.0`, etc.) are identical in demo and LTS. The wire format, frame sizes, and 0-RTT policies documented in §4 apply in both modes. A demo provider daemon can interoperate with an LTS microservice at the protocol layer (though the readiness gate will prevent uploads until LTS conditions are met). (ADR-031)
 
 ### Internal Go Package Interfaces
 
@@ -2385,7 +2391,7 @@ coordination across the affected components before deployment**.
 - **Breaking changes** (changing an exported function's signature, changing pre/post-conditions, changing error sentinel values): require a new milestone entry in [`mvp.md`](./mvp.md) identifying all affected call sites. Changes must be made atomically — the PR that changes the interface must also update all call sites.
 - **Sentinel error identity.** Exported `var Err... = errors.New(...)` values must never be renamed; callers use `errors.Is()` for matching. Adding a new sentinel is additive and safe.
 - **NetworkProfile fields.** A new `NetworkProfile` field is not a versioned interface change
-— it is a configuration change. However, adding a field requires simultaneous values in both `ProductionProfile` and `DemoProfile` in the same PR. The Go struct-literal syntax enforces this at compile time: an omitted field is a compile error, not a silent zero-value default. If a new field's zero value is a valid production setting (e.g. `false`), add a comment explaining why the zero value is intentional; otherwise the intent is ambiguous to future engineers. (ADR-031)
+— it is a configuration change. However, adding a field requires simultaneous values in both `ProductionProfile` and `DemoProfile` in the same PR. The Go struct-literal syntax enforces this at compile time: an omitted field is a compile error, not a silent zero-value default. If a new field's zero value is a valid LTS setting (e.g. `false`), add a comment explaining why the zero value is intentional; otherwise the intent is ambiguous to future engineers. (ADR-031)
 
 ### PostgreSQL Schema
 
@@ -2408,7 +2414,7 @@ coordination across the affected components before deployment**.
   the [Razorpay changelog](https://razorpay.com/docs/api/changelog) as part of the December
   deployment. Any field renamed or removed by Razorpay requires an update to
   [Section 7](#7-razorpay-webhook-contracts) of this document and a corresponding code update
-  before the change takes effect in production.
+  before the change takes effect in LTS.
 - **Field reads must use safe accessors** (typed unmarshalling with explicit `omitempty` on
   optional fields). Code that crashes on an unexpected webhook shape causes payment processing
   outages.

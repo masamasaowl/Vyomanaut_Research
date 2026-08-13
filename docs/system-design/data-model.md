@@ -7,6 +7,12 @@ Where this document and an ADR conflict, file an issue; do not build around the 
 **Source ADRs:** ADR-006, ADR-007, ADR-008, ADR-013, ADR-015, ADR-016, ADR-017, ADR-020,
 ADR-024, ADR-025, ADR-027, ADR-028, ADR-029
 
+> **Naming note — Demo / LTS.** As of Milestone 16, what this document calls **LTS** is the
+> track previously called "Production." Conceptual rename only — `config.ProductionProfile`
+> and every literal schema/CHECK-constraint value derived from it are unchanged; this document
+> still shows the shipped value in DDL comments. Full explanation: `architecture.md`, Naming
+> note and §29.
+
 ---
 
 ## Table of Contents
@@ -52,7 +58,7 @@ to a query pattern in this document must be dropped.
 migration or application code path. Migrations that would break an invariant are
 rejected at review time, not at runtime.
 
-**Profile rule.** Two CHECK constraints in this document (`chunk_assignments.shard_index` and `repair_jobs.available_shard_count`) show production values in their comments but are actually parameterised from `NetworkProfile` at migration generation time via `migrations/generator.go`. In `VYOMANAUT_MODE=demo` the values differ. All other constraints, column types, and row security policies are identical in both modes. (ADR-031)
+**Profile rule.** Two CHECK constraints in this document (`chunk_assignments.shard_index` and `repair_jobs.available_shard_count`) show LTS values in their comments but are actually parameterised from `NetworkProfile` at migration generation time via `migrations/generator.go`. In `VYOMANAUT_MODE=demo` the values differ. All other constraints, column types, and row security policies are identical in both modes. (ADR-031)
 
 ---
 
@@ -600,11 +606,11 @@ CREATE TABLE chunk_assignments (
     -- NULL when is_vetting_chunk = TRUE (no RS scheme applies to synthetic chunks).
     -- NOT NULL when is_vetting_chunk = FALSE (enforced by constraint below).
     -- Shards 0–15 are AONT systematic codewords; shards 16–55 are RS parity (ADR-022).
-    -- Upper bound (55) is TotalShards-1 = 56-1 in production.
+    -- Upper bound (55) is TotalShards-1 = 56-1 in LTS.
     -- In VYOMANAUT_MODE=demo (TotalShards=5) this bound is 4.
     -- The actual constraint value is emitted by migrations/generator.go from
     -- NetworkProfile.TotalShards-1 at migration generation time, not hardcoded here.
-    -- This comment shows the production value. (ADR-031)
+    -- This comment shows the LTS value. (ADR-031)
 
     provider_id     UUID                NOT NULL REFERENCES providers (provider_id),
 
@@ -1058,11 +1064,11 @@ CREATE TABLE repair_jobs (
     -- because at s=16 an EMERGENCY_FLOOR job immediately supersedes any pending
     -- THRESHOLD_WARNING job for the same chunk. Maximum is 56 (all shards present
     -- but a departure is imminent — for SILENT/ANNOUNCED triggers).
-    -- Range [DataShards, TotalShards] = [16, 56] in production.
+    -- Range [DataShards, TotalShards] = [16, 56] in LTS.
     -- In VYOMANAUT_MODE=demo (DataShards=3, TotalShards=5) the range is [3, 5].
     -- The actual constraint is emitted by migrations/generator.go from
     -- NetworkProfile.DataShards and NetworkProfile.TotalShards at generation time.
-    -- This comment shows the production values. (ADR-031)
+    -- This comment shows the LTS values. (ADR-031)
 
     created_at              TIMESTAMPTZ         NOT NULL DEFAULT NOW(),
 
@@ -1489,7 +1495,7 @@ FROM (
 -- generated at microservice startup from NetworkProfile.ScoreWindow{Short,
 -- Medium,Long}, not hardcoded here. The view is DROPPED and RECREATED on
 -- every microservice restart. In VYOMANAUT_MODE=demo the intervals are
--- '2 minutes', '6 minutes', '20 minutes'. This DDL shows the production
+-- '2 minutes', '6 minutes', '20 minutes'. This DDL shows the LTS
 -- values for reference only. (ADR-031)
 
 CREATE UNIQUE INDEX ON mv_provider_scores (provider_id);
@@ -1761,7 +1767,7 @@ prevents a job from being recorded as completed before it was started.
 ### 8.23 Profile-parameterised CHECK bounds
 
 The `shard_index` upper bound and `available_shard_count` range in `chunk_assignments` and
-`repair_jobs` respectively vary between production (TotalShards=56, DataShards=16) and demo
+`repair_jobs` respectively vary between LTS (TotalShards=56, DataShards=16) and demo
 (TotalShards=5, DataShards=3). These bounds are not nullable columns; they are
 profile-parameterised constraints emitted by `migrations/generator.go`. The migration
 generator must be invoked with the active `NetworkProfile` before any migration is applied to
@@ -1814,15 +1820,15 @@ NOW() AS scores_as_of   -- consumers must check age before using for payment dec
 - [ ]  Nightly data integrity query documented: `SELECT COUNT(*) FROM audit_receipts ar JOIN chunk_assignments ca ON ca.chunk_id = ar.chunk_id AND ca.provider_id = ar.provider_id WHERE ar.file_id IS NULL AND ca.is_vetting_chunk = FALSE` must return 0.
 - [ ]  Invariant 6 added to code review checklist and pre-deployment validation suite.
 - [ ] Schema generated against the correct NetworkProfile:
-      run `migrations/generator.go --profile=prod` for production databases,
+      run `migrations/generator.go --profile=prod` for LTS databases,
       `migrations/generator.go --profile=demo` for demo databases.
-      Never apply a demo schema (shard_index BETWEEN 0 AND 4) to a production database
+      Never apply a demo schema (shard_index BETWEEN 0 AND 4) to an LTS database
       or vice versa. (ADR-031)
 - [ ] mv_provider_scores view regenerated at first startup of the target environment —
       it is dropped and recreated from NetworkProfile scoring window values, not applied
       as a migration. Verify by checking `scores_as_of` after first startup.
 - [ ] Both databases (demo_db and prod_db) are completely separate instances with
-      separate connection strings. Demo data must never enter the production database.
+      separate connection strings. Demo data must never enter the LTS database.
       (ADR-031)
 - [ ] TestProfileShardSizeIsConstant passes in CI, confirming DemoProfile.ShardSize
       == ProductionProfile.ShardSize == 262144. (ADR-031)
