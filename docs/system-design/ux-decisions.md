@@ -2,6 +2,18 @@
 
 *The positioning, product, and desktop-application-engineering foundation for Vyomanaut. Stands alongside `architecture.md`, `requirements.md`, `data-model.md`, and `interface-contracts.md`. This is not a spec and not an ADR — it is the thinking those documents and future ADRs are built on. It replaces `ux-finding.md` and `desktop-application-foundations.md`, which are retired as of this document.*
 
+> **Scope: LTS only.** As of the Milestone 16 Demo/LTS split, this entire document belongs to
+> the LTS track. Demo ships no GUI — it is the CLI/simulated-daemon lifecycle in `mvp.md` §3.6,
+> full stop — so there is no Demo-relevant content to segregate here, unlike the other four
+> system-design documents. Every decision below, and every ADR it cites (ADR-038 through
+> ADR-047, and ADR-049 through ADR-052), is realized starting at **Milestone 19**, the first
+> milestone with any GUI work in it (§9's own note already anchored §9.7's accessibility work
+> there; that anchor is now the rule for the whole document, not one subsection's exception).
+> Nothing here depends on where the backend build (currently Milestone 16) happens to be —
+> these are product and engineering-foundation decisions, not build-sequenced ones, and they
+> hold regardless of backend milestone progress. Streamlined for the split: see the changelog
+> note at the end of §11.
+
 ---
 
 ## 1. The problem
@@ -119,7 +131,7 @@ This is also, deliberately, the opposite of the Honeygain model: those apps work
 
 ## 9. Desktop application engineering foundations
 
-*These are decisions, not options — made so engineering has a fixed foundation to build on. Each one has, or will get, its own ADR (ADR-038 through ADR-042 already cover §9.1–§9.4; §9.5 remains a design pass, not an ADR; ADR-049 covers §9.6; ADR-050 covers §9.7; ADR-051 covers §9.8; ADR-052 covers §9.9).*
+*These are decisions, not options — made so engineering has a fixed foundation to build on when Milestone 19 starts. Each one has, or will get, its own ADR, all realized starting M19 per the scope note at the top of this document (ADR-038 through ADR-042 already cover §9.1–§9.4; §9.5 remains a design pass, not an ADR; ADR-049 covers §9.6; ADR-050 covers §9.7; ADR-051 covers §9.8; ADR-052 covers §9.9).*
 
 ### 9.1 Shell technology: Wails
 
@@ -223,3 +235,12 @@ Both were unaddressed gaps between an accepted architecture decision and an acce
 - **How and when we approach institutions** (universities, offices, hospitals) as a go-to-market motion — a business-development question, deliberately not a product one (§5.2). The product is built to work either way; this is about timing and outreach, not design. Formal IS 17802 accessibility conformance certification (§9.7, ADR-050) is deferred to this same decision — the WCAG 2.1 AA baseline is already built in regardless of when, or whether, that outreach happens.
 
 Everything else in this document — the problem, the solution, the market we're in, the market we're not in, who we're building for, the design bar we're holding ourselves to, and the desktop-application foundations that make "Windows first" actually buildable — is intended to be settled.
+
+---
+
+**Changelog — Milestone 16, Demo/LTS split.** Streamlined for the split: added the LTS-only
+scope banner at the top (this document had no Demo-relevant content to begin with — Demo has
+no GUI — so streamlining here meant making that explicit and removing backend-milestone framing
+that could read as a dependency, not cutting decisions); tied §9's ADR list and this section's
+Windows-service finding to Milestone 19 explicitly rather than leaving the connection implicit
+in §9.7 alone. No product, market, or engineering decision in §§1–10 changed.
