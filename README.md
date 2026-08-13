@@ -2,7 +2,7 @@
 
 Decentralised cold-storage network for India. Data owners pay to store encrypted files; home desktop operators earn money by holding shards and passing daily cryptographic storage proofs.
 
-The Version 1 of the project is archived at [masamasaowl/Vyomanaut](https://github.com/masamasaowl/Vyomanaut).
+The Version 1 of the project is archived at [vyomanaut-labs/Vyomanaut](https://github.com/vyomanaut-labs/Vyomanaut).
 V1 failed due to:
 
 1. Lack of research in architecture
