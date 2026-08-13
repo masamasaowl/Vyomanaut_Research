@@ -1676,8 +1676,9 @@ package client
 
 // UploadOrchestrator manages the full upload lifecycle for one file.
 // ERRATA: Each ShardAssignment in the UploadAssignResponse includes a capability_token field. The upload orchestrator must include this token verbatim in the capability_token field of the UploadRequest frame sent to that provider. Tokens are single-use per assignment and expire 1 hour after issuance.
-// If a provider returns 0x07 (CAPABILITY_EXPIRED), the orchestrator must call POST /api/v1/upload/assign again with the same file_id to obtain fresh tokens.
-// The assignment service returns the same provider set (idempotent on file_id) but generates new tokens with a fresh expiry.
+// If a provider returns 0x07 (CAPABILITY_EXPIRED), the orchestrator must call POST /api/v1/upload/assign again, submitting every segment's chunk_ids from the current session state, to obtain fresh tokens for the same provider set.
+// The assignment service is idempotent per-segment, not just per-file_id (ADR-073): a segment already persisted is never re-derived, only token-refreshed, regardless of which call submitted it. Every response contains every segment persisted so far for file_id.
+// ERRATA (ADR-073): UploadFile does not call POST /api/v1/upload/assign once, upfront, for the whole file. chunk_id (IC §4.1) is the shard's own content hash and cannot exist before that segment is AONT+RS-encoded, so assignment is requested incrementally — once per segment, immediately after that segment is encoded, carrying only the segment(s) encoded so far. This preserves fail-fast readiness/escrow rejection (still checked, and can still 503/409, on the very first call for a file_id) without requiring the whole file to be encoded first.
 type UploadOrchestrator interface {
     // UploadFile encodes, distributes, and registers a file.
     //

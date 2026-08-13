@@ -1183,19 +1183,25 @@ components:
         - file_id
         - num_segments
         - original_size_bytes
+        - segments
       properties:
         file_id:
           $ref: '#/components/schemas/UUID'
           description: |
-            Client-generated UUIDv7 for this file. Idempotent: if a prior assign
-            call completed for this file_id, the same assignment is returned.
+            Client-generated UUIDv7 for this file. Idempotent per-segment (ADR-073):
+            a prior call's segments are never re-derived, only token-refreshed; a
+            later call may submit additional, not-yet-assigned segments for the same
+            file_id. Every response — first call or Nth — contains every segment
+            persisted so far for this file_id, not just the ones this call named.
         num_segments:
           type: integer
           minimum: 1
           maximum: 10000
           description: |
-            Number of 14 MB encoded segments the file has been split into.
-            `ceil(original_size_bytes / (16 × 262144))`. (ADR-022)
+            Total number of 14 MB encoded segments the file will be split into —
+            this file's segment count, not the number of entries in `segments` on
+            this particular call. `ceil(original_size_bytes / (16 × 262144))`.
+            (ADR-022)
         original_size_bytes:
           type: integer
           format: int64
@@ -1204,45 +1210,95 @@ components:
             Plaintext file size in bytes before AONT padding. Required by the
             assignment service to compute the 30-day storage cost and verify that
             the data owner's escrow balance is sufficient before assigning providers.
+            Re-sent on every call (not just the first) but only validated against
+            escrow on the first call for a given file_id (ADR-073).
             (FR-014: refuse upload if balance < cost_for_30_days(file_size))
+        segments:
+          type: array
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/SegmentChunkIDs'
+          description: |
+            The client's real, already-computed content-hash chunk_id for every
+            shard of one or more segments — never a full file's worth in the
+            common case. chunk_id cannot exist before a segment is AONT+RS-encoded
+            (it IS that segment's content hash, IC §4.1), so the client submits
+            segments incrementally: segment 0 as soon as it's encoded, segment 1
+            once that's encoded, and so on — not the whole file upfront. A segment
+            already persisted from an earlier call is silently ignored if
+            resubmitted (idempotent), never re-derived. (ADR-073)
 
-    ShardAssignment:
+    SegmentChunkIDs:
       type: object
       required:
-        - shard_index
-        - provider_id
-        - multiaddrs
-        - capability_token 
+        - segment_index
+        - chunk_ids
       properties:
-        shard_index:
+        segment_index:
           type: integer
           minimum: 0
-          maximum: 55
-          description: |
-            0–15 are systematic AONT codewords (data shards).
-            16–55 are RS parity shards. (ADR-022)
-        provider_id:
-          $ref: '#/components/schemas/UUID'
-        multiaddrs:
+          description: 0-based segment ordering, matching SegmentAssignment.segment_index.
+        chunk_ids:
           type: array
           items:
-            $ref: '#/components/schemas/Multiaddr'
-          minItems: 1
+            type: string
+            pattern: '^[0-9a-f]{64}$'
+          minItems: 56
+          maxItems: 56
           description: |
-            Provider's current libp2p addresses from the most recent heartbeat.
-            The client dials these in order. (ADR-028)
-        asn:
-          type: string
-          description: Provider's ASN; included so the client can verify the 20% cap is met.
-        capability_token:        # ADD THIS FIELD
-          type: string
-          pattern: '^[0-9a-f]{144}$'
-          description: |
-            Hex-encoded 72-byte upload capability token:
-            8-byte expiry_unix_ms (big-endian int64) || 64-byte Ed25519 signature.
-            The client includes this verbatim in the UploadRequest frame for the provider
-            that corresponds to this shard assignment. Valid for 1 hour from issuance.
-            (ERRATA-001, interface-contracts.md §4.1)
+            SHA-256(chunk_data) per shard, shard_index order, hex-encoded — the
+            client's own computation (IC §4.1's chunk_id definition), submitted
+            here so the microservice can bind the capability_token to the correct
+            value instead of generating one before content exists. (ADR-073)
+
+    ShardAssignment:
+          type: object
+          required:
+            - shard_index
+            - provider_id
+            - multiaddrs
+            - capability_token
+            - chunk_id
+          properties:
+            shard_index:
+              type: integer
+              minimum: 0
+              maximum: 55
+              description: |
+                0–15 are systematic AONT codewords (data shards).
+                16–55 are RS parity shards. (ADR-022)
+            provider_id:
+              $ref: '#/components/schemas/UUID'
+            multiaddrs:
+              type: array
+              items:
+                $ref: '#/components/schemas/Multiaddr'
+              minItems: 1
+              description: |
+                Provider's current libp2p addresses from the most recent heartbeat.
+                The client dials these in order. (ADR-028)
+            asn:
+              type: string
+              description: Provider's ASN; included so the client can verify the 20% cap is met.
+            capability_token:
+              type: string
+              pattern: '^[0-9a-f]{144}$'
+              description: |
+                Hex-encoded 72-byte upload capability token:
+                8-byte expiry_unix_ms (big-endian int64) || 64-byte Ed25519 signature.
+                The client includes this verbatim in the UploadRequest frame for the provider
+                that corresponds to this shard assignment. Valid for 1 hour from issuance.
+                (ERRATA-001, interface-contracts.md §4.1)
+            chunk_id:
+              type: string
+              pattern: '^[0-9a-f]{64}$'
+              description: |
+                Echo of the chunk_id this shard's assignment was created and
+                token-bound with — always equal to what the client submitted for this
+                (segment_index, shard_index) in UploadAssignRequest.segments (ADR-073).
+                Provided for the client's own defensive verification; the client's
+                wire chunk_id in the UploadRequest frame is always its own local
+                record, never re-derived from this field.
 
     SegmentAssignment:
       type: object
