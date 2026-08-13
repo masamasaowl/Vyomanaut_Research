@@ -8,6 +8,13 @@
 **Architecture reference:** `docs/system-design/architecture.md`  
 **Decisions index:** `docs/decisions/README.md`
 
+> **Naming note — Demo / LTS.** As of Milestone 16, what this document calls **LTS** is the
+> track previously called "Production" (the same `NetworkProfile`, plus formal support
+> commitments Demo doesn't carry). This is a conceptual rename only — shipped identifiers
+> (`config.ProductionProfile`, `VYOMANAUT_MODE=prod`, the `mode: "prod"` API field) are
+> unchanged. Full explanation and the LTS support/versioning policy: `architecture.md`,
+> Naming note and §29.
+
 ---
 
 ## Table of Contents
@@ -200,7 +207,7 @@ first quarter post-launch). Every P0 requirement is a launch blocker.
 | FR-064 | If the provider is offline at the time of the ACTIVE transition, the GC instruction must be queued and delivered on the provider's next successful heartbeat connection. Until the GC instruction is delivered and acknowledged, the synthetic chunk rows must remain in `status = 'PENDING_DELETION'` and must not be issued further audit challenges. The audit scheduler must skip `PENDING_DELETION` rows. | P0 | ADR-030 — prevents auditing chunks the provider is in the process of discarding |
 | FR-065 | When a provider with `status = VETTING` crosses the 72-hour departure threshold, the departure handler must enqueue **zero** repair jobs. All synthetic chunk assignments for that provider must be soft-deleted (`status = 'DELETED'`, `deleted_at = NOW()`). The standard escrow seizure and DEPARTED status transition still apply. | P0 | ADR-030 — the entire point of synthetic chunks is to eliminate repair bandwidth for vetting departures |
 | FR-066 | The repair scheduler must check `chunk_assignments.is_vetting_chunk` before enqueueing any repair job. A departure handler or threshold monitor that identifies a chunk where `is_vetting_chunk = TRUE` must not call `EnqueueJob` for that chunk. This check is enforced at the application layer AND as a pre-condition in the `internal/repair` package interface. | P0 | ADR-030 |
-| FR-068 | In `VYOMANAUT_MODE=demo`, if a registering provider does not supply an ASN, the microservice must auto-assign the next available synthetic ASN from the pool `SIM-AS1` … `SIM-AS{N}`, where N = `NetworkProfile.MinDistinctASNs`. This ensures the 20% ASN cap is satisfiable from the first upload. In production, ASN is resolved from the provider's IP address via a GeoIP/ASN database and must not be auto-assigned. | P0 | ADR-031, ADR-014 |
+| FR-068 | In `VYOMANAUT_MODE=demo`, if a registering provider does not supply an ASN, the microservice must auto-assign the next available synthetic ASN from the pool `SIM-AS1` … `SIM-AS{N}`, where N = `NetworkProfile.MinDistinctASNs`. This ensures the 20% ASN cap is satisfiable from the first upload. In LTS, ASN is resolved from the provider's IP address via a GeoIP/ASN database and must not be auto-assigned. | P0 | ADR-031, ADR-014 |
 | FR-069 | The microservice must refuse to start if `VYOMANAUT_MODE=prod` AND the `VYOMANAUT_CLUSTER_MASTER_SEED` environment variable is present. The microservice must refuse to start if `VYOMANAUT_MODE=demo` AND the process is configured to connect to the live Razorpay API endpoint (not mock or test). These are fatal startup guard rails. | P0 | ADR-031 |
 
 ### 4.6 Provider — Operation
@@ -267,7 +274,7 @@ first quarter post-launch). Every P0 requirement is a launch blocker.
 | ID | Requirement | Priority | ADR / Notes |
 |----|-------------|----------|-------------|
 | FR-055 | The provider daemon must support a `--sim-count=N` flag that launches N simulated provider instances in a single process, each with isolated key pairs, RocksDB instances, and vLog files, for local integration testing without physical machines. | P0 | ADR-029; cannot build without testability |
-| FR-056 | Simulation mode must not bypass the network readiness gate; a simulation with `--sim-count=56` and `--sim-asn-count=5` must be required to satisfy the same readiness conditions as production before uploads are permitted. | P0 | ADR-029; simulation must proxy production behaviour |
+| FR-056 | Simulation mode must not bypass the network readiness gate; a simulation with `--sim-count=56` and `--sim-asn-count=5` must be required to satisfy the same readiness conditions as LTS before uploads are permitted. | P0 | ADR-029; simulation must proxy LTS behaviour |
 
 ### 4.13 Provider — Pre-Registration Earnings Calculator
 
@@ -311,7 +318,7 @@ first quarter post-launch). Every P0 requirement is a launch blocker.
 | ---- | ------------- | ------ | -------- | ----- |
 | NFR-007 | Each provider must respond to an audit challenge within (256 KB / p95_measured_upload_throughput_kbps) × 1.5. For a provider with p95 throughput of 500 KB/s this is 768 ms. | Performance | Per-provider deadline | ADR-014 |
 | NFR-008 | The audit challenge lookup path on the provider daemon (Bloom filter check + RocksDB lookup + vLog read + hash verification) must complete within 100 ms at p99 on SSD hardware and 200 ms at p99 on HDD hardware, under concurrent upload load. | Performance | p99 ≤ 100 ms SSD / 200 ms HDD | ADR-023 |
-| NFR-009 | The AONT encoding pass for a full 14 MB segment must complete within 200 ms at p50 and a p99 target will be set after the Q16-1 benchmark protocol on hardware without AES-NI (minimum-spec Indian desktop: dual-core, no AES-NI, 2 GB RAM, 7200 RPM HDD). **per 4 MiB plaintext segment (16 × 256 KB), producing 14 MB of wire output.** | Performance | p50 ≤ 200 ms | ADR-019, benchmarking-protocol.md |
+| NFR-009 | The AONT encoding pass for a full 14 MB segment must complete within 200 ms at p50 and a p99 target will be set after the Q16-1 benchmark protocol on hardware without AES-NI (minimum-spec Indian desktop: dual-core, no AES-NI, 2 GB RAM, 7200 RPM HDD). | Performance | p50 ≤ 200 ms | ADR-019, benchmarking-protocol.md |
 | NFR-010 | The Argon2id master secret derivation at session start (t=3, m=64 MB, p=4) must complete within 500 ms at p50 on the minimum-spec target hardware. If it does not, parameters must be reduced per the fallback protocol in benchmarking-protocol.md. | Performance | p50 ≤ 500 ms | ADR-020 |
 | NFR-011 | The provider daemon must consume no more than 5% of CPU and remain within normal desktop I/O load during steady-state operation, defined as fewer than 5 concurrent chunk write operations and the standard daily audit cycle. Peak load during bulk onboarding (many simultaneous chunk assignments) is excluded from this constraint. | Performance | ≤ 5% CPU at steady state | ADR-009 |
 | NFR-012 | Steady-state repair bandwidth per provider must not exceed 100 Kbps at the target MTTF of 300 days and a network of 1,000 providers each storing 50 GB. At these parameters, BWavg ≈ 39 Kbps/peer per the Giroire formula. | Performance | ≤ 100 Kbps/provider | ADR-003, ADR-004 |
@@ -339,7 +346,7 @@ first quarter post-launch). Every P0 requirement is a launch blocker.
 | NFR-022 | The escrow_events table must be INSERT-only. Account balance must always be computed from the event log (SUM of deposits minus releases and seizures) and must never be stored as a mutable column. | Correctness | CRDT-safe ledger | ADR-016 |
 | NFR-023 | The vLog write path on the provider daemon must serialise all appends through a single writer goroutine. Concurrent upload goroutines must not write to the vLog file handle directly. | Correctness | Data integrity | ADR-023 |
 | NFR-024 | On provider daemon crash and restart, the daemon must scan the vLog tail and re-insert any index entries missing from RocksDB before accepting new audit challenges or upload requests. | Correctness | Crash recovery | ADR-023 |
-| NFR-043 | The Postgres INSERT throughput ceiling for the `audit_receipts` schema — with row security policy enabled and both Ed25519 signature columns populated — must be benchmarked on a production-equivalent Postgres instance before V2 GA. The benchmark must measure the sustained INSERT rate at which p99 write latency first exceeds 50 ms and that value must replace the 5,000–10,000 rows/sec planning estimate in §27.4 of `architecture.md`. This benchmark is a V2 launch blocker. | Correctness | Measured ceiling before GA | ADR-015, architecture.md §28.4 |
+| NFR-043 | The Postgres INSERT throughput ceiling for the `audit_receipts` schema — with row security policy enabled and both Ed25519 signature columns populated — must be benchmarked on an LTS-equivalent Postgres instance before V2 GA. The benchmark must measure the sustained INSERT rate at which p99 write latency first exceeds 50 ms and that value must replace the 5,000–10,000 rows/sec planning estimate in §27.4 of `architecture.md`. This benchmark is a V2 launch blocker. | Correctness | Measured ceiling before GA | ADR-015, architecture.md §28.4 |
 | NFR-044 | The assignment service must enforce a per-provider chunk count ceiling at onboarding time derived from the active `NetworkProfile` and the provider's declared MTTF tier: at MTTF=180 days (desktop minimum), the ceiling is approximately 70 GB of chunk data; at MTTF=300 days (planning target), approximately 130 GB. A provider must not be assigned chunks that would push their steady-state repair bandwidth (BWavg, Giroire Formula 1) above 100 Kbps. This ceiling must be surfaced in the provider onboarding UI as a declared storage limit advisory. | Performance / Durability | BWavg ≤ 100 Kbps at observed MTTF | ADR-009, architecture.md §28.3 |
 | NFR-045 | The provider daemon installer must verify that sufficient free RAM is available for the DHT record cache before completing installation. The minimum free RAM required scales with declared storage allocation: approximately 40 MB at 50 GB declared, 160 MB at 200 GB, 400 MB at 500 GB (all at 200 bytes per DHT record and one record per chunk). If the check fails, the installer must surface a warning with the shortfall amount and must not allow chunk assignment to proceed until the hardware requirement is met. | Performance | DHT record memory ≤ available free RAM | architecture.md §28.5, ADR-023 |
 | NFR-046 | All Prometheus metric names exposed by the microservice and provider daemon must follow the pattern `vyomanaut_{subsystem}_{name}_{unit}` where subsystem matches the `internal/` package name and unit uses OpenMetrics conventions: `_total` for counters, `_seconds` for histograms, `_bytes` for gauges. Grafana dashboard JSON and alert rules reference these names by exact string; renaming a metric without simultaneously updating all dashboards and alert rules in the same PR is a breaking change. The complete set of mandatory metric names is defined in NFR-025 and NFR-026. | Observability | Stable metric names | architecture.md §23 |
@@ -386,7 +393,7 @@ first quarter post-launch). Every P0 requirement is a launch blocker.
 
 The following table maps each `NetworkProfile` field to the functional or non-functional requirement it governs. In demo mode (`VYOMANAUT_MODE=demo`) the threshold value is overridden; the requirement logic is unchanged.
 
-| NetworkProfile field | Governs | Production value | Demo value |
+| NetworkProfile field | Governs | LTS value | Demo value |
 | --- | --- | --- | --- |
 | `DataShards`, `ParityShards`, `TotalShards` | NFR-001, NFR-003, NFR-034 | 16, 40, 56 | 3, 2, 5 |
 | `ShardSize` | Wire format constant — **not in NetworkProfile** | 262,144 B | 262,144 B |
@@ -410,7 +417,7 @@ The following table maps each `NetworkProfile` field to the functional or non-fu
 | `RazorpayCoolingPeriod` | FR-025, ADR-024 | 24 h | 0 s |
 | `ScoreWindowShort/Medium/Long` | ADR-008 | 24 h / 7 d / 30 d | 2 / 6 / 20 min |
 
-**Adding a new mode-variable parameter.** Any new parameter that differs between demo and production must be added to `NetworkProfile` with explicit values in both `ProductionProfile` and `DemoProfile`. The Go struct-literal syntax enforces this at compile time — an omitted field is a compile error, not a silent zero-value default.
+**Adding a new mode-variable parameter.** Any new parameter that differs between demo and LTS must be added to `NetworkProfile` with explicit values in both `ProductionProfile` and `DemoProfile`. The Go struct-literal syntax enforces this at compile time — an omitted field is a compile error, not a silent zero-value default.
 
 ---
 
@@ -428,7 +435,7 @@ data permanently. The UI must:
 - Block progression until the owner correctly enters at least two randomly selected words.
 - Never offer to store the mnemonic in the app, email it, or copy it to the clipboard
   automatically.
-- **Demo mode exception.** When `VYOMANAUT_MODE=demo`, `NetworkProfile.SkipMnemonicConfirm = true`. The mnemonic is displayed but the two-word confirmation step is skipped. This is acceptable only because demo sessions store no real data. Production must always require confirmation.
+- **Demo mode exception.** When `VYOMANAUT_MODE=demo`, `NetworkProfile.SkipMnemonicConfirm = true`. The mnemonic is displayed but the two-word confirmation step is skipped. This is acceptable only because demo sessions store no real data. LTS must always require confirmation.
 
 **Storage cost transparency (FR-013):** Providers see a storage rate in paise per GB per
 month. Data owners see a monthly cost in rupees. Both must be derived from the same
@@ -478,7 +485,7 @@ can surface this state to any operator monitoring tool.
   with `on_hold` is the only available partial-hold primitive. (Paper 35)
 - All amounts must be integer paise. Float arithmetic in the payment path is a correctness
   violation, not just a style concern. (ADR-016)
-- **ShardSize is a compile-time constant in both modes.** `ShardSize = 262,144` (256 KB) must not appear in the `NetworkProfile` struct. It is the only erasure coding parameter that does not vary between demo and production, because changing it would simultaneously break vLog entry sizing, the audit challenge wire framing, and the RocksDB index assumptions. A compiler-enforced test (`TestProfileShardSizeIsConstant`) verifies this on every commit. (ADR-031)
+- **ShardSize is a compile-time constant in both modes.** `ShardSize = 262,144` (256 KB) must not appear in the `NetworkProfile` struct. It is the only erasure coding parameter that does not vary between demo and LTS, because changing it would simultaneously break vLog entry sizing, the audit challenge wire framing, and the RocksDB index assumptions. A compiler-enforced test (`TestProfileShardSizeIsConstant`) verifies this on every commit. (ADR-031)
 
 ### 7.2 Key External Dependencies
 
@@ -528,14 +535,14 @@ subsystem ships. Minimum spec: dual-core ≤ 1.8 GHz Intel Celeron / old Pentium
 
 Results must be recorded in the build log with machine specs and pass/fail verdict.
 All three benchmarks are V2 launch blockers (NFR-043 adds a fourth — Postgres INSERT
-ceiling — which must be measured on a production-equivalent schema instance, not on
+ceiling — which must be measured on an LTS-equivalent schema instance, not on
 minimum-spec desktop hardware).
 
 ---
 
 #### Q16-1 — AONT Encoding Throughput (ChaCha20 path)
 
-**Closes:** NFR-009 (p50 ≤ 200 ms per 14 MB segment without AES-NI) **per 4 MiB plaintext segment (16 × 256 KB), producing 14 MB of wire output.**
+**Closes:** NFR-009 (p50 ≤ 200 ms per 14 MB segment without AES-NI)
 
 **Pre-condition:** Verify AES-NI is absent before running.
 
@@ -775,7 +782,7 @@ from a specific formula, measurement, or proof in the research log:
 - **NFR-007** (audit deadline): Derived from the Filecoin Seal timing principle (Paper 29 §3.4.2),
   adapted for timing-based (not cryptographic) outsourcing prevention.
 - **NFR-009** (AONT encoding): RFC 8439 (Paper 17) Table B.1 — ChaCha20 at 75 MB/s on OMAP-class
-  hardware gives 186 ms per 14 MB segment. **per 4 MiB plaintext segment (16 × 256 KB), producing 14 MB of wire output.**
+  hardware gives 186 ms per 14 MB segment.
 - **NFR-012** (repair bandwidth): Giroire Formula 1 at N=1,000, MTTF=300 days,
   D=50 TB gives BWavg ≈ 39 Kbps/peer.
 - **NFR-013** (write amplification): WiscKey (Paper 27) Figure 10 — write amplification ≈ 1.0

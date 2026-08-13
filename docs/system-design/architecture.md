@@ -31,9 +31,10 @@
 | **JIT flag** | Just-In-Time retrieval detection. Set when a provider responds faster than `0.3x` the expected transfer time, suggesting they did not read from local disk. |
 | **K (AONT key)** | A fresh 256-bit random key generated per segment. Embedded in the erasure-coded data via `c_{s+1} = K XOR SHA-256(all codewords)`. Never stored or transmitted separately. |
 | **lf** | Fragment (chunk) size. Fixed at 256 KB (262,144 bytes) in V2. |
+| **LTS** | Long-Term Support. As of Milestone 16, the human-facing name for the track previously called "Production" — the real, real-money, real-durability deployment, as opposed to Demo. Carries formal support/versioning commitments Demo does not (§29). **Does not rename any shipped identifier** — see the naming note below. |
 | **Master secret** | `Argon2id(passphrase, owner_id)`. The root of the data owner's key hierarchy. Never written to disk or transmitted. |
 | **MTTF** | Mean Time To Failure. For V2 desktop providers: target 300 days, minimum acceptable 180 days. |
-| **NetworkProfile** | The `internal/config.NetworkProfile` struct that contains all parameters differing between demo and production mode (erasure coding parameters, time windows, Argon2id cost, payment mode, infrastructure thresholds). Constructed once at startup from either `config.ProductionProfile` or `config.DemoProfile` based on `VYOMANAUT_MODE`. (ADR-031) |
+| **NetworkProfile** | The `internal/config.NetworkProfile` struct that contains all parameters differing between demo and LTS mode (erasure coding parameters, time windows, Argon2id cost, payment mode, infrastructure thresholds). Constructed once at startup from either `config.ProductionProfile` or `config.DemoProfile` based on `VYOMANAUT_MODE`. (ADR-031) |
 | **Pointer file** | A per-file metadata structure containing provider IDs, chunk content addresses, and erasure parameters. Encrypted with AEAD_CHACHA20_POLY1305. Stored as ciphertext by the microservice (which cannot decrypt it). |
 | **PN-counter CRDT** | A conflict-free replicated data type for counters that support both increment and decrement. The escrow ledger uses this pattern. |
 | **Qpeek** | Burst repair bandwidth: total network transfer required when one provider fails. At N=1,000, 50 GB/provider: ~793 GB. |
@@ -50,6 +51,37 @@
 | **WiscKey** | Key-value separation architecture: small index in RocksDB, large values in an append-only log. Reduces write amplification from 10-14x to ~1.0 at 256 KB values. |
 
 ---
+
+> ## Naming note — Demo / LTS (read this before anything else)
+>
+> As of **Milestone 16**, the team split the build into two named tracks: **Demo** and **LTS**
+> (Long-Term Support). This is a rename of what every document in this repository previously
+> called "Production," plus a set of formal support and versioning commitments Demo does not
+> carry — see the new **§29, LTS Support & Versioning Policy** for what those commitments are
+> and are not (it is intentionally light; the Technical Researcher's work is halted until
+> Milestone 18 closes, and the full policy is expected to firm up after that).
+>
+> **This is a conceptual rename, not a code rename.** Every already-shipped identifier stays
+> exactly as built since Milestone 1: the Go variable is still `config.ProductionProfile`, the
+> `VYOMANAUT_MODE` / `--mode` value is still `prod`, the `ReadinessResponse.mode` API field is
+> still `"prod"` (see the OpenAPI spec), the `PROD_MODE_ENV_SECRET` error code is unchanged, and
+> the startup log line still prints `mode=PRODUCTION`. Renaming any of those is a real,
+> separately-costed breaking change — to a wire contract, to sixteen milestones of CI-tested
+> code, and to the OpenAPI spec — and has not been decided. **Wherever this document (and
+> `requirements.md`, `interface-contracts.md`, `data-model.md`, `mvp.md`) says "LTS," read it as
+> the human-facing name for exactly what the code and wire format still call `prod` /
+> `Production`.** If a future ADR proposes the code-level rename too, that ADR is where it
+> belongs — not a byproduct of this one.
+>
+> **Scope convention used throughout this document.** Unless a passage explicitly says
+> otherwise, everything in this document — architecture, invariants, protocols, schemas —
+> applies identically to both Demo and LTS. The distinction is almost entirely confined to
+> `NetworkProfile` *values* (time windows, thresholds, infrastructure minimums), not to the
+> design itself; that is the entire point of ADR-031's profile abstraction. Where a specific
+> passage genuinely differs by track, it says so inline ("in Demo... in LTS...") at the point of
+> difference, rather than being tagged at the section level — because in this document, section-
+> level forks are the exception, not the rule. `mvp.md` is the one document organised the other
+> way around (per-track by design) and uses per-section tags accordingly.
 
 ## Table of Contents
 
@@ -81,6 +113,7 @@
 26. [Known Limitations and V3 Scope](#26-known-limitations-and-v3-scope)
 27. [Capacity planning](#27-capacity-planning)
 28. [ADR Reference Index](#28-adr-reference-index)
+29. [LTS Support & Versioning Policy](#29-lts-support--versioning-policy)
 
 ---
 
@@ -172,7 +205,7 @@ These are the non-functional requirements that drove architectural decisions. Th
 | Digital signatures | Ed25519 | Sub-millisecond key generation; used for audit receipts and pointer file integrity |
 | Payment gateway | Razorpay (Route + Smart Collect 2.0 + RazorpayX Payouts) | India-first; UPI; no per-transaction fee for P2P transfers |
 | Secrets management | HashiCorp Vault / AWS SSM / GCP Secret Manager | For cluster audit secret distribution across microservice replicas |
-| Network Profile | `internal/config.NetworkProfile` | Single source of truth for all parameters that differ between demo and production mode. Constructed once at startup, passed via dependency injection to every subsystem. No subsystem reads `VYOMANAUT_MODE` directly. (ADR-031) |
+| Network Profile | `internal/config.NetworkProfile` | Single source of truth for all parameters that differ between demo and LTS mode. Constructed once at startup, passed via dependency injection to every subsystem. No subsystem reads `VYOMANAUT_MODE` directly. (ADR-031) |
 | Repository layout | Single Go module (`github.com/masamasaowl/vyomanaut`) | Three binaries share `internal/crypto` and `internal/erasure`; split repos would duplicate security-critical code or require publishing internal packages as external modules, reintroducing version-skew across consumers |
 | Build system | `go build ./cmd/<binary>` per binary; no custom build tags | Conditional cipher selection (ChaCha20 vs AES-CTR) is a runtime CPUID check, not a compile-time flag. No Makefile magic needed. |
 | Dependency management | Module proxy + pinned `go.sum`; `go-libp2p` vendored on validator failure | `TestDHTKeyValidatorPersists` is the gate: if a `go-libp2p` upgrade resets the custom DHT key namespace, the dependency is vendored until the upstream fix lands. Vendoring decision is recorded in `repo-structure.md §1.3`. |
@@ -404,7 +437,7 @@ The microservice accesses via the `SecretsManagerClient` interface (interface-co
 | --- | --- |
 | Environment variables | Not versioned; cannot model the 24-hour rotation overlap window (ADR-027 §4); visible in process listings |
 | Per-replica local secret files | Cannot be updated across all three replicas atomically; no audit trail for access |
-| `VYOMANAUT_CLUSTER_MASTER_SEED` env var | Permitted in development and simulation mode only; presence in production is a critical misconfiguration caught by the startup check |
+| `VYOMANAUT_CLUSTER_MASTER_SEED` env var | Permitted in development and simulation mode only; presence in LTS is a critical misconfiguration caught by the startup check |
 
 **Performance contract.** Not on the hot path — microservice caches `server_secret_vN` in
 memory with a 5-minute TTL. If the secrets manager is unreachable at replica startup the
@@ -581,7 +614,7 @@ These eight principles governed every architectural decision. When a new enginee
 
 **Data plane and control plane are separate.** File data never flows through the microservice. The microservice knows about data (which chunk is where, who holds it) but never holds the data itself. This separation is not a performance optimisation — it is the mechanism by which zero-knowledge storage holds even if the microservice is compromised.
 
-**Profile-driven configuration.** All parameters that differ between a live demo and production (erasure coding parameters, time windows, infrastructure thresholds, Argon2id cost, payment mode) live exclusively in the `NetworkProfile` struct (ADR-031). Business logic never branches on the mode string directly. Switching from demo to production is a change to the active profile instance and the addition of three infrastructure dependencies (secrets manager, Razorpay live, relay nodes) — no logic changes, no Go function modifications, no schema changes beyond two parameterised CHECK constraint values.
+**Profile-driven configuration.** All parameters that differ between a live demo and LTS (erasure coding parameters, time windows, infrastructure thresholds, Argon2id cost, payment mode) live exclusively in the `NetworkProfile` struct (ADR-031). Business logic never branches on the mode string directly. Switching from demo to LTS is a change to the active profile instance and the addition of three infrastructure dependencies (secrets manager, Razorpay live, relay nodes) — no logic changes, no Go function modifications, no schema changes beyond two parameterised CHECK constraint values.
 
 The following parameters are **not** in `NetworkProfile` because they must be identical in both modes: `ShardSize` (262,144 bytes — a compile-time constant), the 33-byte challenge nonce length, all cipher identities, Poly1305 constant-time tag comparison, row security policies on `audit_receipts` and `escrow_events`, and the single-writer vLog goroutine requirement.
 
@@ -689,7 +722,7 @@ Recovery paths:
 
 **First heartbeat.** Once running, the daemon sends a signed heartbeat to the microservice control plane every 4 hours, reporting the provider's current libp2p multiaddresses. Indian residential ISPs frequently rotate DHCP leases — the heartbeat ensures the microservice always has a fresh address for audit challenge dispatch. Status advances to `VETTING`. ([ADR-028](../decisions/ADR-028-provider-heartbeat.md))
 
-**Vetting period (4–6 months).** The provider receives **synthetic vetting chunks** — random 256 KB blocks generated by the microservice — rather than real file shards. These chunks are stored and audited through the identical daemon code paths as production chunks; the provider daemon cannot distinguish them. The microservice caps synthetic assignment at 10% of the provider's `declared_storage_gb` (roughly `declared_storage_gb × 400` chunks). Earnings accumulate under a 60-day hold window with a 50% release cap. Synthetic chunks are never associated with any data owner file; if the vetting provider departs, no repair job is enqueued and the dummy data is discarded. This eliminates the ~793 GB burst repair transfer per departure that would otherwise burden the network during its smallest and most fragile phase. After 80 consecutive audit passes AND 120 days since first chunk assignment, the provider advances to `ACTIVE`. One drawback: the approach does not test the real data-owner-to-provider chunk upload path during vetting. The first real shard upload a provider handles is post-ACTIVE. It is acceptable because daily audit challenges test the same retrieval mechanics.(ADR-030, ADR-005, ADR-024)
+**Vetting period (4–6 months).** The provider receives **synthetic vetting chunks** — random 256 KB blocks generated by the microservice — rather than real file shards. These chunks are stored and audited through the identical daemon code paths as LTS chunks; the provider daemon cannot distinguish them. The microservice caps synthetic assignment at 10% of the provider's `declared_storage_gb` (roughly `declared_storage_gb × 400` chunks). Earnings accumulate under a 60-day hold window with a 50% release cap. Synthetic chunks are never associated with any data owner file; if the vetting provider departs, no repair job is enqueued and the dummy data is discarded. This eliminates the ~793 GB burst repair transfer per departure that would otherwise burden the network during its smallest and most fragile phase. After 80 consecutive audit passes AND 120 days since first chunk assignment, the provider advances to `ACTIVE`. One drawback: the approach does not test the real data-owner-to-provider chunk upload path during vetting. The first real shard upload a provider handles is post-ACTIVE. It is acceptable because daily audit challenges test the same retrieval mechanics.(ADR-030, ADR-005, ADR-024)
 
 **Full operation.** On the ACTIVE transition the microservice sends a GC instruction (via the `/vyomanaut/vetting-gc/1.0.0` libp2p protocol) listing all synthetic chunk IDs held by that provider. The daemon deletes these from the vLog; the assignment service marks their `chunk_assignments` rows `PENDING_DELETION`. Real shard assignments begin flowing immediately — GC runs in parallel. The hold window shortens to 30 days; the release cap is removed. The provider competes for real chunk assignments alongside all other ACTIVE providers. (ADR-030, ADR-023)
 
@@ -765,7 +798,7 @@ The Kademlia DHT handles chunk-address lookup (finding which provider holds whic
 
 DHT lookup keys use: `HMAC-SHA256(chunk_hash, file_owner_key)` where `file_owner_key = HKDF(master_secret, "vyomanaut-dht-v1", file_id)`. Only the file owner can reverse-map a DHT key to its chunk. The DHT never sees real chunk hashes or file IDs.
 
-DHT records are republished by provider daemons at every NetworkProfile.DHTRepublishInterval (12 hours in production, 2 minutes in demo). The daemon's heartbeat goroutine triggers `PutProviderRecord` for all active chunk assignments. `The dht_key` for each chunk is cached locally in the provider's RocksDB instance alongside the vlog_offset so republication does not require the data owner to be online. See interface-contracts.md §12 for the complete republication contract. ([ADR-006](../decisions/ADR-006-polling-interval.md))
+DHT records are republished by provider daemons at every NetworkProfile.DHTRepublishInterval (12 hours in LTS, 2 minutes in demo). The daemon's heartbeat goroutine triggers `PutProviderRecord` for all active chunk assignments. `The dht_key` for each chunk is cached locally in the provider's RocksDB instance alongside the vlog_offset so republication does not require the data owner to be online. See interface-contracts.md §12 for the complete republication contract. ([ADR-006](../decisions/ADR-006-polling-interval.md))
 
 ### Session resumption policy
 
@@ -878,7 +911,7 @@ Regardless of the 72-hour threshold, if fragment count for any chunk drops to s=
 
 Each provider daemon stores chunks using WiscKey-style key-value separation: the chunk index lives in RocksDB; chunk data lives in a separate append-only value log (vLog). ([ADR-023](../decisions/ADR-023-provider-storage-engine.md))
 
-The vLog and RocksDB index are identical for synthetic vetting chunks and real production shards. The provider daemon stores and retrieves both using the same `AppendChunk` and `LookupChunk` code paths. The `is_vetting_chunk` flag exists only in the microservice's `chunk_assignments` table; the daemon has no visibility into this distinction. This is intentional: the vetting period must test authentic daemon behaviour under production-identical storage mechanics.
+The vLog and RocksDB index are identical for synthetic vetting chunks and real LTS shards. The provider daemon stores and retrieves both using the same `AppendChunk` and `LookupChunk` code paths. The `is_vetting_chunk` flag exists only in the microservice's `chunk_assignments` table; the daemon has no visibility into this distinction. This is intentional: the vetting period must test authentic daemon behaviour under LTS-identical storage mechanics.
 
 ### Why not standard RocksDB
 
@@ -1185,7 +1218,7 @@ If the availability service fails to republish a provider's DHT record within th
 
 ## 24. Deployment Topology
 
-**Mode selection.** The deployment topology described in this section is the production topology. In `VYOMANAUT_MODE=demo`, the entire system runs on a single machine or a local area network: five provider daemon instances (physical laptops or `--sim-count=5` on one machine), one microservice replica with quorum checks disabled, no relay nodes, and a mock payment provider. The binary is identical; only the `NetworkProfile` values differ. See ADR-031 for the complete demo topology specification.
+**Mode selection.** The deployment topology described in this section is the LTS topology. In `VYOMANAUT_MODE=demo`, the entire system runs on a single machine or a local area network: five provider daemon instances (physical laptops or `--sim-count=5` on one machine), one microservice replica with quorum checks disabled, no relay nodes, and a mock payment provider. The binary is identical; only the `NetworkProfile` values differ. See ADR-031 for the complete demo topology specification.
 
 **Cloud provider.** AWS or GCP — operator's choice at deployment time. Both are acceptable. The architecture has no dependency on cloud-provider-specific features; managed Postgres (RDS or Cloud SQL) and standard VM instances are the only cloud primitives used. The remainder of this section gives AWS names in parentheses as a concrete reference; substitute GCP equivalents if deploying there.
 
@@ -1727,4 +1760,70 @@ must be enforced in provider onboarding, not discovered operationally.
 | Provider heartbeat (4-hour address update) | [ADR-028](../decisions/ADR-028-provider-heartbeat.md) |
 | Bootstrap minimum viable network (7 conditions) | [ADR-029](../decisions/ADR-029-bootstrap-minimum-viable-network.md) |
 | Synthetic vetting chunks (repair-safe provider assessment) | [ADR-030](../decisions/ADR-030-synthetic-vetting-chunks.md) |
-| Demo / production mode: NetworkProfile, mode flag, demo specifications | ADR-031 |
+| Demo / LTS mode: NetworkProfile, mode flag, demo specifications | ADR-031 |
+
+---
+
+## 29. LTS Support & Versioning Policy
+
+*Added Milestone 16, alongside the Demo/LTS split. See the naming note at the top of this
+document before reading this section — "LTS" here is the conceptual name for what the code
+still calls `prod`/`Production`.*
+
+**What this section is not.** The Technical Researcher's work is halted until Milestone 18
+closes; nothing below should be read as a fully-researched, business-approved support
+contract. It is the minimum discipline needed so that the change already in flight — the
+Domain A audit-primitive replacement (§14, ADR-059/060) — has a place to point to, and so
+future breaking changes don't each have to re-litigate the same questions. Expect this
+section to be revised, likely substantially, once research resumes.
+
+### 29.1 What "LTS" commits to that Demo does not
+
+| Commitment | LTS | Demo |
+| --- | --- | --- |
+| Data survives a redeploy | Yes — real owner data, real provider earnings | No — §3's demo topology is explicitly disposable; nothing in a demo session is expected to outlive it |
+| Schema changes are migration-safe | Yes — every migration must round-trip against a live LTS-shaped database (§6.4, MR-03) | No — demo schema is regenerated, not migrated |
+| Breaking wire/schema changes get a rollout plan | Yes, mandatory | N/A — no external consumers of a demo instance's wire format persist across sessions |
+| Backward-compatible reads of old data | Yes, via `schema_version`-style columns where the shape changes (§14's `audit_receipts.schema_version` is the existing precedent) | N/A |
+| A minimum support/deprecation window | **Not yet set** — a business decision, deferred to post-M18 per this section's own scope note above | N/A |
+
+### 29.2 Versioning discipline for breaking changes
+
+This generalises the rollout pattern already used for the Domain A audit-primitive
+replacement (§14; see the migration sequencing in that synthesis) into a standing rule,
+rather than a one-off:
+
+1. **Version, don't overwrite.** Where a schema or wire-format change alters row/frame shape
+   (not just a value), the affected table or message carries an explicit version discriminator
+   (`schema_version` is the existing pattern — `audit_receipts` already has one). Old rows stay
+   queryable under their original version; there is no in-place forced migration of historical
+   data to a new shape.
+2. **Cut over per-capability, not globally, where the data allows it.** A provider or file can
+   be on last-version behaviour and next-version behaviour in the same running cluster during a
+   transition window, the same way the audit-primitive rollout plan stages by file rather than
+   requiring an atomic flag-day.
+3. **CI invariants move in the same PR as the schema/wire change that makes them true or
+   false.** BC-2 in the Domain A synthesis (the `challenge_nonce` length CI gate) is the
+   canonical cautionary example: an invariant check that isn't updated alongside the change it
+   guards will actively block the correct migration, not just fail to catch the old one.
+4. **A breaking change to an already-shipped identifier or wire value (Go symbol, env var
+   value, JSON field value, error code) is its own decision, not a side effect of a naming or
+   design change.** This is the same reasoning this document's naming note applies to
+   `ProductionProfile`/`prod` itself: renaming a shipped contract costs real engineering effort
+   and breaks real consumers, and deserves to be proposed and costed on its own, not inherited
+   silently from an unrelated decision.
+
+### 29.3 Open, deferred to after Milestone 18
+
+- **Minimum support window** (how long an LTS release line receives fixes) — no number is set;
+  do not infer one from anything in this document.
+- **Deprecation notice period** for a breaking LTS-facing change — likewise unset.
+- **Whether the code-level rename (`ProductionProfile` → an LTS-named identifier, `prod` → an
+  LTS-named wire value) ever happens**, and if so, under what compatibility window. The naming
+  note above is deliberately silent on this beyond "not yet decided."
+- **Semantic versioning for the OpenAPI spec / wire protocol as a whole**, as opposed to the
+  per-table/per-message `schema_version` pattern in §29.2, which only covers data shape, not
+  the full API surface.
+
+These are flagged, not answered, so they surface again when the Technical Researcher's work
+resumes rather than being quietly assumed one way or the other in the meantime.

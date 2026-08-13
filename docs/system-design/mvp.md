@@ -1,4 +1,4 @@
-# Vyomanaut V2 — MVP Specification: Demo / Production Mode
+# Vyomanaut V2 — MVP Specification: Demo / LTS Mode
 
 **Status:** Authoritative — read alongside ADR-031, architecture.md, and the pre-ADR analysis  
 **Version:** 1.0  
@@ -20,7 +20,7 @@
 1. [Why This Document Exists](#1-why-this-document-exists)
 2. [The Mode Flag](#2-the-mode-flag)
 3. [Exact Demo Network Specifications](#3-exact-demo-network-specifications)
-4. [Feature Gap Table: Demo vs Production](#4-feature-gap-table-demo-vs-production)
+4. [Feature Gap Table: Demo vs LTS](#4-feature-gap-table-demo-vs-lts)
 5. [How to Toggle Each Feature](#5-how-to-toggle-each-feature)
 6. [Switching Mode Requirements and Repercussions](#6-switching-mode-requirements-and-repercussions)
 7. [Viability Fact-Check: Every Demo Value Verified](#7-viability-fact-check-every-demo-value-verified)
@@ -31,7 +31,7 @@
 ## 1. Why This Document Exists
 
 The pre-ADR analysis identified the full parameter space that separates a live demo from
-production. This MVP file translates that analysis into three actionable artefacts: a
+LTS. This MVP file translates that analysis into three actionable artefacts: a
 precise demo spec (what the built system looks like in a room), a decision record (what
 cannot exist in demo), and a build plan (what order to build things so neither mode is a
 throwaway).
@@ -39,11 +39,11 @@ throwaway).
 The central principle, inherited from ADR-029's simulation mode design, is:
 
 > **A demo on a forked codebase proves nothing. The demo must run the same binary as
-> production, configured with different parameters.**
+> LTS, configured with different parameters.**
 
 Everything that follows enforces this principle. No logic is mocked. No cryptographic
 primitive is weakened in structure. No data integrity invariant is relaxed. The demo is
-production with faster clocks and fewer providers.
+LTS with faster clocks and fewer providers.
 
 ---
 
@@ -56,8 +56,17 @@ Environment variable:  VYOMANAUT_MODE=demo | prod
 CLI override:          --mode=demo | --mode=prod
 ```
 
+> **Naming note.** As of Milestone 16, the `prod` track is called **LTS** in every design
+> document and in conversation — "LTS mode," "the LTS build." The flag value itself, the Go
+> identifier (`config.ProductionProfile`), and every wire-level value derived from it
+> (`ReadinessResponse.mode: "prod"`, the `PROD_MODE_ENV_SECRET` error code, the
+> `mode=PRODUCTION` startup log line below) are unchanged — this section defines the actual
+> shipped flag, so it keeps the shipped spelling throughout. Renaming the flag itself is a
+> separate, not-yet-made decision (`architecture.md` §29). Read `prod` and `LTS` as the same
+> thing under two names for the remainder of this document and its siblings.
+
 Default: `prod`. Any process that does not explicitly set `VYOMANAUT_MODE=demo` behaves
-as production. The active mode is printed as the first stdout line and first log line at
+as LTS. The active mode is printed as the first stdout line and first log line at
 startup.
 
 ```
@@ -77,7 +86,7 @@ no API endpoint or signal that changes the mode at runtime.
 The following startup checks are mandatory:
 
 - If `VYOMANAUT_MODE=prod` **and** `VYOMANAUT_CLUSTER_MASTER_SEED` is present in the
-  environment → **fatal error, refuse to start.** A secrets manager is required in production.
+  environment → **fatal error, refuse to start.** A secrets manager is required in LTS.
 - If `VYOMANAUT_MODE=demo` **and** the process connects to the live Razorpay API endpoint
   (not the test environment or mock) → **fatal error, refuse to start.** Real money must
   not be moved during a demo.
@@ -104,7 +113,7 @@ hackathon or investor meeting?*
 
 ### 3.2 Erasure coding parameters
 
-| Parameter | Production | **Demo** |
+| Parameter | LTS | **Demo** |
 | --- | --- | --- |
 | `DataShards` (s) | 16 | **3** |
 | `ParityShards` (r) | 40 | **2** |
@@ -114,12 +123,11 @@ hackathon or investor meeting?*
 | Lazy repair trigger | s + r0 = 24 | **s + r0 = 4** |
 | Emergency floor | s = 16 | **s = 3** |
 | Max segment size | 14 MB (56 × 256 KB) | **1.25 MB (5 × 256 KB)** |
-| Max plaintext segment | 4 MiB | **768 KiB** |
 | Fault tolerance | 40-of-56 simultaneous failures | **2-of-5 simultaneous failures** |
 
 ### 3.3 Readiness gate thresholds
 
-| Condition | Production | **Demo** |
+| Condition | LTS | **Demo** |
 | --- | --- | --- |
 | Active vetted providers | ≥ 56 | **≥ 5** |
 | Distinct ASNs | ≥ 5 | **≥ 5** (see §7.1 — corrected from pre-ADR analysis) |
@@ -131,7 +139,7 @@ hackathon or investor meeting?*
 
 ### 3.4 Time windows
 
-| Parameter | Production | **Demo** | Observable in |
+| Parameter | LTS | **Demo** | Observable in |
 | --- | --- | --- | --- |
 | Provider heartbeat interval | 4 h | **30 s** | ~2 min |
 | Heartbeat jitter | ±5 min | **±5 s** | — |
@@ -157,7 +165,7 @@ hackathon or investor meeting?*
 
 ### 3.5 Cryptographic parameters
 
-| Parameter | Production | **Demo** | What changes |
+| Parameter | LTS | **Demo** | What changes |
 | --- | --- | --- | --- |
 | Argon2id time cost (t) | 3 | **1** | Faster session start (~20–50 ms vs ~200–500 ms) |
 | Argon2id memory (m) | 65,536 KiB (64 MB) | **4,096 KiB (4 MB)** | Weaker brute-force resistance |
@@ -175,7 +183,8 @@ hackathon or investor meeting?*
 T+00:00  — 5 provider daemons start, register, Ed25519 keys generated
 T+00:30  — Heartbeats arrive at microservice; all 5 providers in VETTING
 T+00:30  — Readiness gate passes (5 providers, 5 synthetic ASNs, instant cooling)
-T+01:00  — Data owner registers and deposits escrow; first upload attempt is rejected (HTTP 503, providers still VETTING) — client retries automatically per IC §5.9's documented backoff (ADR-071)
+T+01:00  — Data owner registers; master secret derived (< 50 ms); mnemonic displayed
+T+01:00  — Data owner uploads a test file (< 1.25 MB per segment; 5 shards placed)
 T+03:00  — First audit cycle fires; all 5 providers respond; first PASS logged
 T+05:00  — Vetting minimum duration (5 min) reached
 T+10:00  — 5th consecutive audit PASS; providers transition VETTING → ACTIVE
@@ -193,12 +202,12 @@ This is the entire end-to-end lifecycle, observable by a live audience in ~30–
 
 ---
 
-## 4. Feature Gap Table: Demo vs Production
+## 4. Feature Gap Table: Demo vs LTS
 
-The following table enumerates every capability present in PROD but absent, reduced, or
+The following table enumerates every capability present in LTS but absent, reduced, or
 simulated in DEMO. Features not listed are identical in both modes.
 
-| # | Feature | PROD | DEMO | Why absent in DEMO |
+| # | Feature | LTS | DEMO | Why absent in DEMO |
 | --- | --- | --- | --- | --- |
 | F-01 | File size per segment | Up to 14 MB | Up to 1.25 MB | RS n=5 × 256 KB = 1.25 MB max per segment |
 | F-02 | Fault tolerance | Any 40 of 56 providers can fail | Any 2 of 5 providers can fail | Direct consequence of RS(3,5) |
@@ -212,7 +221,7 @@ simulated in DEMO. Features not listed are identical in both modes.
 | F-10 | Razorpay cooling period | 24 h before first payout | 0 s (instant) | Demo time compression |
 | F-11 | Provider vetting duration | 80 passes AND 120 days | 5 passes AND 5 minutes | Demo time compression |
 | F-12 | Escrow hold window | 30 days post-vetting | 1 minute post-vetting | Demo time compression |
-| F-13 | Argon2id strength | t=3, m=64 MB (production-grade) | t=1, m=4 MB (demo-grade) | Demo session start must be fast |
+| F-13 | Argon2id strength | t=3, m=64 MB (LTS-grade) | t=1, m=4 MB (demo-grade) | Demo session start must be fast |
 | F-14 | BIP-39 mnemonic confirmation | Two words confirmed before proceeding | Mnemonic displayed; confirmation skipped | Demo UX (no awkward typing) |
 | F-15 | Monthly payment computation | On the 23rd of each calendar month | Every 2 minutes | Demo time compression |
 | F-16 | DHT record republication | 12-hour interval | 2-minute interval | Demo time compression |
@@ -544,26 +553,26 @@ mechanism to exist safely, and the repercussion if any requirement is violated.
 
 | # | Requirement | Repercussion if violated |
 | --- | --- | --- |
-| CR-01 | `NetworkProfile` is the only place mode-variable values are defined. No `if mode == "demo"` in business logic. | Scattered conditionals create untested code paths; demo behavior diverges from production without detection |
+| CR-01 | `NetworkProfile` is the only place mode-variable values are defined. No `if mode == "demo"` in business logic. | Scattered conditionals create untested code paths; demo behavior diverges from LTS without detection |
 | CR-02 | `ShardSize` (262,144) is a constant in both profiles. It must not appear in `NetworkProfile` as a variable field. | A changed shard size breaks vLog entry sizing, audit challenge framing, and RocksDB index assumptions simultaneously — silent data corruption |
-| CR-03 | The 33-byte `challenge_nonce` CHECK constraint and all wire-format fixed sizes are hardcoded constants, not profile fields. | A shorter nonce in demo breaks cross-replica validation for all future production deployments where demo receipts exist in the same audit log |
-| CR-04 | All amounts in `escrow_events` and `owner_escrow_events` are `BIGINT` paise in both modes. The mock `PaymentProvider` must enforce this. | Floating-point in demo hides payment arithmetic bugs that surface in production |
+| CR-03 | The 33-byte `challenge_nonce` CHECK constraint and all wire-format fixed sizes are hardcoded constants, not profile fields. | A shorter nonce in demo breaks cross-replica validation for all future LTS deployments where demo receipts exist in the same audit log |
+| CR-04 | All amounts in `escrow_events` and `owner_escrow_events` are `BIGINT` paise in both modes. The mock `PaymentProvider` must enforce this. | Floating-point in demo hides payment arithmetic bugs that surface in LTS |
 | CR-05 | The `audit_receipts` row security policy (INSERT-only, single PENDING→final UPDATE) applies in demo mode. | Relaxing the policy in demo means demo testing does not validate the invariant the RSP is supposed to guarantee |
 | CR-06 | `internal/repair.EnqueueJob` must check `IsVettingChunk` before enqueueing in both modes. | A demo departure of a vetting provider that triggers repair would cause a visible crash or incorrect behavior during the presentation |
-| CR-07 | The single-writer vLog goroutine requirement applies in demo mode. | Concurrent writes in demo produce vLog corruption; the bug surfaces in production after demo code is merged |
+| CR-07 | The single-writer vLog goroutine requirement applies in demo mode. | Concurrent writes in demo produce vLog corruption; the bug surfaces in LTS after demo code is merged |
 | CR-08 | `RecoverFromCrash()` runs at daemon startup in both modes. | A demo crash mid-presentation cannot be recovered by restarting the daemon |
-| CR-09 | Ed25519 signing and verification occur on every audit receipt in both modes. | Skipping signing in demo means the audit signature path is never tested before production |
+| CR-09 | Ed25519 signing and verification occur on every audit receipt in both modes. | Skipping signing in demo means the audit signature path is never tested before LTS |
 | CR-10 | The `PaymentProvider` interface must be used for all payment operations; the mock must implement it fully, not bypass it. | Direct DB writes from a mock break the interface abstraction; switching to Razorpay then requires finding every bypass |
 
 ### 6.2 Infrastructure requirements
 
 | # | Requirement | Repercussion if violated |
 | --- | --- | --- |
-| IR-01 | Demo and production databases are completely separate instances (separate connection strings, separate Postgres data directories). | Demo data (meaningless synthetic chunks, test escrow events) in the production DB corrupts audit logs and payment history |
-| IR-02 | Demo and production Razorpay credentials are separate. Demo uses mock or Razorpay test environment; it must never touch the live Razorpay account. | Real money could be moved; real provider bank accounts could be credited or seized |
-| IR-03 | Demo and production `VYOMANAUT_CLUSTER_MASTER_SEED` values are separate. | A demo secret leaked in env vars (e.g. in container logs) that matches the production seed would allow audit nonce prediction |
+| IR-01 | Demo and LTS databases are completely separate instances (separate connection strings, separate Postgres data directories). | Demo data (meaningless synthetic chunks, test escrow events) in the LTS DB corrupts audit logs and payment history |
+| IR-02 | Demo and LTS Razorpay credentials are separate. Demo uses mock or Razorpay test environment; it must never touch the live Razorpay account. | Real money could be moved; real provider bank accounts could be credited or seized |
+| IR-03 | Demo and LTS `VYOMANAUT_CLUSTER_MASTER_SEED` values are separate. | A demo secret leaked in env vars (e.g. in container logs) that matches the LTS seed would allow audit nonce prediction |
 | IR-04 | The readiness gate in demo mode must still pass before uploads are accepted. `VYOMANAUT_MODE=demo` does not bypass the gate; it changes the thresholds. | Skipping the gate in demo means demo testing does not validate the gate logic |
-| IR-05 | A deployment check at CI must verify that `VYOMANAUT_MODE=prod` and `VYOMANAUT_CLUSTER_MASTER_SEED` cannot coexist. | Secrets manager is bypassed in production; audit nonces are predictable |
+| IR-05 | A deployment check at CI must verify that `VYOMANAUT_MODE=prod` and `VYOMANAUT_CLUSTER_MASTER_SEED` cannot coexist. | Secrets manager is bypassed in LTS; audit nonces are predictable |
 
 ### 6.3 Operational requirements
 
@@ -571,16 +580,26 @@ mechanism to exist safely, and the repercussion if any requirement is violated.
 | --- | --- | --- |
 | OR-01 | The `NetworkProfile` struct must be printed in full at startup (values only, not secrets). | Mode drift between replicas is undetectable; audit scoring uses different windows per replica |
 | OR-02 | The demo `DemoProfile` struct has a compiler-enforced test that verifies `ShardSize == ProductionProfile.ShardSize`. | A future engineer changes ShardSize in DemoProfile without realising the wire-format implication |
-| OR-03 | Every time a new mode-variable parameter is added to `NetworkProfile`, a corresponding value must be added to both `ProductionProfile` and `DemoProfile`. The Go compiler enforces this (struct literal with all fields). | A zero-value default silently uses Go's zero value (0, false, "", nil) which may be wrong for production |
-| OR-04 | The `mv_provider_scores` view is dropped and recreated at microservice startup. A migration that changes the view must also update the view-generation code. | A stale view with production intervals runs in demo mode; providers never reach ACTIVE within a 30-minute session |
+| OR-03 | Every time a new mode-variable parameter is added to `NetworkProfile`, a corresponding value must be added to both `ProductionProfile` and `DemoProfile`. The Go compiler enforces this (struct literal with all fields). | A zero-value default silently uses Go's zero value (0, false, "", nil) which may be wrong for LTS |
+| OR-04 | The `mv_provider_scores` view is dropped and recreated at microservice startup. A migration that changes the view must also update the view-generation code. | A stale view with LTS intervals runs in demo mode; providers never reach ACTIVE within a 30-minute session |
 
 ### 6.4 Schema migration requirements
 
 | # | Requirement | Repercussion if violated |
 | --- | --- | --- |
-| MR-01 | Schema migrations are never applied between demo and production databases in either direction. | A demo schema (with `shard_index BETWEEN 0 AND 4`) applied to production breaks all 56-shard file uploads |
+| MR-01 | Schema migrations are never applied between demo and LTS databases in either direction. | A demo schema (with `shard_index BETWEEN 0 AND 4`) applied to LTS breaks all 56-shard file uploads |
 | MR-02 | The migration generator (`migrations/generator.go`) must be given the active `NetworkProfile` at generation time, not at apply time. | Generating with the wrong profile produces a schema that is structurally correct but has wrong CHECK bounds |
-| MR-03 | The migration checklist in `data-model.md §9` must be run against both profiles in CI (two separate migration runs against two separate databases). | A constraint that works for demo (5 shards) may fail to create correctly for production (56 shards) without this check |
+| MR-03 | The migration checklist in `data-model.md §9` must be run against both profiles in CI (two separate migration runs against two separate databases). | A constraint that works for demo (5 shards) may fail to create correctly for LTS (56 shards) without this check |
+
+### 6.5 What "LTS" adds on top of this section
+
+Everything above (CR/IR/OR/MR) is unchanged by the Milestone 16 naming split — it was already
+the discipline that made "Production" safe, and it's exactly as binding for "LTS" today. What
+*is* new is a set of support and versioning commitments that sit a level above these per-feature
+requirements — a promise about how LTS *changes* over time, not just how it differs from demo
+today. See `architecture.md` §29 for what's decided (versioning discipline for breaking changes)
+and what's explicitly deferred (support window, deprecation notice period) until the Technical
+Researcher's work resumes after Milestone 18.
 
 ---
 
@@ -610,7 +629,7 @@ For physical laptops in demo mode, each provider must declare a distinct synthet
 
 The 20% cap percentage (0.20) is unchanged. The enforcement works as intended: each provider
 holds exactly 1 of 5 shards; no correlated group can lose the file by departing. This is
-actually a stricter diversity constraint in demo than the 11-of-56 allowed in production,
+actually a stricter diversity constraint in demo than the 11-of-56 allowed in LTS,
 which is the correct direction — a 5-provider network is more fragile and benefits from
 strict diversity.
 
@@ -634,7 +653,7 @@ strict diversity.
 - `VettingMinPasses=5` → 5 consecutive passes required → minimum ~10 minutes of polling.
 - `VettingMinDuration=5 minutes` → the 5-minute minimum is always satisfied before 5 passes
   are achieved at 2-minute polling. It is never the binding constraint. This is intentional
-  — the pass count is the binding condition, matching the production design where 80 passes
+  — the pass count is the binding condition, matching the LTS design where 80 passes
   at 24-hour polling = 80 days minimum, always before the 120-day minimum.
 - Conclusion: VETTING → ACTIVE transition happens at approximately T+10 minutes. ✓
 
@@ -642,7 +661,7 @@ strict diversity.
 
 ### 7.4 DHT republication buffer
 
-- Production: republish every 12h, expire after 24h → 12h buffer.
+- LTS: republish every 12h, expire after 24h → 12h buffer.
 - Demo: republish every 2min, expire after 4min → 2min buffer.
 - The buffer ratio is maintained (2× the republication interval). ✓
 - A single delayed republication does not cause record expiry as long as the next fires
@@ -652,7 +671,7 @@ strict diversity.
 
 ### 7.5 Scoring window ratios
 
-- Production: short=24h (1×), medium=7d (7×), long=30d (30×)
+- LTS: short=24h (1×), medium=7d (7×), long=30d (30×)
 - Demo: short=2min (1×), medium=6min (3×), long=20min (10×)
 
 The ratios are not proportional (7× vs 3×, 30× vs 10×). This is intentional and acceptable
@@ -713,7 +732,7 @@ logic — the DB constraint is the enforcement. ✓
   For demo use with no real data, this is an accepted trade-off. The code path (Argon2id →
   32-byte output → HKDF chain) is identical. ✓
 
-**Verdict: ✅ Demo Argon2id is fast and structurally identical to production.**
+**Verdict: ✅ Demo Argon2id is fast and structurally identical to LTS.**
 
 ### 7.10 Segment size limitation (max 1.25 MB per segment)
 
@@ -733,7 +752,7 @@ logic — the DB constraint is the enforcement. ✓
   is GC'd after 5 minutes.
 - A provider that is online and responding will complete Phase 2 within one RTO (~2 seconds).
 - 5 minutes gives 2.5× the audit cycle time as headroom for crash recovery. ✓
-- In production, 48 hours = 2× the 24-hour audit cycle. The ratio is the same. ✓
+- In LTS, 48 hours = 2× the 24-hour audit cycle. The ratio is the same. ✓
 
 **Verdict: ✅ GC timing is proportionally correct relative to the audit cycle.**
 
@@ -744,7 +763,7 @@ logic — the DB constraint is the enforcement. ✓
   up to 2 minutes before the next release computation runs.
 - Maximum delay between earnings becoming releasable and the payout firing: 2 minutes.
 - This is observable and acceptable. ✓
-- Note: in production, the analogous delay is up to 1 month (hold window = 30 days;
+- Note: in LTS, the analogous delay is up to 1 month (hold window = 30 days;
   release computation fires once on the 23rd). The demo makes this delay visible in
   real time, which is a better demonstration of the mechanism. ✓
 
