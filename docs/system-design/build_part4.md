@@ -15,29 +15,53 @@ ADR-069 (scale simulation).
 ### The LTS milestone map
 
 **Milestone 19 is fixed. Everything after it is provisional** and will be renumbered and reordered
-according to what the demo runs (M18 Phase 18.2) and the reading-list-v2 research produce. The
+according to what the demo runs (M18 Phase 18.2) and the `reading-list.md` research produce. The
 ordering below is a dependency argument, not a schedule; the *sequence* is the claim, not the
 numbers.
 
-| Milestone | Theme | Depends on | Why it sits here |
-| --- | --- | --- | --- |
-| **19 — LTS Foundation** | Real `go-libp2p`, real `klauspost/reedsolomon` | `demo-v1.0.0` | Everything measurable depends on it. CGNAT fraction, relay slot capacity, DCUtR success, NFR-006's relay budget — all unmeasurable until the real stack is in place |
-| *(next)* **Proof of Storage** | ADR-059, ADR-060 | 19 | **F-32: the audit currently cannot fail.** A provider that deleted every chunk passes every audit. Nothing built on top means anything until this lands |
-| *(next)* **Confidentiality** | Domains P & K — F-69, F-34 | Proof of Storage | The two structural findings with **no ADR at all**. AONT-RS repair discloses plaintext to the repairer at k=16; the confidentiality margin is 5 shards, not 29 |
-| *(next)* **Population Re-basing** | Domain D `[STALE]` | 19 | The 72 h departure threshold, 24 h polling and bandwidth budget rest on Bolosky 2000, Saroiu 2002, Blake & Rodrigues 2003. That population no longer exists |
-| *(next)* **Audit at Fleet Scale + Transparency Log** | Domains B & G | Proof of Storage | Paper 70's Fortress construction is a dependency for two open questions, not one |
-| *(next)* **Repair & Erasure Optimisation** | Domain C; ADR-026 | Confidentiality | ADR-026 is escalated to council; the entire single-block-repair literature is downstream of a repair-policy question ADR-026 never asked |
-| *(next)* **Payments Hardening** | ADR-011/012/016/024/035/061 | Proof of Storage | Real Razorpay, real money. Deliberately after the audit primitive — payment release is gated on audit results, and releasing against an audit that cannot fail is a financial hole, not a bug |
-| *(next)* **Production Hardening** | *(relocated from the old M17)* ADR-025, ADR-027, ADR-048; IC §8 | 19 | Secrets-manager adapters, HA gossip, `cmd/relay`, real client-driven routing. Needs real libp2p to be meaningful |
-| *(next)* **Observability & Launch Gates** | ADR-065, 066, 067, 068 | Production Hardening | All four have subjects to instrument only once relays and the HA cluster exist |
-| **28 — Desktop GUI Shell** | ADR-038–052 | Observability | **Confirmed at M28 per your ruling.** Eight phases, shared component library **before** the app shells |
-| *(next)* **Scale Simulation** | ADR-069; `architecture.md §27.5/§27.7` | 19, Production Hardening, Observability | 10,000+ nodes. Only meaningful after real libp2p, real relays, and telemetry to observe |
-| *(next)* **GA Launch Readiness** | *(relocated from the old M18)* | all | Runbooks, benchmark suite, security verification checklist, full CI gate |
+> **Revision note — August 2026 Design Council.** Three changes below, each with an ADR behind it.
+> **(a) Confidentiality moves ahead of Proof of Storage.** ADR-076 (F-LTS-08) found that
+> `cmd/microservice` reconstructs the AONT package on every repair — the operator holds plaintext
+> by design, today, with no attacker. Council 2 further established that *no* assignment of the
+> repair role under RS + AONT-RS leaves every party blind, which makes F-69 a structural result
+> rather than a defect to relocate. Confidentiality is no longer a milestone that can wait behind
+> the audit primitive. **(b) Repair & Erasure Optimisation is removed as a milestone.** ADR-076
+> resolves Q26-4 from the code and ADR-026 closes as *no V3 repair-bandwidth optimisation*; what
+> survives (small-object policy, redundancy adaptation) is not milestone-sized. **(c) Repair
+> Topology enters as a new milestone** — ADR-076's `r0` gate and provider-side executor. The
+> research preconditions column is new and is the reading list's half of the contract.
 
-**Two orderings worth defending explicitly.** Payments sits after the audit primitive because
+| Milestone | Theme | Depends on | Research precondition | Why it sits here |
+| --- | --- | --- | --- | --- |
+| **19 — LTS Foundation** | Real `go-libp2p`, real `klauspost/reedsolomon` | `demo-v1.0.0` | **None** — deliberately. Do R-61's wire-format audit here while the interfaces are open | Everything measurable depends on it. CGNAT fraction, relay slot capacity, DCUtR success, NFR-006's relay budget — all unmeasurable until the real stack is in place |
+| *(next)* **Confidentiality** ⬆ | Domains P & K — F-69, F-34 | 19 | **R-27 → R-29** (P), **R-17** then **R-30/R-31** (K). R-17 is a feasibility gate: < 8 independent ASNs and cap-tuning is off the table | **Moved ahead of Proof of Storage.** F-LTS-08: the operator decodes every repaired segment today. Council 2's three-repairers result makes this structural, not a bug — and ADR-022-A withdrew the ASN cap's confidentiality claim, leaving the property with no mechanism at all |
+| *(next)* **Repair Topology** `[NEW]` | ADR-076 — the `r0` gate, provider-side executor | 19 | None to *start*; Domain P's substitution tests are defined against the post-gate repair frequency, so it runs **alongside** Confidentiality | ADR-004's ratified trigger flow was never built and its P2P constraint is violated. The gate alone removes a 38× bandwidth penalty and converts repair from constant to rare, which is what makes Domain P's mechanisms worth evaluating |
+| *(next)* **Proof of Storage** | ADR-059, ADR-060 | 19, Repair Topology | **R-47 gating** (Band 0, no search needed), **R-50 hard dependency** (price `drand` first), then R-48. Blocked on F-LTS-11 | **F-32: the audit currently cannot fail.** Q68-3 lost its cheapest option to ADR-076 — the microservice no longer holds the reconstructed bytes — so R-47 is now a precondition, not a background read |
+| *(next)* **Population Re-basing** | Domain D `[STALE]` | 19 | **R-12 → R-15.** Sequence **before** Domain U, or U derives well-founded answers from a stale distribution | The 72 h departure threshold, 24 h polling and bandwidth budget rest on Bolosky 2000, Saroiu 2002, Blake & Rodrigues 2003. That population no longer exists |
+| *(next)* **Assumption Retirement** `[NEW]` | Domains U, V, O, W | Population Re-basing (for U) | **R-65 → R-67** (U), **R-68 → R-70** (V), **R-56 → R-58, R-71** (O), **R-59, R-72** (W) | Fourteen parameters across nine ADRs are `[UNDERIVED]` (ADR-077). Domain U alone retires five of them from one body of theory. Runs in parallel from here; it is not a gate on anything, and everything is slightly wrong until it lands |
+| *(next)* **Audit at Fleet Scale + Transparency Log** | Domains B & G | Proof of Storage | **R-23 → R-25**; R-50 already landed upstream | Fortress is a dependency for two open questions, not one. Q70-1 resolved **yes** — the beacon is not Fortress's price, it is the fix for a seed-grinding attack ADR-060 leaves open |
+| *(next)* **Payments Hardening** | ADR-011/012/016/024/035/061 | Proof of Storage | **R-43 → R-46.** R-63 only if the mid-period handover count exceeds ~1% | Real Razorpay, real money. Deliberately after the audit primitive — releasing against an audit that cannot fail is a financial hole, not a bug. F-03 is closed (ADR-012-A), so the receipt schema is unblocked |
+| *(next)* **Production Hardening** | *(relocated from the old M17)* ADR-025, ADR-027, ADR-048; IC §8 | 19 | **R-26, R-32, R-33** (L), **R-34 → R-37** (M). R-32 is the high-value item | Secrets-manager adapters, HA gossip, `cmd/relay`, real client-driven routing. Needs real libp2p to be meaningful |
+| *(next)* **Observability & Launch Gates** | ADR-065, 066, 067, 068 | Production Hardening | **Domain O** — and note all four ADRs cite `This review` as their entire research source (ADR-077 §Context) | All four have subjects to instrument only once relays and the HA cluster exist |
+| **28 — Desktop GUI Shell** | ADR-038–052 | Observability | ADR-038–052 cluster; low priority, correctly | **Confirmed at M28 per your ruling.** Eight phases, shared component library **before** the app shells |
+| *(next)* **Scale Simulation** | ADR-069; `architecture.md §27.5/§27.7` | 19, Production Hardening, Observability | **R-54, R-55** (S). **Blocked on F-LTS-03** — the synthetic tier cannot compute `σ` without ADR-059's authenticators | 10,000+ nodes. Only meaningful after real libp2p, real relays, and telemetry to observe. A number produced without Domain S is a number that cannot be defended |
+| *(next)* **GA Launch Readiness** | *(relocated from the old M18)* | all | **R-51 → R-53** (Q) — runs continuously across every milestone above, not just this one | Runbooks, benchmark suite, security verification checklist, full CI gate. ADR-070 found thirteen defects by running one seam once; F-LTS-07 and F-LTS-08 are two more of the same class |
+
+**Four orderings worth defending explicitly.** Payments sits after the audit primitive because
 releasing escrow on the strength of an audit that cannot fail is a financial exposure, not merely an
 incomplete feature. Scale simulation sits near the end because a simulation run before real libp2p
 measures the substitute — and a number that looks like data but is not is worse than no number.
+**Confidentiality now sits first among the research milestones** because it is the only one where
+the failure is happening continuously in the current implementation rather than waiting to happen:
+every repair event hands the operator a decodable package. And **Population Re-basing precedes
+Assumption Retirement** because Domain U's timeout derivations consume an absence distribution —
+deriving `t = 24 h` rigorously from Bolosky 2000 would replace a guess with a well-founded answer to
+the wrong question.
+
+**One milestone was removed.** Repair & Erasure Optimisation is gone: ADR-076 settles Q26-4 from the
+code, ADR-026 closes as *no V3 repair-bandwidth optimisation*, and Papers 62 and 64 leave the
+drafting queue. What survives — R-11 (small objects) and R-64 (redundancy adaptation) — folds into
+whichever milestone touches stripe construction.
 
 ---
 
