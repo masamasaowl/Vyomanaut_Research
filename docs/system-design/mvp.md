@@ -104,7 +104,7 @@ hackathon or investor meeting?*
 
 | Resource | Minimum for demo | Notes |
 | --- | --- | --- |
-| Provider machines | 5 laptops or 1 laptop with `--sim-count=5` | Each runs the provider daemon binary |
+| Provider machines | 5 laptops or 1 laptop with `--sim-count=5` | Each runs the provider daemon binary. **6 (or `--sim-count=6`) if the departure/repair scenario will be demonstrated** — 5 suffices for upload/retrieve only; repair-replacement provider selection has no eligible candidate at exactly 5 (ADR-075, §7.14) |
 | Microservice instance | 1 (single replica, quorum checks disabled) | Runs on any laptop or a separate machine |
 | Relay nodes | 0 | All traffic is local; NAT traversal is not exercised |
 | Secrets manager | None | `VYOMANAUT_CLUSTER_MASTER_SEED` env var replaces it |
@@ -122,14 +122,23 @@ hackathon or investor meeting?*
 | `LazyRepairR0` | 8 | **1** |
 | Lazy repair trigger | s + r0 = 24 | **s + r0 = 4** |
 | Emergency floor | s = 16 | **s = 3** |
-| Max segment size | 14 MB (56 × 256 KB) | **1.25 MB (5 × 256 KB)** |
+| Max segment size (plaintext, pre-AONT-RS-encoding) | **~4.00 MB** ((16 × 256 KB) − 48 B AONT overhead = 4,194,256 B) | **~0.75 MB** ((3 × 256 KB) − 48 B AONT overhead = 786,384 B) |
 | Fault tolerance | 40-of-56 simultaneous failures | **2-of-5 simultaneous failures** |
+
+**[Corrected]** The Max segment size row previously read "14 MB (56 × 256 KB)" / "1.25 MB
+(5 × 256 KB)" — `TotalShards × ShardSize`, the total *encoded* footprint across all shards
+(data + parity), not the plaintext a segment can actually hold before encoding. The real
+boundary is `DataShards × ShardSize`, adjusted for AONT-RS's fixed 48-byte expansion
+(`internal/client/upload/orchestrator.go`'s `plaintextSegmentSize` / `aontOverheadBytes`) —
+confirmed directly against that function, not re-derived from first principles here. §7.10
+works through the corrected consequences for a worked example; both were wrong by the same
+formula error and are fixed together.
 
 ### 3.3 Readiness gate thresholds
 
 | Condition | LTS | **Demo** |
 | --- | --- | --- |
-| Active vetted providers | ≥ 56 | **≥ 5** |
+| Active vetted providers | ≥ 56 | **≥ 5** (gate threshold — unchanged; ≥ 6 actual providers needed to demonstrate repair, see §7.14/ADR-075) |
 | Distinct ASNs | ≥ 5 | **≥ 5** (see §7.1 — corrected from pre-ADR analysis) |
 | Distinct metro regions | ≥ 3 | **≥ 1** |
 | Microservice quorum | Full (3,2,2) | **Single instance** |
@@ -179,23 +188,32 @@ hackathon or investor meeting?*
 
 ### 3.6 What a demo session looks like on a timeline
 
+**[Corrected, ADR-075]** Updated from 5 to 6 provider daemons — this timeline includes the
+departure/repair scenario (T+20:00 onward), which needs the repair-replacement headroom
+§7.14 derives. `TotalShards` stays 5; the 6th daemon is idle spare capacity until repair
+calls on it. The segment-size figure at T+01:00 is also corrected (§7.10).
+
 ```
-T+00:00  — 5 provider daemons start, register, Ed25519 keys generated
-T+00:30  — Heartbeats arrive at microservice; all 5 providers in VETTING
-T+00:30  — Readiness gate passes (5 providers, 5 synthetic ASNs, instant cooling)
+T+00:00  — 6 provider daemons start, register, Ed25519 keys generated
+T+00:30  — Heartbeats arrive at microservice; all 6 providers in VETTING
+T+00:30  — Readiness gate passes (6 providers running, ≥5 providers/≥5 ASNs required —
+           both satisfied — instant cooling)
 T+01:00  — Data owner registers; master secret derived (< 50 ms); mnemonic displayed
-T+01:00  — Data owner uploads a test file (< 1.25 MB per segment; 5 shards placed)
-T+03:00  — First audit cycle fires; all 5 providers respond; first PASS logged
+T+01:00  — Data owner uploads a test file (< 0.75 MB per segment; 5 shards placed on 5 of
+           the 6 providers — TotalShards is still 5)
+T+03:00  — First audit cycle fires; all 6 providers respond; first PASS logged
 T+05:00  — Vetting minimum duration (5 min) reached
-T+10:00  — 5th consecutive audit PASS; providers transition VETTING → ACTIVE
+T+10:00  — 5th consecutive audit PASS; all 6 providers transition VETTING → ACTIVE
 T+10:30  — Vetting GC instruction delivered; synthetic chunks deleted
 T+10:30  — Real data owner shard assignments begin
 T+12:00  — Escrow hold window (1 min post-vetting) elapses; release computation fires
 T+12:00  — Mock payment provider logs a successful "payout"
-T+20:00  — Simulate a provider departure (kill one daemon)
+T+20:00  — Simulate a provider departure (kill one daemon that holds a real shard)
 T+30:00  — Departure threshold (10 min) crossed; silent departure declared
 T+30:00  — Escrow seized; repair job queued; 4 remaining shards contacted; repair fires
-T+32:00  — Repair completes; fragment count restored to 5; file still retrievable
+T+32:00  — Repair completes on the 6th (spare) provider; fragment count restored to 5;
+           file still retrievable — this step could not succeed with only 5 providers
+           total (§7.14/ADR-075); the 6th exists specifically to make it possible
 ```
 
 This is the entire end-to-end lifecycle, observable by a live audience in ~30–35 minutes.
@@ -209,7 +227,7 @@ simulated in DEMO. Features not listed are identical in both modes.
 
 | # | Feature | LTS | DEMO | Why absent in DEMO |
 | --- | --- | --- | --- | --- |
-| F-01 | File size per segment | Up to 14 MB | Up to 1.25 MB | RS n=5 × 256 KB = 1.25 MB max per segment |
+| F-01 | File size per segment | Up to ~4.00 MB | Up to ~0.75 MB | RS DataShards=3 × 256 KB − 48 B AONT overhead = 0.75 MB max per segment (**[Corrected]** — previously "n × 256 KB," the total encoded footprint, not the plaintext boundary; see §7.10) |
 | F-02 | Fault tolerance | Any 40 of 56 providers can fail | Any 2 of 5 providers can fail | Direct consequence of RS(3,5) |
 | F-03 | Provider network size | ≥ 56 active providers | ≥ 5 active providers | Demo n = 5 |
 | F-04 | Geographic diversity | ≥ 3 distinct Indian metro regions | ≥ 1 region | Demo can run on a single LAN |
@@ -643,9 +661,17 @@ strict diversity.
 - The emergency floor at s=3 fires when exactly 3 remain. ✓
 - Repair requires contacting 3 surviving shard holders to RS-decode — always available until
   the 3rd departure triggers the emergency floor. ✓
-- Repair places 1 new shard on a replacement provider — restores count to 4 (still above floor). ✓
+- Repair places 1 new shard on a replacement provider — restores count to 4 (still above floor).
+  **[Corrected]** This assumes a replacement provider exists that isn't already excluded
+  by holding one of the segment's other 4 shards or by the 20% ASN cap (FR-045/ADR-014). At
+  exactly `TotalShards = MinDistinctASNs = 5` providers, no such candidate exists —
+  `internal/repair/assignment.go`'s `SelectReplacementProvider` correctly returns
+  `ErrNoEligibleReplacement` every time. This does not affect *reconstruction* (the bullet
+  above) — only the *placement* step. See §7.14 for the corrected requirement and its
+  resolution (ADR-075). ✗ **as originally stated; see §7.14 for the corrected verdict**
 
-**Verdict: ✅ Fully consistent.**
+**Verdict: ✅ Reconstruction math is fully consistent. Replacement-provider placement is not —
+see §7.14 (ADR-075).**
 
 ### 7.3 Vetting timing consistency
 
@@ -717,12 +743,19 @@ logic — the DB constraint is the enforcement. ✓
 - RS decode requires 3 shards; each is 256 KB. Download: 3 × 256 KB at LAN speed
   (~100 Mbps) = 3 × ~20 ms = ~60 ms total.
 - RS encode of missing shards: < 1 ms on modern hardware.
-- Upload of 1 replacement shard to a new provider: ~20 ms.
-- Total repair time: < 100 ms.
+- Upload of 1 replacement shard to a new provider: ~20 ms. **[Corrected]** — this is the
+  transfer time once a replacement provider has been *selected*; it does not establish that
+  one can be. See §7.14 (ADR-075): at exactly 5 providers, selection itself fails before any
+  upload is attempted. The timing arithmetic below is accurate for a network with the
+  headroom §7.14 derives; it was previously presented as if headroom were guaranteed by
+  construction.
+- Total repair time: < 100 ms, given an eligible replacement provider exists (§7.14).
 - The repair queue dequeues and executes within 1 polling cycle (2 minutes).
 - A departure at T+20:00 results in a visible, completed repair by T+22:00. ✓
 
-**Verdict: ✅ Repair is fast and demonstrable in real time.**
+**Verdict: ✅ Repair is fast and demonstrable in real time, given the provider-pool headroom
+§7.14 requires (6+ providers, ADR-075) — timing was never the issue; eligibility to place a
+replacement at all was.**
 
 ### 7.9 Argon2id performance at demo parameters
 
@@ -734,16 +767,30 @@ logic — the DB constraint is the enforcement. ✓
 
 **Verdict: ✅ Demo Argon2id is fast and structurally identical to LTS.**
 
-### 7.10 Segment size limitation (max 1.25 MB per segment)
+### 7.10 Segment size limitation (max ~0.75 MB per segment)
 
-- Files larger than 1.25 MB require multiple segments.
-- A 5 MB demo file → 4 segments × 5 shards each → 20 total shard uploads.
+**[Corrected]** This section previously used "1.25 MB per segment," inherited from §3.2's
+same now-corrected error (`TotalShards × ShardSize` instead of the real plaintext boundary).
+The actual figure, matching `internal/client/upload/orchestrator.go`'s
+`plaintextSegmentSize` exactly, is `(DataShards × ShardSize) − 48 B AONT overhead =
+786,384 B ≈ 0.75 MB`. The worked example below is recomputed against that real figure, not
+the stale one.
+
+- Files larger than ~0.75 MB require multiple segments.
+- A 5 MB demo file → `ceil(5,000,000 / 786,384) = 7` segments × 5 shards each → 35 total
+  shard uploads (previously stated as 4 segments / 20 uploads, under the stale figure).
 - The pointer file schema stores one entry per segment, each with 5 (not 56) provider IDs
-  and chunk IDs. The pointer file is smaller but structurally identical.
-- Upload time for 5 MB on LAN at 100 Mbps: 4 segments × 5 × 256 KB = 5 MB → ~400 ms. ✓
-- Retrieval: download 3 shards per segment × 4 segments = 12 shard downloads → ~240 ms. ✓
+  and chunk IDs. The pointer file is smaller but structurally identical — this scales with
+  the corrected 7-segment count, not the previous 4.
+- Upload time for 5 MB on LAN at 100 Mbps: 7 segments × 5 × 256 KB = 8.75 MB actually
+  transferred (RS(3,5)'s ~1.67× expansion applied 7 times, not 4) → ~700 ms. ✓
+- Retrieval: download 3 shards per segment × 7 segments = 21 shard downloads (5.25 MB) →
+  ~420 ms. ✓
 
-**Verdict: ✅ Multi-segment files work in demo. File size is limited but not crippling.**
+**Verdict: ✅ Multi-segment files work in demo. File size is limited but not crippling —
+the corrected per-segment capacity is smaller than originally stated, so more real-world
+files will span multiple segments than the original 1.25 MB figure implied, but the
+mechanism itself is unaffected and the timing headroom is still comfortable.**
 
 ### 7.11 PENDING receipt GC at 5 minutes vs polling at 2 minutes
 
@@ -778,6 +825,60 @@ logic — the DB constraint is the enforcement. ✓
   must assign one shard per ASN. With 5 ASNs and 5 shards, this is exactly satisfied. ✓
 
 **Verdict: ✅ ASN enforcement is fully consistent once MinDistinctASNs is corrected to 5.**
+**This section's own "exactly satisfied" is the tell for §7.14** — original assignment
+consumes the entire available cap headroom across all 5 ASNs, with nothing left over.
+That is fine for assignment itself; it means there is no spare ASN for repair to place a
+replacement on, which §7.14 addresses directly.
+
+### 7.14 Repair-replacement headroom (ASN-cap-eligible provider selection)
+
+**[Added, ADR-075]** §7.2 and §7.8 assumed a replacement provider is available whenever
+repair needs one; §7.13 shows exactly why it isn't, at exactly 5 providers — but neither
+section drew the connection until live verification (F-16-6, Session 16.1.1 continuation)
+hit it directly: `internal/repair/assignment.go`'s `SelectReplacementProvider` excludes
+every current holder of a segment's shards plus the departed provider, and requires an ASN
+not already at its 1-shard-per-segment cap. At `TotalShards = MinDistinctASNs = 5`, every
+provider is implicated by one exclusion or the other, for any departure, deterministically.
+This is not a logic bug — `SelectReplacementProvider` enforces the cap exactly as ADR-014
+specifies. The network has no spare capacity to place a replacement, by construction.
+
+**The fix is headroom, not logic** (Design Council verdict, ADR-075): a spare provider/ASN
+absorbs one concurrently-departed provider's worth of replacement-selection, and is reusable
+across a file's *other* segments (the ASN cap is enforced per `segment_id`) but is never
+freed for reuse by a *later*, different departure once consumed. Governing quantity:
+
+```
+N_spares_needed = number of distinct providers concurrently departed
+                  (independent of how many segments the file spans)
+```
+
+| Scenario | Concurrent departures | Spares needed | Total providers/ASNs |
+| --- | --- | --- | --- |
+| Single departure (e.g. the five-desktop rig, §6, one kill) | 1 | 1 | **6** |
+| Two concurrent departures (emergency-floor boundary, §3.2's fault-tolerance row) | 2 | 2 | **7** |
+
+`MinActiveProviders`, `MinDistinctASNs`, and `TotalShards` are **unchanged at 5** — this is
+additional provider-pool capacity, not a profile change. A Design Council convened on four
+options (grow the pool; loosen the ASN cap for repair specifically; redefine "repair
+completes" to "correctly detects and blocks"; a formally-uncounted standby) ruled out
+loosening the cap cleanly: at demo scale two colluding ASNs currently hold 2 shards against
+a 3-shard (`DataShards`) AONT-RS disclosure threshold — *below* it — while at LTS scale two
+colluding ASNs already hold 22 against a 16-shard threshold (an existing, separately-flagged
+finding). Loosening the cap for repair-replacement would close demo's currently-safer margin
+toward LTS's already-thin one, at the single moment a shard's placement is hardest to audit
+afterward. Growing the provider pool was adopted instead — see ADR-075 for the full
+derivation, the options considered, and the Design Council's reasoning in full.
+
+**This checklist item exists so it isn't missed again.** §7.1, §7.2, and §7.13 each checked
+a real constraint in isolation and each was individually correct — the gap was that none of
+them checked whether *placement*, not just *reconstruction*, has a resource it needs. Any
+future change to `ASNCapFraction`, `TotalShards`, or the provider-pool size should be
+re-checked against this section specifically, not just against §7.1's cap-arithmetic or
+§7.2's reconstruction math.
+
+**Verdict: ✅ Resolved — 6 providers for single-departure scenarios (including the
+five-desktop rig, now six-desktop, §6), 7 for two-concurrent-departure scenarios. Neither
+`internal/repair/assignment.go` nor any readiness/RS threshold changed.**
 
 ---
 
