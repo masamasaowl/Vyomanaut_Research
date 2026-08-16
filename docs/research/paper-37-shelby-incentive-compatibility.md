@@ -1,4 +1,4 @@
-## Paper 37 — Rationally Analyzing SHELBY: Proving Incentive Compatibility in a Decentralized Storage Network
+# Paper 37 — Rationally Analyzing SHELBY: Proving Incentive Compatibility in a Decentralized Storage Network
 
 **Authors:** Michael Crystal (Stanford University), Guy Goren (Aptos Labs), Scott Duke Kominers (Harvard University and a16z crypto)
 **Venue / Year:** arXiv:2510.11866 | October 2025
@@ -7,7 +7,7 @@
 
 ---
 
-### Problem Solved
+## Problem Solved
 
 Decentralized storage protocols consistently make claims of incentive compatibility but almost none prove them formally. Without proof, a system that distributes storage across many nodes may still fail to decentralize it in any meaningful sense, because self-interested providers have a dominant strategy to shirk. This paper provides the first formal game-theoretic proof that a deployed DSN protocol — SHELBY, from Aptos Labs and Jump Crypto — achieves full incentive compatibility under natural parameter conditions. The core mechanism: infrequent but perfectly verifiable on-chain audits of auditors discipline high-frequency cheap off-chain peer audits. For Vyomanaut, the paper's primary value is establishing a formal proof that the equilibrium Vyomanaut's economic design relies on actually exists, and providing the exact parameter conditions (Theorem 1) that ADR-024's escrow calibration must satisfy to be incentive-compatible.
 
