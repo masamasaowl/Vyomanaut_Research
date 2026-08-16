@@ -46,7 +46,7 @@
   - [Phase 16.2 — Simulation Mode](#phase-162--simulation-mode)
 - [Milestone 17 — Production Hardening](#milestone-17--demo-completion-rewritten-replaces-production-hardening)
 - [Milestone 18 — Launch Readiness](#milestone-18--demo-freeze--stash-polished)
-- [Desktop Setup for Demo](#the-five-desktop-rig--specification-wiring-and-expected-outcomes)
+- [Desktop Setup for Demo](#the-six-desktop-rig--specification-wiring-and-expected-outcomes)
 - [Stashing the Demo version](#stashing-the-demo-cleanly-and-the-github-question)
 - [Running the Demo version](#running-a-large-scale-demo-on-a-single-desktop)
 
@@ -455,7 +455,7 @@ VET:
 These are not new sessions in Milestones 11–12 — they're one-line retroactive additions to earlier, already-revised milestones, surfaced only because this pass wired everything together end-to-end:
 
 | Follow-up | Where it belongs | What to add |
-|---|---|---|
+| --- | --- | --- |
 | `ClusterSecretCache.IsLoaded() bool` | Milestones 7–8 revision, Phase 7.4 | Trivial accessor; Session 11.2.1 (readiness condition 7) and Session 12.1.1 (startup) both need it |
 | `GET /api/v1/provider/downtime` path + `getActiveDowntime` schema | `docs/api/openapi.yaml` (not a build_part2.md session) | Response shape already specified in Session 11.6.5: `{active, promised_return_at, penalty_fires_at}` |
 | `INSUFFICIENT_PROVIDER_CAPACITY` error code | `docs/api/openapi.yaml` | Used by Session 11.11.1; not yet in the OAS `Error` schema examples |
@@ -486,7 +486,7 @@ These are not new sessions in Milestones 11–12 — they're one-line retroactiv
 1. Create `internal/metrics/microservice.go`. Register every NFR-025 metric using `vyomanaut_{subsystem}_{name}_{unit}`, `{subsystem}` from the allow-list `{audit, scoring, repair, payment, cluster, db}` (A6). Names are a frozen contract:
 
    | Metric name | Type | Labels | Emitting site (informational) |
-   |---|---|---|---|
+   | --- | --- | --- | --- |
    | `vyomanaut_audit_challenges_issued_total` | Counter | — | audit |
    | `vyomanaut_audit_results_total` | Counter | `result`=PASS\|FAIL\|TIMEOUT | audit |
    | `vyomanaut_scoring_provider_score` | Histogram | — | scoring |
@@ -629,7 +629,7 @@ BUILD_AFFECTED:
 1. Create `internal/metrics/daemon.go`. Register (subsystems from the allow-list; names frozen):
 
    | Metric name | Type |
-   |---|---|
+   | --- | --- |
    | `vyomanaut_daemon_chunks_stored_total` | Counter |
    | `vyomanaut_daemon_audit_responses_sent_total` | Counter |
    | `vyomanaut_daemon_audit_response_latency_milliseconds` | Histogram |
@@ -685,7 +685,7 @@ VET:
 1. Create `deployments/grafana/alerts.yaml` with the four mandatory NFR-027 rules (names must match the frozen metric strings from OBS.1.1):
 
    | Alert | Condition | Severity |
-   |---|---|---|
+   | --- | --- | --- |
    | `RepairQueueDepthHigh` | `vyomanaut_repair_queue_depth > 1000` | warning |
    | `AuditTimeoutRateHigh` | `rate(vyomanaut_audit_results_total{result="TIMEOUT"}[1h]) / rate(vyomanaut_audit_results_total[1h]) > 0.05` | critical |
    | `ContentHashFailureDetected` | `increase(vyomanaut_daemon_content_hash_failures_total[7d]) > 0` | critical |
@@ -2679,45 +2679,53 @@ NO_PROD_PROFILE_IN_THE_RUN:
 
 ---
 
-#### Session 18.2.2 — Five-desktop run
+#### Session 18.2.2 — Six-desktop run
 
-**PRECONDITIONS** — 18.2.1 passed. The five-machine rig from §6 built and wired.
+**[Corrected, ADR-075]** Originally "Five-desktop run" — see the rig section's own header
+note for why the sixth machine (repair-replacement headroom) was added. `TotalShards`,
+`MinDistinctASNs`, `MinActiveProviders` are unchanged at 5.
 
-**TASK** — execute the rig procedure in §6 and record `docs/demo/run-five-desktop.md`.
+**PRECONDITIONS** — 18.2.1 passed. The six-machine rig from §6 built and wired.
+
+**TASK** — execute the rig procedure in §6 and record `docs/demo/run-six-desktop.md`.
 
 **VERIFY**
 
 ```bash
 OPERATOR_RUNBOOK_EXISTS:
-  $ test -f scripts/demo/run_five_desktop.md && echo PASS
+  $ test -f scripts/demo/run_six_desktop.md && echo PASS
   EXPECT: PASS
  
-FIVE_PHYSICAL_PROVIDERS_NOT_SIM:
-  $ grep -c -- "--sim-count" scripts/demo/run_five_desktop.md
+SIX_PHYSICAL_PROVIDERS_NOT_SIM:
+  $ grep -c -- "--sim-count" scripts/demo/run_six_desktop.md
   EXPECT: 0
-  $ grep -cE "DESK-0[1-5]" docs/demo/run-five-desktop.md
-  EXPECT: >= 5
+  $ grep -cE "DESK-0[1-6]" docs/demo/run-six-desktop.md
+  EXPECT: >= 6
  
 RETRIEVED_FILE_BYTE_IDENTICAL:
-  $ grep -cE "IDENTICAL|sha256 match" docs/demo/run-five-desktop.md
+  $ grep -cE "IDENTICAL|sha256 match" docs/demo/run-six-desktop.md
   EXPECT: >= 1
  
 DEPARTURE_AND_REPAIR_OBSERVED:
-  $ grep -cE "departure detected|DEPARTED" docs/demo/run-five-desktop.md
+  $ grep -cE "departure detected|DEPARTED" docs/demo/run-six-desktop.md
   EXPECT: >= 1
-  $ grep -cE "repair job.*complete|repair_jobs.*COMPLETED" docs/demo/run-five-desktop.md
+  $ grep -cE "repair job.*complete|repair_jobs.*COMPLETED" docs/demo/run-six-desktop.md
   EXPECT: >= 1
  
-RETRIEVAL_AFTER_LOSS_SUCCEEDED:             # RS(3,5) tolerates two losses — prove it
-  $ grep -cE "retrieve.*after.*(kill|departure).*IDENTICAL" docs/demo/run-five-desktop.md
+REPAIR_LANDED_ON_SPARE_NOT_AN_EXISTING_HOLDER:   # O-10, ADR-075 — the actual point of DESK-06
+  $ grep -cE "DESK-06.*(repair|replacement)|repaired shard.*DESK-06" docs/demo/run-six-desktop.md
+  EXPECT: >= 1
+ 
+RETRIEVAL_AFTER_LOSS_SUCCEEDED:             # RS(3,5) tolerates up to two losses; this run exercises one — see O-4/O-5
+  $ grep -cE "retrieve.*after.*(kill|departure).*IDENTICAL" docs/demo/run-six-desktop.md
   EXPECT: >= 1
  
 MACHINE_SPECS_AND_TOPOLOGY_RECORDED:
-  $ grep -cE "CPU|RAM|OS|switch|subnet" docs/demo/run-five-desktop.md
-  EXPECT: >= 5
+  $ grep -cE "CPU|RAM|OS|switch|subnet" docs/demo/run-six-desktop.md
+  EXPECT: >= 6
  
 NAT_TIER_USAGE_RECORDED:                    # first real-network exercise of the substituted stack
-  $ grep -cE "relay|direct|hole.?punch" docs/demo/run-five-desktop.md
+  $ grep -cE "relay|direct|hole.?punch" docs/demo/run-six-desktop.md
   EXPECT: >= 1
 ```
 
@@ -2848,7 +2856,7 @@ CLI_IS_REAL_NOT_A_STUB:                     # N-01, final guard
  
 DEMO_DOCS_COMPLETE:
   $ test -f docs/DEMO.md && test -f docs/demo/run-single-machine.md \
-      && test -f docs/demo/run-five-desktop.md && test -f docs/demo/STASH.md && echo PASS
+      && test -f docs/demo/run-six-desktop.md && test -f docs/demo/STASH.md && echo PASS
   EXPECT: PASS
  
 CONTAINER_IMAGE_RUNS_THE_DEMO:
@@ -2866,7 +2874,19 @@ TAG_AND_SIGNOFF:
 
 ---
 
-## The five-desktop rig — specification, wiring, and expected outcomes
+## The six-desktop rig — specification, wiring, and expected outcomes
+
+**[Corrected, ADR-075]** This was originally specified as a five-desktop rig, matching the
+demo profile's `TotalShards = MinDistinctASNs = MinActiveProviders = 5` directly. Live
+verification (F-16-6) found that repair-*replacement* provider selection has no eligible
+candidate at exactly 5 — `internal/repair/assignment.go`'s `SelectReplacementProvider`
+correctly excludes every current shard holder plus the departed provider, and at 5
+providers/5 ASNs that's everyone. A Design Council on the resulting ADR-075 ruled out
+loosening the ASN cap (it's confidentiality-load-bearing, not just durability) and adopted
+growing the provider pool instead: one spare machine, on its own ASN, absorbs one
+concurrently-departed provider's worth of replacement-selection. The readiness/RS
+thresholds themselves — `TotalShards`, `MinDistinctASNs`, `MinActiveProviders` — are
+**unchanged at 5**; DESK-06 is spare capacity, not a profile change.
 
 ### What this rig is for, and what it is not
 
@@ -2877,20 +2897,24 @@ network. This rig exists to exercise four things that only appear on real hardwa
 | What only real machines test | Why it matters |
 | --- | --- |
 | The **substituted transport** across real NICs | The demo's TLS-over-TCP stack and hand-rolled NAT tiers (ADR-063) have never crossed a physical link |
-| **Independent clocks** | Every signed request carries `request_ts_ms` and is validated against `profile.AuthRequestFreshnessWindow` (ADR-036). One process = one clock; five machines = five, with real drift |
+| **Independent clocks** | Every signed request carries `request_ts_ms` and is validated against `profile.AuthRequestFreshnessWindow` (ADR-036). One process = one clock; six machines = six, with real drift |
 | **Real process death** | Killing a goroutine is not killing a machine. Departure detection at `profile.DepartureThreshold` behaves differently when the TCP peer vanishes without a FIN |
-| **Independent disks** | Five real storage engines with real fsync latency, not five directories on one SSD |
+| **Independent disks** | Six real storage engines with real fsync latency, not six directories on one SSD |
 
-It is **not** a scale test. Five nodes at RS(3,5) is the demo profile, exactly. Scale is §8.
+It is **not** a scale test. RS(3,5) is the demo profile, exactly, and stays that way — the
+sixth provider is repair-replacement headroom (ADR-075, mvp.md §7.14), not a profile change;
+readiness still gates at 5. Scale is §8.
 
 ### Machine roles and specifications
 
-Six roles across five machines — the coordinator doubles as the operator console.
+DESK-00 (coordinator + operator console) plus six provider machines, DESK-01 through
+DESK-06 — seven physical machines in total. DESK-06 sits idle, vetted and ready, until
+repair needs somewhere to place a replacement shard (step 11).
 
 | ID | Role | Runs | Minimum spec | Notes |
 | --- | --- | --- | --- | --- |
 | **DESK-00** | Coordinator + operator | Postgres 16 (Docker), `cmd/microservice --mode=demo`, `cmd/client` | 4-core, 8 GB RAM, SSD | Needs the most RAM — Postgres plus the microservice. Static IP. |
-| **DESK-01…05** | Providers | `cmd/provider --mode=demo` | **2-core, 4 GB RAM, 20 GB free disk** | One real daemon each, no `--sim-count` |
+| **DESK-01…06** | Providers | `cmd/provider --mode=demo` | **2-core, 4 GB RAM, 20 GB free disk** | One real daemon each, no `--sim-count`. DESK-06 is repair-replacement headroom (ADR-075) — vetted and ACTIVE like the other five, but never holds a shard of the demo file unless repair calls on it |
 
 **Provider RAM arithmetic, from NFR-045** — DHT record cache is 200 bytes per chunk, one chunk per
 256 KB:
@@ -2926,14 +2950,15 @@ side effect. Record which engine each machine used.
                         │  └ cmd/client          │
                         └───────────┬────────────┘
                                     │
-                    ┌───────────────┴───────────────┐
-                    │   Unmanaged gigabit switch    │
-                    │   (isolated — no uplink)      │
-                    └─┬────┬────┬────┬────┬─────────┘
-                      │    │    │    │    │
-                   .11  .12  .13  .14  .15
-                 DESK-01 …………………………… DESK-05
+                    ┌───────────────┴────────────────────┐
+                    │   Unmanaged gigabit switch          │
+                    │   (isolated — no uplink)            │
+                    └─┬────┬────┬────┬────┬────┬──────────┘
+                      │    │    │    │    │    │
+                   .11  .12  .13  .14  .15  .16
+                 DESK-01 ……………………………………… DESK-06
                  cmd/provider --mode=demo
+                 (DESK-06: repair-replacement headroom, ADR-075 — otherwise identical)
 ```
 
 **Wiring rules, and why each one is there:**
@@ -2945,7 +2970,7 @@ side effect. Record which engine each machine used.
    run repeatable.
 3. **Disable Wi-Fi on every machine.** A dual-homed machine will route unpredictably and you will
    see intermittent failures that are not the software's.
-4. **Synchronise clocks before the run**, then let them drift. Point all six at DESK-00 running
+4. **Synchronise clocks before the run**, then let them drift. Point all seven at DESK-00 running
    `chrony`/`w32time`. Signed requests are validated against `profile.AuthRequestFreshnessWindow`
    (ADR-036), so an unsynchronised machine fails authentication in a way that looks like a signature
    bug. Sync once at the start; do **not** keep them locked — natural drift is part of the test.
@@ -2963,15 +2988,15 @@ side effect. Record which engine each machine used.
 | --- | --- | --- | --- |
 | 1 | DESK-00 | `docker compose up -d postgres`; apply `001_initial_schema_demo.sql` | `\dx` shows `btree_gist` |
 | 2 | DESK-00 | Start microservice with `VYOMANAUT_CLUSTER_MASTER_SEED` set | `/readyz` responds; `mode: "demo"` |
-| 3 | DESK-01…05 | `cmd/provider --mode=demo --microservice-url=http://192.168.50.10:8080 --declared-storage-gb=1` | Five registrations; five distinct Peer IDs |
-| 4 | DESK-00 | Poll `/readyz` | `active_vetted_providers 5/5`, `distinct_asns 5/5`, `microservice_quorum 1/1`, `relay_nodes_deployed 0/0`. **~10–12 min** — vetting must complete |
+| 3 | DESK-01…06 | `cmd/provider --mode=demo --microservice-url=http://192.168.50.10:8080 --declared-storage-gb=1` | Six registrations; six distinct Peer IDs |
+| 4 | DESK-00 | Poll `/readyz` | `active_vetted_providers 6/5`, `distinct_asns 6/5`, `microservice_quorum 1/1`, `relay_nodes_deployed 0/0`. Current values exceed the required minimum by design — DESK-06 is repair-replacement headroom, ADR-075; the gate itself is still `≥5`. **~10–12 min** — vetting must complete |
 | 5 | DESK-00 | `client register` | Mnemonic shown once |
 | 6 | DESK-00 | `client deposit --amount-paise=1000000` | Balance ₹10,000.00 immediately (`MockProvider` credits synchronously) |
-| 7 | DESK-00 | `client upload demo.bin` (1 MB) | `file_id` returned; **5 shards on 5 distinct machines** |
+| 7 | DESK-00 | `client upload demo.bin` (1 MB) | `file_id` returned; **5 shards on 5 of the 6 machines** — `TotalShards` is still 5; DESK-06 receives nothing at upload time |
 | 8 | DESK-00 | `client ls` | One file, `AVAILABLE` |
 | 9 | DESK-00 | `client retrieve <file_id> -o out.bin`; `cmp` | **Byte-identical** |
 | 10 | **DESK-03** | **Pull the power cable.** Not `Ctrl-C` — a hard kill, no FIN | — |
-| 11 | DESK-00 | Watch `repair_jobs` | Departure detected within `DepartureThreshold` (**10 min, demo**); repair job created and completed |
+| 11 | DESK-00 | Watch `repair_jobs` | Departure detected within `DepartureThreshold` (**10 min, demo**); repair job created and completed — **on DESK-06** (the only machine that isn't already excluded as a current holder or the departed provider; see ADR-075. At 5 total machines this step could not succeed, ever, regardless of timing) |
 | 12 | DESK-00 | `client retrieve` again; `cmp` | **Byte-identical with one machine dead.** This is the durability claim, demonstrated rather than asserted |
 | 13 | DESK-03 | Power back on, restart provider | Rejoins; identity persists from the encrypted keystore |
 
@@ -2979,19 +3004,20 @@ side effect. Record which engine each machine used.
 
 | # | Outcome | What it proves | If it fails |
 | --- | --- | --- | --- |
-| **O-1** | Five independent daemons register with five distinct Peer IDs and five synthetic ASNs | The demo is a real five-node network, not one process pretending | Identity derivation or ASN assignment is machine-dependent — a real bug |
+| **O-1** | Six independent daemons register with six distinct Peer IDs and six synthetic ASNs | The demo is a real six-node network, not one process pretending | Identity derivation or ASN assignment is machine-dependent — a real bug |
 | **O-2** | Readiness gate satisfied in **~10–12 min** | Vetting timing (MVP §7.3) holds on real hardware | Vetting is faster in-process than across a network; the demo timeline needs revising |
-| **O-3** | A file uploaded on one machine retrieves **byte-identically** on the same machine, with shards on five others | **The project works.** This is the single sentence the demo exists to earn | Stop and diagnose. Nothing else matters |
+| **O-3** | A file uploaded on one machine retrieves **byte-identically** on the same machine, with shards on 5 of the 6 others | **The project works.** This is the single sentence the demo exists to earn | Stop and diagnose. Nothing else matters |
 | **O-4** | Retrieval still byte-identical after a machine is **physically killed** | RS(3,5) durability is real, not arithmetic on a slide | Erasure decode or shard placement is wrong — the highest-severity possible finding |
-| **O-5** | Departure detected within `DepartureThreshold`; repair completes | Failure detection works without a graceful close | Departure detection depends on a clean TCP FIN — which real machines do not send |
+| **O-5** | Departure detected within `DepartureThreshold`; repair completes | Failure detection works without a graceful close, **and repair-replacement selection succeeds at all (ADR-075) — this outcome was structurally unreachable on the original five-machine rig, independent of timing** | Departure detection depends on a clean TCP FIN — which real machines do not send |
 | **O-6** | **No provider used the relay or hole-punch tier** | The reachability probe correctly identifies a directly-reachable peer | The probe has a bug. Free finding — this rig is the only place it surfaces before the LTS |
 | **O-7** | Clock drift over ~40 minutes does not break signed requests | `AuthRequestFreshnessWindow` (ADR-036) is wide enough for real hardware | The window is too tight for machines that are not sharing a clock |
 | **O-8** | DESK-03 rejoins with its **original identity** after a power cut | Encrypted keystore persistence survives an unclean shutdown | Identity persistence has an fsync gap |
 | **O-9** | Per-machine peak RSS recorded | First real datum for NFR-045's RAM model, and the input to §8's arithmetic | — |
+| **O-10** | **[Added, ADR-075]** DESK-06 — not DESK-01/02/04/05 (the existing shard holders) — receives the repaired shard | `SelectReplacementProvider`'s exclusion logic (current holders + departed provider) is correct on real hardware, not just in the simulated test suite | A shard holder received a *second* shard for this segment — the ASN-cap/exclusion check has a real bug, not just a demo-scale headroom gap |
 
-**Record every outcome in `docs/demo/run-five-desktop.md`, including failures.** A rig that produces
-only successes was not stressed. O-6 and O-7 in particular are things you will only learn here, and
-both feed directly into the LTS.
+**Record every outcome in `docs/demo/run-six-desktop.md`, including failures.** A rig that produces
+only successes was not stressed. O-6, O-7, and O-10 in particular are things you will only learn
+here, and all three feed directly into the LTS.
 
 ---
 
