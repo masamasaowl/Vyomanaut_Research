@@ -157,8 +157,8 @@ formula error and are fixed together.
 | DHT record expiry | 24 h | **4 min** | ~4 min |
 | Departure threshold | 72 h | **10 min** | ~10 min |
 | Promised downtime maximum | 72 h | **10 min** | — |
-| Vetting: consecutive passes required | 80 | **5** | ~10 min |
-| Vetting: minimum duration | 120 days | **5 min** | ~10 min |
+| Vetting: consecutive passes required | 80 | **5** | 5–9 min (§7.3 — duration-bound, not this) |
+| Vetting: minimum duration | 120 days | **5 min** | **5–9 min** (§7.3 — this is the actual binding constraint) |
 | Vetting escrow hold window | 60 days | **2 min** | ~2 min |
 | Post-vetting escrow hold window | 30 days | **1 min** | ~1 min |
 | Monthly release computation cycle | Monthly (23rd) | **Every 2 min** | ~2 min |
@@ -202,16 +202,19 @@ T+01:00  — Data owner registers; master secret derived (< 50 ms); mnemonic dis
 T+01:00  — Data owner uploads a test file (< 0.75 MB per segment; 5 shards placed on 5 of
            the 6 providers — TotalShards is still 5)
 T+03:00  — First audit cycle fires; all 6 providers respond; first PASS logged
-T+05:00  — Vetting minimum duration (5 min) reached
-T+10:00  — 5th consecutive audit PASS; all 6 providers transition VETTING → ACTIVE
-T+10:30  — Vetting GC instruction delivered; synthetic chunks deleted
-T+10:30  — Real data owner shard assignments begin
-T+12:00  — Escrow hold window (1 min post-vetting) elapses; release computation fires
-T+12:00  — Mock payment provider logs a successful "payout"
-T+20:00  — Simulate a provider departure (kill one daemon that holds a real shard)
-T+30:00  — Departure threshold (10 min) crossed; silent departure declared
-T+30:00  — Escrow seized; repair job queued; 4 remaining shards contacted; repair fires
-T+32:00  — Repair completes on the 6th (spare) provider; fragment count restored to 5;
+T+05:00  — Vetting minimum duration (5 min) reached — the earliest the transition CAN
+           fire (provable floor, §7.3); it does not fire exactly here
+T+05:30 to T+09:00 (a window, not a fixed point — §7.3's own derivation) — all 6 providers
+           transition VETTING → ACTIVE, whenever the next audit-dispatch tick after T+05:00
+           actually applies it
+ACTIVE+00:30  — Vetting GC instruction delivered; synthetic chunks deleted
+ACTIVE+00:30  — Real data owner shard assignments begin
+ACTIVE+02:00  — Escrow hold window (1 min post-vetting) elapses; release computation fires
+ACTIVE+02:00  — Mock payment provider logs a successful "payout"
+ACTIVE+10:00  — Simulate a provider departure (kill one daemon that holds a real shard)
+ACTIVE+20:00  — Departure threshold (10 min) crossed; silent departure declared
+ACTIVE+20:00  — Escrow seized; repair job queued; 4 remaining shards contacted; repair fires
+ACTIVE+22:00  — Repair completes on the 6th (spare) provider; fragment count restored to 5;
            file still retrievable — this step could not succeed with only 5 providers
            total (§7.14/ADR-075); the 6th exists specifically to make it possible
 ```
@@ -675,15 +678,45 @@ see §7.14 (ADR-075).**
 
 ### 7.3 Vetting timing consistency
 
-- Polling interval: 2 minutes → one audit challenge per chunk per 2 minutes.
-- `VettingMinPasses=5` → 5 consecutive passes required → minimum ~10 minutes of polling.
-- `VettingMinDuration=5 minutes` → the 5-minute minimum is always satisfied before 5 passes
-  are achieved at 2-minute polling. It is never the binding constraint. This is intentional
-  — the pass count is the binding condition, matching the LTS design where 80 passes
-  at 24-hour polling = 80 days minimum, always before the 120-day minimum.
-- Conclusion: VETTING → ACTIVE transition happens at approximately T+10 minutes. ✓
+**[Corrected]** This section originally concluded "VETTING → ACTIVE transition happens at
+approximately T+10 minutes," modeling pass count as the binding constraint (`VettingMinPasses`
+× `PollingInterval` = 5 × 2min = 10 minutes). That was backwards for the demo profile.
+`cmd/microservice/vetting_chunk_loop.go` assigns each VETTING provider
+`vettingChunkPerCycleTarget=3` synthetic chunks — a constant independent of any
+`NetworkProfile` field — and `runAuditDispatchLoop` (`audit_dispatch.go`) challenges every
+active assignment on every tick, so a provider earns 3 passes per tick, not 1.
+`VettingMinPasses=5` is satisfied within the first two audit-dispatch ticks after
+`first_chunk_assignment_at`, in every phase alignment (2 × 3 = 6 ≥ 5) — well before
+`VettingMinDuration`'s 5-minute floor has necessarily elapsed. **Duration, not pass count,
+is the binding constraint** — confirmed directly against `internal/scoring/passes.go`'s own
+gate (`!time.Now().UTC().Before(firstChunkAssignmentAt.Time.Add(profile.VettingMinDuration))`)
+and live-verified (`scripts/test/demo_timeline_test.go`'s
+`TestViabilityActiveTransitionAtTenMinutes`).
 
-**Verdict: ✅ Timing is consistent. VettingMinDuration is never violated.**
+The corrected timing is a window, not a point estimate, with two independent sources of
+variance, both traced to code rather than estimated:
+
+- `first_chunk_assignment_at` is set by `runVettingChunkGenerationLoop`
+  (`vetting_chunk_loop.go`), a **global** 30-second ticker — not per-provider, not
+  synchronized to any individual provider's own VETTING-entry moment — so it lands anywhere
+  from ~0 to ~30s after a provider actually enters VETTING, depending on tick phase.
+- The transition itself only fires from inside `IncrementConsecutivePasses`, called while
+  processing an audit PASS — so even once the duration floor is crossed, nothing applies
+  that fact until `runAuditDispatchLoop`'s next tick (a **global** `PollingInterval` = 2 min
+  ticker) notices it, which can be almost a full `PollingInterval` later.
+
+**Conclusion (corrected):** VETTING → ACTIVE transition happens no earlier than
+`VettingMinDuration` itself (5 minutes — provable; it cannot fire before this regardless of
+tick alignment) and no later than approximately `VettingMinDuration` + 30s (generation-tick
+alignment) + `PollingInterval` (audit-dispatch tick alignment) + real processing/
+provider-stagger overhead this document has no field for ≈ 9 minutes in practice. This is
+not a single point estimate — a floor that's provable from the code, and a ceiling that's
+empirically bounded (`TestViabilityActiveTransitionAtTenMinutes` encodes this exact window,
+with its own derivation and citations).
+
+**Verdict: ✅ Timing is consistent once modeled correctly. `VettingMinDuration` is never
+violated — it's the binding constraint, not pass count, which was this section's original
+error.**
 
 ### 7.4 DHT republication buffer
 
@@ -713,11 +746,17 @@ failing while the long window still shows prior passes). This is observable with
 ### 7.6 Escrow hold window vs audit period duration
 
 - Audit period: 2 minutes. Release hold window: 1 minute (post-vetting).
-- At ACTIVE transition (T+10 min), the first audit period is approximately 5 periods old
-  (5 × 2-minute periods = 10 minutes).
+- **[Corrected]** This previously read "At ACTIVE transition (T+10 min), the first audit
+  period is approximately 5 periods old (5 × 2-minute periods = 10 minutes)" — inherited
+  §7.3's now-corrected T+10min assumption. ACTIVE transition actually happens in a window
+  (5–9 min, §7.3), so the exact audit-period count at that moment varies (roughly 2–4 ticks,
+  not a fixed 5) and isn't worth pinning down precisely here — the conclusion below doesn't
+  depend on the exact count, only on at least one audit period with real earnings having
+  occurred by ACTIVE time, which holds throughout the corrected window.
 - The 1-minute hold window means earnings older than 1 minute are immediately releasable
   at the next release computation (fires every 2 minutes).
-- Result: the first payout fires approximately 2 minutes after ACTIVE transition. ✓
+- Result: the first payout fires approximately 2 minutes after ACTIVE transition (whenever,
+  within its own 5–9 min window, that transition actually happens). ✓
 - The dual-window trigger checks if the 6-minute score dropped 0.20 below the 20-minute
   score. With only ~5 audit data points, a single FAIL in a 6-minute window would drop the
   short score to 0.75 (3/4 passes), while the long window would still show ~0.80 (4/5 passes).
