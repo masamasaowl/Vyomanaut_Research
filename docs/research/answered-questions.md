@@ -203,6 +203,14 @@ Answer: Full daily audit scales to approximately 100,000 providers × 10,000 chu
 
 ## Economic Mechanism (Papers 29, 31, 33, 35, 37, 40, 41)
 
+**Q66-2** Does SHELBY Condition (i) hold at 1% sampling, and is the required slashing V/2,909 or 99×G?
+Answer: Neither figure was correctly derived, and both substituted into the wrong condition. SHELBY's `p_au`/`t_au` are audit-the-auditor quantities (SHELBY §2.4); Vyomanaut has no auditor layer, so Theorem 1 Conditions (i)–(ii) are vacuous here, not satisfied. `t_st`, the storage-side penalty Vyomanaut's escrow corresponds to, appears nowhere in Theorem 1. Re-derived from the provider's own deviation payoff: `S ≥ C/c − A`, evaluated at `c = 2,867` as `S ≥ C/2,867 − A`. Against ADR-024's 30-day escrow this is slack by roughly six orders of magnitude; the binding constraint is Condition (iii), `r_st ≥ c_st`. `99×` and the prior `V/2,909` reconcile as the same result at two normalisations (per-chunk vs per-holding), not a factor-of-1,000 disagreement. → [ADR-060 Addendum A](../decisions/ADR-060-addendum-a-shelby-substitution-corrected.md), [Paper 37](paper-37-shelby-incentive-compatibility.md) (revised in place).
+
+**Q68-3** How does a reconstructed shard get valid authenticators when the data owner is offline?
+Answer: The premise was false. A tag linear in block content over the code's field is *transported* through repair, not computed — no party needs to hold the key and the reconstructed content simultaneously. The obstruction was ADR-059's authenticator field (`Z_p`) not matching the code's field (`GF(2^8)`); since `8 | 128`, `GF(2^8)` embeds as a subfield of `GF(2^128)`, and moving the authenticator field there restores the homomorphism at unchanged tag size. The key holder (microservice) supplies a correction term `Δ` from key material and metadata alone, with no chunk data ever reaching it. → [ADR-078](../decisions/ADR-078-authenticator-transport-through-repair.md). F-69 (confidentiality of the repair path itself) is untouched by this — only auditability closes.
+
+
+
 **Q39-1 (method resolved; value gate set)** — Combined Hitchhiker + lazy repair adoption decision
 Answer: The analytical framework is established. Combined BWavg = Giroire BWavg × (1 − Hitchhiker_reduction) ≈ 39 × 0.65 ≈ 25 Kbps/peer. The decision gate for Hitchhiker adoption in V3 is: if observed V2 BWavg exceeds 60 Kbps/peer (54% above Giroire prediction) over the first 6 months, implement Hitchhiker. If observed ≤ 60 Kbps/peer, implementation complexity is not justified. → [ADR-026](../decisions/ADR-026-repair-bw-optimisation.md)
 
