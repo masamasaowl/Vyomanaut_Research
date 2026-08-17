@@ -193,17 +193,37 @@ question remains · **[DEBT]** exists to retire a §2 assumption · **[NEW]** fi
 
 ---
 
-## §4 — Band 0: drafting queue, no searching required
+## §4 — Band 0: drafting queue, no searching required — ✅ **COMPLETE**
 
-| Work | Topic | Why it needs no search |
-| --- | --- | --- |
-| **Chen & Curtmola, "Remote data integrity checking with server-side repair"** (J. Computer Security 25(6), 2017) | R-47 | Found and verified. Its premise *is* Q68-3: removing the owner from the repair loop |
-| **Chen, Ammula & Curtmola, "Towards server-side repair for erasure coding-based distributed storage systems"** (CODASPY 2015) | R-47 | The erasure-coded case rather than network-coded — closer to RS(16,56) |
-| **Chen, Curtmola, Ateniese & Burns** (CCSW 2010) | R-47 | Origin of the RDC-on-repair line; read for threat model |
-| **Paper 37 (SHELBY) — re-derivation, not a draft** | Q66-2 | Already in the corpus. ADR-060's re-derivation gets `S ≥ V/2,909` against the old `99×`. One afternoon; highest value-per-hour item in this document |
+All four items executed August 2026, under the **LTS Literature Documentation Standard v1**
+(`docs/references/lts-literature-standard.md`), which was written for this band and applies from
+Paper 73 onward.
 
-Papers 62 (LESS) and 64 (Hitchhiker) are **removed from the queue** — Council 2 closed the
+| Work | Topic | Status | Outcome |
+| --- | --- | --- | --- |
+| **Chen & Curtmola, "Remote data integrity checking with server-side repair"** (J. Computer Security 25(6), 2017) | R-47 | ✅ **Paper 73** | Not the expected outcome. Its §2.1 empirically demolishes the network-delay possession model, which is the shape of ADR-014 Defence 2. → **ADR-014 Addendum A**, F-LTS-12, F-LTS-13 |
+| **Chen, Ammula & Curtmola, "Towards server-side repair for erasure coding-based distributed storage systems"** (CODASPY 2015) | R-47 | ✅ **Paper 74** | **The band's result.** Its scaled-tag property falsifies Q68-3's premise. → **ADR-078**, F-LTS-14, F-LTS-15. **Q68-3 closes** |
+| **Chen, Curtmola, Ateniese & Burns** (CCSW 2010) | R-47 | ✅ **Paper 75** | Threat model as expected, plus two unlooked-for items: the proof-of-correct-encoding construction (supports ADR-078 §5) and the missing citation for ADR-072 Addendum A. Network coding closed on the authors' own criterion |
+| **Paper 37 (SHELBY) — re-derivation, not a draft** | Q66-2 | ✅ **revised in place** | The `V/2,909` figure was wrong three ways — wrong Theorem 1 condition, wrong gain quantity, and a grid artefact. Correct answer `S ≥ C/c − A = C/2,867 − A`. **ADR-060 Addendum A**. **Q66-2 closes** |
+
+Papers 62 (LESS) and 64 (Hitchhiker) were **removed from the queue** — Council 2 closed the
 code-family question (§5, Domain C).
+
+### What this band changed
+
+- **R-47 discharges as the gating read for the Proof of Storage milestone** (`build_part4.md`).
+  Q68-3 did not need a search; it needed the premise checked. The trilemma was an artefact of an
+  authenticator field chosen for codec convenience.
+- **`99×` and `V/2,909` reconcile** as the same result at two normalisations. Two derivations from
+  one paper differing by 1,000× should have triggered a re-read of the source before either was
+  published. That is now §1's research-first trigger, and it is the canonical case behind the LTS
+  Literature Standard's requirement that a `[DERIVED]` claim show its working inline.
+- **A new gap opened where none was suspected.** ADR-060's detection table is a bound on
+  *possession*, not on *ability to answer*, and in an erasure-coded system the prover can fetch what
+  it deleted. The bound holds only while the response deadline binds — and the deadline is specified
+  against a wire format ADR-059 removed. F-LTS-12, F-LTS-13.
+- **Three of four items produced an ADR. All four produced a correction to an existing document.**
+  That ratio is the argument for §1's rule.
 
 ---
 
@@ -211,7 +231,11 @@ code-family question (§5, Domain C).
 
 ### Domain P — Confidentiality-preserving repair `[GAP]` — **first priority**
 
-**ADRs:** 004, 019, 020, 022, 026, 055 · **Finding:** F-69 (structural result)
+**ADRs:** 004, 019, 020, 022, 026, 055, **078** · **Finding:** F-69 (structural result), **F-LTS-15**
+
+> **Band 0 note.** ADR-078 closes the *auditability* half of the repair problem and does **nothing**
+> for F-69. The elected repairer still obtains a decodable package. This domain's priority is
+> unchanged.
 
 Council 2 established the result this domain now serves. There are exactly three candidate
 repairers, and each is disqualified by a property of the current code family: a **provider** must
@@ -220,7 +244,7 @@ model, and carries all repair egress on one host; the **owner** is offline by de
 assignment of the repair role under RS + AONT-RS leaves every party blind.** F-69 is not a defect to
 be relocated — it is a proof that the code family changes or a party is explicitly trusted.
 
-**Must-read:**
+**Must-read**
 
 | Work | Why |
 | --- | --- |
@@ -234,6 +258,29 @@ be relocated — it is a proof that the code family changes or a party is explic
 | --- | --- | --- | --- | --- |
 | **R-27** | Secrecy capacity of regenerating codes | States secrecy as a function of `(n, k, d)` with the storage cost of the guarantee | Assumes a trusted dealer present at repair | Eavesdropper-**on-links** models. Our adversary is the **helper node** — a different, less-studied case |
 | **R-28** | Repair without any party assembling `k` | A helper contributes a function of its shard; no single party holds a decodable set | Requires the repairer to hold `k` in any intermediate step | MSR bandwidth-optimality results. They minimise bytes moved, not who can decode |
+
+> **Lead found in Band 0 — start here before searching outward.** Paper 74 (RDC-EC) §4.2 contains a
+> candidate with exactly R-28's shape, and the corpus already holds it. Its Aggregation Server sums
+> masked partial segments `Z_j·b_j` and `x_j·b_j`; the unmasker recovers **one** segment. If the
+> aggregator is *not* given `(Z_j, x_j)` it holds two linear combinations of 16 shards — below
+> `k = 16` — and the unmasker holds one shard, also below `k`. **No party assembles `k`.**
+>
+> **Three reasons not to treat this as a result.** (1) RDC-EC explicitly **trusts** its Aggregation
+> Server, restoring its code component and assuming honesty for the repair epoch, and hands it the
+> scalars precisely so it can localise a faulty contributor — so the paper proves nothing about
+> blindness. Theorem 4.1 is about hiding the dispersal matrix `M`, not the segments. (2) The
+> aggregator receives contributions *separately*, so it can form the sector-wise ratio `Z_j/x_j` and,
+> if it is itself a helper, solve for `x_j` outright. The construction needs **pre-aggregated**
+> arrival — a chained or tree topology with its own liveness cost under ADR-021's NAT constraints.
+> (3) Paper 16 (AONT-RS) must be re-read against a *linear-combination* adversary — one holding two
+> combinations of 16 shards, not two shards. That re-read is already this domain's stated must-read;
+> it is now specific. → **Q74-1**.
+>
+> **A general result worth carrying into every candidate in this domain.** An aggregator that can
+> *attribute* a bad contribution to a specific helper can also *invert* that helper's contribution:
+> localisation needs per-contribution checking, checking needs the per-contribution scalar, and the
+> scalar inverts the contribution. **Accountability and blindness at the aggregator are in tension,
+> and any R-28 candidate must say which it gives up.** F-LTS-15.
 | **R-29** | Threshold cryptography applied to repair | Reconstruction distributed so no participant sees plaintext, at stated round/latency cost | Interactive protocols needing all `n` online | MPC generally — the cost is orders out for a 256 KB shard |
 
 ```
@@ -290,9 +337,28 @@ R-31  ACM  Title:(placement) AND Abstract:(correlated AND (diversity OR "failure
 
 ---
 
-### Domain A — Audit continuity across repair `[OPEN-Q]`
+### Domain A — Audit continuity across repair `[OPEN-Q]` — **R-47 discharged, Band 0**
 
-**ADRs:** 002, 004, 014, 015, 017, 030, 059, 060 · **Questions:** Q68-3, Q69-1
+**ADRs:** 002, 004, 014, 015, 017, 030, 059, 060, **078** · **Questions:** ~~Q68-3~~ **closed**, Q69-1, **Q75-1**, **Q78-1**
+
+> **Updated August 2026 — Band 0.** **R-47 is closed by Paper 74 and no longer gates the Proof of
+> Storage milestone.** Q68-3's premise — that tagging reconstructed content requires one party to
+> hold key and content together — is false for any tag linear in the content over the code's field.
+> ADR-078 changes ADR-059's authenticator field from `Z_p` to `GF(2^128)` (legitimate because
+> `8 | 128`, so `GF(2^8)` embeds as a subfield) and the tag transports through the repair map with
+> the data. Helpers hold bytes and no keys; the microservice holds keys and no bytes.
+>
+> **What replaces R-47 in this domain.** Two smaller items, neither gating: **Q78-1**, the proof
+> obligation — Shacham & Waters Theorem 4.2 must be re-checked over a characteristic-2 field, which
+> is a one-session read of Paper 68 §4, not a search. And **Q75-1**, where per-contribution
+> verification runs (repairer: cheap, unprovable; microservice: 65,536 B/chunk, accountable).
+>
+> **R-48 is unaffected and is now this domain's top item.**
+>
+> **A finding this domain did not previously own:** ADR-076's elected-repairer protocol has no
+> helper-verification step, so Paper 75 §3.1's **pollution attack** applies directly — a single
+> malicious helper writes a permanently and undetectably wrong shard. ADR-078 §5 closes it as a side
+> effect of the same homomorphism. If ADR-078 is rejected, this gap needs its own answer.
 
 Council 1 declined to rule on Q68-3 for cause: ADR-059 rejected microservice-side tagging because it
 *"contradicts ADR-021's pure-P2P repair model,"* and F-LTS-08 showed pure-P2P repair does not exist.
@@ -310,18 +376,22 @@ rejected on inherited grounds.**
 
 | # | Topic | Accept if | Reject if | Adjacent, not this |
 | --- | --- | --- | --- | --- |
-| **R-47** ⬆ | **Tag generation for reconstructed shards without the owner** | A non-key-holder produces authenticators a verifier accepts, **or** the trilemma's cost is proved explicitly. Must name who holds what during repair | Requires the owner online at repair — the assumption ADR-004 removes | Dynamic-update PDP (Paper 69): verifies an update *claimed by the key holder*. The gap is authority, not verification |
+| ~~**R-47**~~ ✅ | ~~Tag generation for reconstructed shards without the owner~~ | **Closed by Paper 74.** The accept criterion is met in a form neither branch anticipated: no non-key-holder *generates* an authenticator, because the authenticator is *transported* rather than computed. Nobody exercises authority over it → ADR-078 | — | — |
 | **R-48** | Detection composition across a 56-prover stripe | Gives `P(>n−k provers simultaneously corrupt-and-undetected)` with a stated independence assumption | Per-prover bounds restated — we hold three papers' worth | Multi-replica PDP (MR-PDP): replicas are identical, our 56 shards are distinct. Wrong composition |
 
 ```
-R-47  IEEE ("Document Title":repair) AND ("Abstract":"remote data checking" OR "provable data possession")
-           AND ("Abstract":"server-side" OR delegat* OR "without the client")
-      chain forward-cite Chen & Curtmola 2017, filter 2017+
+R-47  CLOSED — no search performed or needed. Papers 73, 74, 75 (Band 0)
 R-48  IEEE ("Abstract":"proofs of retrievability") AND ("Abstract":"multiple servers" OR dispersal) AND ("Abstract":detection)
 ```
 
-**Substitution tests.** R-47: the scheme must work when the repairing party holds `k=16` and the
-verifier holds `(k_prf, α₁…α₆₄)` for a file whose bytes it has never seen. R-48: substitute `n=56`,
+**Substitution tests.** ~~R-47: the scheme must work when the repairing party holds `k=16` and the
+verifier holds `(k_prf, α₁…α₆₄)` for a file whose bytes it has never seen.~~ **Met, and the framing
+was too weak.** Under ADR-078 the repairing party holds `k = 16` shards and the verifier holds
+`(k_prf, α₁…α₆₄)` for bytes it has never seen — *and neither computes the new tag*, so the criterion
+is satisfied without either party being trusted with the other's material. The substitution that
+actually decided it was algebraic, not numeric: `8 | 128`, therefore `GF(2^8) ⊂ GF(2^128)`, therefore
+the RS scaling operation **is** `GF(2^128)` scalar multiplication by an embedded subfield element.
+Recorded because a purely numeric substitution test would have missed it. R-48: substitute `n=56`,
 `k=16`, tolerance 40, per-prover per-day miss probability `4.0 × 10⁻¹³` at `t=1%` (ADR-060's table);
 if the bound assumes independence, name the common-mode cases it excludes (shared daemon release,
 shared storage-engine bug).
@@ -848,9 +918,11 @@ CONFIDENTIALITY  ← moved ahead of Proof of Storage
    against a post-r0-gate repair frequency)
 
 PROOF OF STORAGE
-  R-47                   A   Band 0, no search       ← GATING
-  R-50                   G   price drand first       ← HARD DEPENDENCY
-  R-48                   A
+  R-47                   A   ✅ CLOSED (Papers 73–75) — was GATING, now discharged
+  R-50                   G   price drand first       ← HARD DEPENDENCY, now the only gate here
+  R-48                   A   ← promoted; Domain A's top item
+  Q78-1                  A   proof check: SW Thm 4.2 over char-2 (one session, Paper 68 §4 re-read)
+  Q75-1                  A   placement of per-contribution verification (design, not research)
 
 ASSUMPTION RETIREMENT  ← new, runs in parallel from here; each topic retires a live parameter
   R-12 → R-15            D   ...then R-65 → R-67   U   (D before U, or U derives from stale data)
@@ -893,9 +965,24 @@ across seven ADRs, and unlike Domain D it does not wait on a measurement campaig
 
 **Any formula or parameter imported from a paper carries its substitution inline.** Four instances
 now: F-43 (`40^16` vs `40²`), NFR-044 (an interpolation formula wrong at its own anchor), Q66-2
-(`99×` vs `S ≥ V/2,909` — a factor of ~288,000 in the opposite direction, from a paper already
-held), and the §2 audit's fourteen "starting values," which are the same failure with no paper at
-all behind them.
+(`99×` vs `S ≥ V/2,909`), and the §2 audit's fourteen "starting values," which are the same failure
+with no paper at all behind them.
+
+> **Q66-2 resolved, August 2026 — and the rule needs one more clause.** Neither figure was right.
+> `99×` is `(1 − q)/q` at the single-chunk deviation; `V/2,909` is the same statement normalised to
+> the whole holding, with a 1.5% grid artefact. They differ by the holding size, not by 288,000×,
+> and both substitute into SHELBY **Condition (i)** — a condition on *auditors*, which Vyomanaut does
+> not have. The correct condition is `S ≥ C/c − A = C/2,867 − A` and it is slack by six orders of
+> magnitude. → ADR-060 Addendum A, Paper 37 (revised).
+>
+> **The added clause: a substitution must also carry what it is a substitution *into*.** Showing the
+> arithmetic would not have caught this error — the arithmetic was nearly right. What would have
+> caught it is naming the condition and its parameter's definition from the source's own table. The
+> LTS Literature Standard's `[P §x]` provenance tag exists for exactly this.
+>
+> **And: two derivations from one held paper disagreeing by three orders of magnitude is itself a
+> trigger.** Neither party re-read the source. That is now a §1 trigger row in spirit; treat a
+> large unexplained disagreement between two internal derivations as a research-first signal.
 
 §3.3's **substitution test** field moves that rule upstream from ADR-drafting to shortlisting, which
 is the cheapest place it can live. **§2's assumption-debt audit is what happens when it is absent.**
@@ -906,10 +993,10 @@ is the cheapest place it can live. **§2's assumption-debt audit is what happens
 
 | Band | Domain | Topics |
 | --- | --- | --- |
-| 0 | Drafting queue | Chen & Curtmola ×3, Q66-2 |
+| 0 | Drafting queue ✅ **complete** | Chen & Curtmola ×3 (Papers 73–75), Q66-2 (Paper 37 revised) |
 | 1 | **P** Confidentiality-preserving repair | R-27, R-28, R-29 |
 | 1 | **K** Threshold decoupling | R-17, R-30, R-31 |
-| 1 | **A** Audit continuity | R-47, R-48 |
+| 1 | **A** Audit continuity | ~~R-47~~ ✅, **R-48** (now top), Q75-1, Q78-1 |
 | 1 | **G** Transparency logs, randomness | R-23, R-24, R-25, R-50 |
 | 2 | **U** Failure detection `[NEW]` | R-65, R-66, R-67 |
 | 2 | **V** Incentive thresholds `[NEW]` | R-68, R-69, R-70 |
@@ -928,8 +1015,8 @@ is the cheapest place it can live. **§2's assumption-debt audit is what happens
 | 6 | **T** Crypto agility | R-61, R-62 |
 | — | **F** Hardware envelope | R-22 (literature half only) |
 
-**Closed:** R-01, R-02, R-03 (→ R-47), R-04, R-05*, R-06, R-07, R-08, R-09, R-10, R-20, R-21, R-49,
-R-60.*R-05 (batch verification across owners) is retained in Domain A's search notes but not
+**Closed:** R-01, R-02, R-03 (→ R-47), R-04, R-05*, R-06, R-07, R-08, R-09, R-10, R-20, R-21,
+**R-47 (Band 0 — Papers 73, 74, 75)**, R-49, R-60.*R-05 (batch verification across owners) is retained in Domain A's search notes but not
 scheduled — ADR-060's row-count work removed its urgency.
 
 **Active: 57 topics across 19 domains.** Eight are new since v2 and exist to retire assumptions
