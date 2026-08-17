@@ -497,3 +497,318 @@ SIGNOFF:
 ```
 
 ---
+
+## LTS — Production Hardening
+
+**Provenance note (M17 Session 17.3.1).** This section is the content that used to live under
+"Milestone 17 — Production Hardening" before that milestone number was repurposed for Demo
+Completion (`build_part3.md`, commit `9c5262d "Restructure M17 entirely"`). That rewrite deleted the
+old body without first copying it here — the gap Session 17.3.1 exists to close (N-03) — so this
+text was recovered from `docs/system-design/build_part3.md` at revision `9c5262d^` via `git log`/
+`git show`, not reconstructed from memory or re-derived. It is reproduced verbatim below, including
+its internal `Phase 17.1`/`Session 17.1.1`-style numbering, which is now historical — a hangover from
+when this content was Milestone 17 — and does **not** denote a current LTS milestone number.
+Deliberately no new number is assigned here (per instruction 8): numbering for this milestone
+follows the demo run outcomes, same as every other `(next)` row in this document's milestone map.
+
+**Deliverable:** secrets-manager adapters for Vault/AWS SSM/GCP Secret Manager (IC §8), a real
+three-replica gossip cluster with ADR-048's authenticated inter-replica sync, `cmd/relay`, and real
+client-driven routing — replacing every demo-mode stub the same category of component uses today.
+
+**Reference:** IC §4.3 (circuit relay), IC §8 (secrets manager — path/rotation contract),
+architecture.md §13 (P2P transfer layer — relay tiers, node placement), §18 (coordination
+microservice — gossip, quorum, routing, background throttling), §24 (deployment topology), §27.5
+(network/DHT scaling); ADR-048 (gossip authentication)
+
+---
+
+**Status:** *(corrected per A-12)* All deployment-topology detail this milestone needs is
+present in `architecture.md` §13, §18, §24, §27.5 — nothing here is blocked on missing
+documentation. The one genuine gap found during this review was the absence of an
+authentication contract for inter-replica gossip sync (A-9); it is resolved by
+**ADR-048** (approved, drafted in full alongside this document) and is folded into Session
+17.2.1 below as a marked addendum, in the same base-task-plus-addendum shape Milestones
+13/14 already use for ADR-036.
+
+**Reference:** IC §4.3 (circuit relay), IC §8 (secrets manager — path/rotation contract),
+architecture.md §13 (P2P transfer layer — relay tiers, node placement), §18 (coordination
+microservice — gossip, quorum, routing, background throttling), §24 (deployment topology),
+§27.5 (network/DHT scaling); ADR-048 (gossip authentication — new)
+
+---
+
+### Phase 17.1 — Secrets Manager Adapters
+
+**Reference:** IC §8, `mvp.md` §6.2 (IR-03)
+
+#### Session 17.1.1 — Implement secrets manager adapters
+
+**TASK:** Implement `SecretsManagerClient` (IC §8 interface — `GetSecret(ctx, path)
+([]byte, error)`) for three backends:
+
+- HashiCorp Vault (`internal/secrets/vault.go`)
+- AWS SSM Parameter Store (`internal/secrets/aws_ssm.go`)
+- GCP Secret Manager (`internal/secrets/gcp_secret.go`)
+Each adapter reads the secret at path `/vyomanaut/audit-secret/v{N}` (IC §8 path
+convention). Each must handle the 24-hour rotation overlap window: read both `v{N}` and
+`v{N+1}` when both exist (IC §8 rotation contract). Selection among adapters is via
+`VYOMANAUT_SECRETS_BACKEND`. **Forward-compatibility note (A-10/A-11):** these same three
+adapters, unchanged, are what Session 17.2.1 below reads the new
+`/vyomanaut/cluster-replica-pubkeys/v{N}` path through — no fourth adapter, no interface
+change; write the path handling generically (accept any `/vyomanaut/{topic}/v{N}` shape)
+rather than hardcoding `audit-secret` into the adapter logic itself, so the new path Session
+17.2.1 needs costs nothing extra here.
+
+**FILES** — `internal/secrets/vault.go`, `aws_ssm.go`, `gcp_secret.go`, `secrets_test.go`
+
+**VERIFY**
+
+```bash
+COMPILE:
+  $ go build ./internal/secrets/
+  EXPECT: exit 0
+ 
+IMPORT_CONSTRAINTS:                    # A-3 — internal/secrets is a leaf, like crypto/erasure
+  $ grep -cE "Vyomanaut_V2/internal/(audit|scoring|repair|payment|storage|cluster|client)" internal/secrets/*.go
+  EXPECT: 0
+ 
+ALL_THREE_BACKENDS_IMPLEMENT_GETSECRET:
+  $ grep -cE "func.*GetSecret\(ctx" internal/secrets/vault.go internal/secrets/aws_ssm.go internal/secrets/gcp_secret.go
+  EXPECT: 3
+ 
+PATH_CONVENTION_NOT_HARDCODED_TO_AUDIT_SECRET:      # forward-compat for ADR-048's new path
+  $ grep -nE '"/vyomanaut/audit-secret' internal/secrets/vault.go internal/secrets/aws_ssm.go internal/secrets/gcp_secret.go
+  EXPECT: no matches inside GetSecret itself — the path is a caller-supplied argument, not a package-level constant
+ 
+ROTATION_OVERLAP_READS_BOTH_VERSIONS:
+  $ grep -cE "v\{N\}|vN|version.*\+.*1|N\+1" internal/secrets/vault.go
+  EXPECT: >= 1
+ 
+BACKEND_SELECTED_VIA_ENV_VAR:
+  $ grep -c "VYOMANAUT_SECRETS_BACKEND" internal/secrets/*.go
+  EXPECT: >= 1
+ 
+SENTINEL_ERRORS_PRESENT:
+  $ grep -cE "ErrSecretNotFound|ErrSecretManagerUnavailable|ErrSecretExpired" internal/secrets/*.go
+  EXPECT: >= 3
+ 
+UNIT_TESTS:
+  $ go test -v -run TestSecretsManager ./internal/secrets/
+  EXPECT: exit 0; tests include:
+    TestVaultGetSecretReturnsDecodedBytes
+    TestAWSSSMGetSecretReturnsDecodedBytes
+    TestGCPSecretManagerGetSecretReturnsDecodedBytes
+    TestRotationOverlapReadsBothVAndVPlusOne
+    TestBackendSelectionRespectsEnvVar
+    TestUnreachableManagerReturnsErrSecretManagerUnavailable
+ 
+VET:
+  $ go vet ./internal/secrets/
+  EXPECT: exit 0; zero output
+```
+
+---
+
+### Phase 17.2 — HA Microservice & Relay Nodes
+
+#### Session 17.2.1 — Implement gossip cluster (`internal/cluster`) *(base task unchanged; security addendum added — A-9/ADR-048)*
+
+**Reference:** ARCH §18; ADR-048 (new)
+
+**TASK — base (matches ARCH §18 as currently written):**
+
+Create `internal/cluster/gossip.go` implementing the three-replica gossip membership per
+`architecture.md` §18. The `GossipCluster` struct must expose:
+
+- `HealthyCount() int` — returns the count of peers with a last-seen timestamp within
+  `profile.GossipHealthyWindow` (ADR-048 §6 — a named profile field, not the bare `5
+  seconds` literal the original spec used).
+- `MemberAddresses() []url.URL` — returns the current membership list for client-driven
+  routing.
+- A `reconcile()` loop running at 1-second intervals: select one randomly-chosen peer,
+  exchange membership histories via `POST /internal/membership/sync` carrying a vector
+  clock.
+- Two pre-configured seed node addresses read from `VYOMANAUT_SEED_NODE_1` and
+  `VYOMANAUT_SEED_NODE_2`; these prevent partition on restart (architecture.md §18).
+Quorum check: `HealthyCount() >= 2` satisfies the (3,2,2) write quorum (architecture.md
+§18). A read or write that cannot reach 2 replicas must return `ErrQuorumUnavailable`.
+
+Add `internal/cluster/router.go` implementing `ResponsibleReplica(opType string) *url.URL`
+per the client-driven routing description in M12 Session 12.1.1.
+
+Add `internal/cluster/mock_cluster.go` (build tag `test`) providing `MockClusterMembership`
+that returns configurable healthy counts for unit testing without a live cluster.
+
+Wire into `cmd/microservice/main.go`: after guard rails pass, initialise `GossipCluster`,
+wait for 2-peer ack, then start the readiness evaluator.
+
+**⛔ SECURITY ADDENDUM — apply after ADR-048 accepted (A-9):** the base task above matches
+`architecture.md §18` as currently written, but §18 itself never specifies authentication
+for `POST /internal/membership/sync`, and `interface-contracts.md` §2's own rule treats
+this link as out of scope without an ADR — closed by ADR-048, now approved and drafted.
+Once accepted:
+
+1. **Replica identity at startup.** Each replica generates (or loads, if already present)
+   an Ed25519 key pair, persisted locally the same way `internal/p2p/identity.go` persists
+   a provider's identity (ADR-048 §2). Load the other two replicas' public keys from
+   `/vyomanaut/cluster-replica-pubkeys/v{N}` via the existing `SecretsManagerClient` (Session
+   17.1.1 — no new interface), cached on the same 5-minute TTL as the audit secret.
+2. **Extend `MembershipSyncRequest`/`-Response`** with `request_ts_ms`(8B) and
+   `replica_sig`(64B) — Ed25519 by the sender's own replica key over
+   `SHA-256("vyomanaut-gossip-sync-v1" ‖ replica_id ‖ vector_clock ‖ request_ts_ms)`
+   (ADR-048 §4). Sign **both** the outgoing request and the outgoing response — this is a
+   bidirectional exchange, and a forged response is exactly as dangerous as a forged
+   request (ADR-048 §4).
+3. **Handler ordering, before any vector-clock merge** (ADR-048 §5 — authz-before-mutation,
+   the same ordering pattern already enforced in `cmd/provider/handler_vetting_gc.go` for
+   ADR-036): (a) `replica_id` ∈ the cached two-key set → else discard silently; (b)
+   `|now − request_ts_ms| ≤ profile.AuthRequestFreshnessWindow` (reused from ADR-036, not a
+   new field) → else discard as stale; (c) `replica_sig` verifies → else discard. Only then
+   merge.
+4. Add the `MS ↔ MS` self-edge to `interface-contracts.md` §2's diagram and cross-reference
+   table (ADR-048 §1 / A-10) — this is a documentation PR, not a code change, but it is a
+   precondition IC §2 itself states before this session's code path is in scope at all.
+**FILES** — `internal/cluster/gossip.go`, `router.go`, `mock_cluster.go` (build tag `test`),
+`internal/cluster/identity.go` (new — addendum only), `gossip_test.go`
+
+**VERIFY**
+
+```bash
+COMPILE:
+  $ go build ./internal/cluster/
+  EXPECT: exit 0
+ 
+IMPORT_CONSTRAINTS:                    # A-3's proposed row for internal/cluster
+  $ grep -cE "Vyomanaut_V2/internal/(audit|scoring|repair|payment|storage)" internal/cluster/*.go
+  EXPECT: 0
+ 
+HEALTHYCOUNT_USES_NAMED_PROFILE_FIELD_NOT_LITERAL_5S:
+  $ grep -c "profile.GossipHealthyWindow" internal/cluster/gossip.go
+  EXPECT: >= 1
+  $ grep -cE '5 \* time\.Second\b' internal/cluster/gossip.go
+  EXPECT: 0
+ 
+RECONCILE_1S_INTERVAL_AND_SEED_NODES:
+  $ grep -c "time.NewTicker(1 \* time.Second)\|1 \* time.Second" internal/cluster/gossip.go
+  EXPECT: >= 1
+  $ grep -cE "VYOMANAUT_SEED_NODE_1|VYOMANAUT_SEED_NODE_2" internal/cluster/gossip.go
+  EXPECT: 2
+ 
+QUORUM_THRESHOLD_IS_TWO:
+  $ grep -c "HealthyCount() >= 2" internal/cluster/*.go
+  EXPECT: >= 1
+  $ grep -c "ErrQuorumUnavailable" internal/cluster/*.go
+  EXPECT: >= 1
+ 
+MOCK_CLUSTER_BUILD_TAGGED_TEST_ONLY:
+  $ head -1 internal/cluster/mock_cluster.go | grep -c "go:build test"
+  EXPECT: 1
+ 
+UNIT_TESTS_BASE:
+  $ go test -v -run "TestGossip|TestRouter" ./internal/cluster/
+  EXPECT: exit 0; tests include:
+    TestHealthyCountUsesProfileWindow
+    TestReconcileTicksEverySecond
+    TestQuorumUnavailableBelowTwoHealthy
+    TestResponsibleReplicaClientDrivenRouting
+    TestMockClusterMembershipConfigurableHealthyCounts
+ 
+# ── VERIFY (enable after ADR-048 accepted) — the security-critical checks ──
+REPLICA_IDENTITY_LOADED_AT_STARTUP:
+  $ grep -c "ed25519.GenerateKey\|ed25519.NewKeyFromSeed" internal/cluster/identity.go
+  EXPECT: >= 1
+  $ grep -c "cluster-replica-pubkeys" internal/cluster/identity.go
+  EXPECT: >= 1
+ 
+SYNC_REQUEST_AND_RESPONSE_BOTH_SIGNED:
+  $ grep -c "replica_sig\|ReplicaSig" internal/cluster/gossip.go
+  EXPECT: >= 2                        # request AND response paths both reference it
+ 
+AUTHZ_BEFORE_ANY_MERGE:
+  $ awk '/replica_id.*cached|verifyReplicaID/{a=NR} /mergeVectorClock|MergeMembership/{m=NR} END{print (a>0 && m>0 && a<m)?"PASS":"FAIL"}' internal/cluster/gossip.go
+  EXPECT: PASS
+ 
+FRESHNESS_WINDOW_REUSES_ADR036_FIELD_NOT_A_NEW_ONE:
+  $ grep -c "profile.AuthRequestFreshnessWindow" internal/cluster/gossip.go
+  EXPECT: >= 1
+  $ grep -cE "GossipFreshnessWindow|SyncFreshnessWindow" internal/config/*.go
+  EXPECT: 0                           # must not introduce a second, redundant freshness field
+ 
+UNIT_TESTS_ADR048:
+  $ go test -v -run "TestGossipRejectsUnknownReplica|TestGossipRejectsStaleSync|TestGossipRejectsForgedSig|TestGossipVerifiesResponseSignatureToo" ./internal/cluster/
+  EXPECT: exit 0
+ 
+VET:
+  $ go vet ./internal/cluster/
+  EXPECT: exit 0; zero output
+```
+
+#### Session 17.2.2 — Relay node binary and deployment configuration
+
+**Reference:** architecture.md §13, §24, §27.5
+
+**TASK:** Create `cmd/relay/main.go` as the relay node binary. The relay runs a libp2p host
+with Circuit Relay v2 enabled and no DHT, chunk storage, or audit logic. Configuration:
+
+- 128 concurrent relay reservations per node (architecture.md §13, §27.5).
+- Reservation TTL: 30 minutes (libp2p default).
+- Relay multiaddrs are reported via `GET /relay/status` → `{"reservation_count": N,
+  "capacity": 128}`.
+- Metrics: expose `vyomanaut_relay_reservations_active` gauge at `/metrics` (naming per IC
+  §10's `vyomanaut_{subsystem}_{name}_{unit}` convention — `relay` as subsystem).
+Create `deployments/production/relay/docker-compose.yml` for the three-node relay
+deployment:
+
+- Node 1: Mumbai AZ1 (`ap-south-1a`)
+- Node 2: Mumbai AZ2 (`ap-south-1b`)
+- Node 3: Chennai/Hyderabad (`ap-south-2` or `ap-southeast-1`)
+- Minimum spec per node: 1 vCPU, 1 GB RAM, 1 Gbps network (architecture.md §24).
+**FILES** — `cmd/relay/main.go`, `deployments/production/relay/docker-compose.yml`
+
+**VERIFY**
+
+```bash
+COMPILE:
+  $ go build ./cmd/relay/
+  EXPECT: exit 0
+ 
+NO_DHT_STORAGE_OR_AUDIT_LOGIC:                # relay must be minimal per its own spec
+  $ grep -cE "Vyomanaut_V2/internal/(storage|audit|scoring|repair|payment)" cmd/relay/main.go
+  EXPECT: 0
+  $ grep -ciE "dht\." cmd/relay/main.go
+  EXPECT: 0
+ 
+RESERVATION_CAPACITY_128:
+  $ grep -c "128" cmd/relay/main.go
+  EXPECT: >= 1
+ 
+RESERVATION_TTL_30MIN:
+  $ grep -cE "30 \* time.Minute|1800" cmd/relay/main.go
+  EXPECT: >= 1
+ 
+STATUS_ENDPOINT_SHAPE:
+  $ grep -c "reservation_count\|/relay/status" cmd/relay/main.go
+  EXPECT: >= 2
+ 
+METRIC_NAME_FOLLOWS_IC10_CONVENTION:
+  $ grep -c "vyomanaut_relay_reservations_active" cmd/relay/main.go
+  EXPECT: >= 1
+ 
+DOCKER_COMPOSE_THREE_AZ_NODES:
+  $ grep -cE "ap-south-1a|ap-south-1b|ap-south-2|ap-southeast-1" deployments/production/relay/docker-compose.yml
+  EXPECT: >= 3
+ 
+UNIT_TESTS:
+  $ go test -v -run TestRelay ./cmd/relay/
+  EXPECT: exit 0; tests include:
+    TestRelayEnforces128ReservationCap
+    TestRelayStatusEndpointReturnsCorrectShape
+    TestRelayExportsReservationsActiveGauge
+    TestRelayHostHasNoDHTServerMode
+ 
+VET:
+  $ go vet ./cmd/relay/
+  EXPECT: exit 0; zero output
+```
+
+---

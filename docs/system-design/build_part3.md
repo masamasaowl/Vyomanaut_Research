@@ -44,7 +44,7 @@
 - [Milestone 16 — Demo Mode Validation](#milestone-16--demo-mode-validation)
   - [Phase 16.1 — End-to-End Demo Test](#phase-161--end-to-end-demo-test)
   - [Phase 16.2 — Simulation Mode](#phase-162--simulation-mode)
-- [Milestone 17 — Production Hardening](#milestone-17--demo-completion-rewritten-replaces-production-hardening)
+- [Milestone 17 — Demo Completion](#milestone-17--demo-completion-rewritten-replaces-production-hardening)
 - [Milestone 18 — Launch Readiness](#milestone-18--demo-freeze--stash-polished)
 - [Desktop Setup for Demo](#the-six-desktop-rig--specification-wiring-and-expected-outcomes)
 - [Stashing the Demo version](#stashing-the-demo-cleanly-and-the-github-question)
@@ -143,7 +143,7 @@ M0 (Setup)
                      └─ M14 (Vetting & Synthetic Chunks)
                          └─ M15 (Client SDK)
                              └─ M16 (Demo Mode Validation)
-                                 ├─ M17 (Production Hardening)
+                                 └─ M17 (Demo Completion)
                                     └─ M18 (Launch Readiness)
 ```
 
@@ -2137,10 +2137,18 @@ VET:
 
 ---
 
-## MILESTONE 17 — Demo Completion *(rewritten; replaces Production Hardening)*
+## Milestone 17 — Demo Completion *(rewritten; replaces Production Hardening)*
 
 **Deliverable:** a demo a human can run. The CLI exists, `scripts/test/` is complete, and the old
 M17's production content is formally relocated to the LTS track.
+
+**Relocation notice (Session 17.3.1).** The content that used to be here — secrets-manager adapters
+for Vault/AWS SSM/GCP Secret Manager (IC §8), the three-replica gossip cluster (ARCH §18) with
+ADR-048's gossip-authentication addendum, `cmd/relay`, and `internal/cluster`'s real client-driven
+routing — now lives in `build_part4.md` under **LTS — Production Hardening**, reproduced verbatim
+with no new milestone number assigned. It was recovered via `git log`/`git show` against this file's
+own history (`9c5262d^`, before the "Restructure M17 entirely" commit overwrote it) rather than
+reconstructed, since the original rewrite deleted it without copying it forward first.
 
 **Status:** `internal/client/{account,upload,retrieve,manage}` are built and tested (M15).
 `cmd/client/main.go` is an eight-line stub. No session in any build document has ever revisited it.

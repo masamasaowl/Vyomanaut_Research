@@ -117,9 +117,10 @@
 - [Milestone 16 — Demo Mode Validation](./build_part3.md#milestone-16--demo-mode-validation)
   - [Phase 16.1 — End-to-End Demo Test](./build_part3.md#phase-161--end-to-end-demo-test)
   - [Phase 16.2 — Simulation Mode](./build_part3.md#phase-162--simulation-mode)
-- [Milestone 17 — Production Hardening](./build_part3.md#milestone-17--production-hardening)
-  - [Phase 17.1 — Secrets Manager Adapters](./build_part3.md#phase-171--secrets-manager-adapters)
-  - [Phase 17.2 — HA Microservice & Relay Nodes](./build_part3.md#phase-172--ha-microservice--relay-nodes)
+- [Milestone 17 — Demo Completion](./build_part3.md#milestone-17--demo-completion-rewritten-replaces-production-hardening)
+  - [Phase 17.1 — The Data Owner CLI](./build_part3.md#phase-171--the-data-owner-cli)
+  - [Phase 17.2 — `scripts/test/` completeness](./build_part3.md#phase-172--scriptstest-completeness)
+  - [Phase 17.3 — Relocation record](./build_part3.md#phase-173--relocation-record)
 - [Milestone 18 — Launch Readiness](./build_part3.md#milestone-18--launch-readiness)
   - [Phase 18.1 — Runbooks](./build_part3.md#phase-181--runbooks)
   - [Phase 18.2 — Benchmark Scripts](./build_part3.md#phase-182--benchmark-scripts)
@@ -151,12 +152,16 @@ M0 (Setup)
                      └─ M14 (Vetting & Synthetic Chunks)
                          └─ M15 (Client SDK)
                              └─ M16 (Demo Mode Validation)
-                                 ├─ M17 (Production Hardening)
-                                    └─ M18 (Launch Readiness)
+                                 └─ M17 (Demo Completion)
+                                     └─ M18 (Launch Readiness)
 ```
 
 The import constraint DAG (IC §9) enforces that `crypto` and `erasure` have zero internal
 dependencies; all data-layer packages flow upward only to the microservice entrypoint. M-OBS depends on M12 and M13 for metric name definitions; it does not export to any `internal/` package.
+
+**Demo track's terminal edge:** M16 → M17 → M18 (Demo Mode Validation → Demo Completion → Launch
+Readiness) — linear, no branch, per Session 17.3.1's correction of the stale `M17 (Production
+Hardening)` label the tree above once carried.
 
 For a Milestone review use
 

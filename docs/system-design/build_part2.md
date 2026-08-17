@@ -80,9 +80,10 @@
 - [Milestone 16 — Demo Mode Validation](./build_part3.md#milestone-16--demo-mode-validation)
   - [Phase 16.1 — End-to-End Demo Test](./build_part3.md#phase-161--end-to-end-demo-test)
   - [Phase 16.2 — Simulation Mode](./build_part3.md#phase-162--simulation-mode)
-- [Milestone 17 — Production Hardening](./build_part3.md#milestone-17--production-hardening)
-  - [Phase 17.1 — Secrets Manager Adapters](./build_part3.md#phase-171--secrets-manager-adapters)
-  - [Phase 17.2 — HA Microservice & Relay Nodes](./build_part3.md#phase-172--ha-microservice--relay-nodes)
+- [Milestone 17 — Demo Completion](./build_part3.md#milestone-17--demo-completion-rewritten-replaces-production-hardening)
+  - [Phase 17.1 — The Data Owner CLI](./build_part3.md#phase-171--the-data-owner-cli)
+  - [Phase 17.2 — `scripts/test/` completeness](./build_part3.md#phase-172--scriptstest-completeness)
+  - [Phase 17.3 — Relocation record](./build_part3.md#phase-173--relocation-record)
 - [Milestone 18 — Launch Readiness](./build_part3.md#milestone-18--launch-readiness)
   - [Phase 18.1 — Runbooks](./build_part3.md#phase-181--runbooks)
   - [Phase 18.2 — Benchmark Scripts](./build_part3.md#phase-182--benchmark-scripts)
@@ -153,8 +154,8 @@ M0 (Setup)
                      └─ M14 (Vetting & Synthetic Chunks)
                          └─ M15 (Client SDK)
                              └─ M16 (Demo Mode Validation)
-                                 ├─ M17 (Production Hardening)
-                                    └─ M18 (Launch Readiness)
+                                 └─ M17 (Demo Completion)
+                                     └─ M18 (Launch Readiness)
 ```
 
 The import constraint DAG (IC §9) enforces that `crypto` and `erasure` have zero internal
@@ -3710,6 +3711,7 @@ VET:
 **Reference:** NFR-044, architecture.md §27.3 (`Per-provider storage ceiling at 100 Kbps budget` table — two reference points: 180d→~70GB, 300d→~130GB)
 
 > **Flagged and corrected — the given formula doesn't reproduce its own reference points.** The original task computes `storage_advisory_gb = ceil(mttf_days / 300 * 130)`. At `mttf_days=300` this correctly gives 130 GB, but at `mttf_days=180` it gives `ceil(0.6 × 130) = 78` GB — not the ~70 GB architecture.md §27.3 documents. The relationship between MTTF and the bandwidth-driven storage ceiling is not linear (Giroire's formula scales BWavg with `D/N` in a way that does
+>
 ### Phase 11.5 — Owner Endpoints
 
 **Reference:** OAS `paths./api/v1/owner/*`, `components/schemas/OwnerRegisterRequest/Response`, `DepositInitiateRequest/Response`, `OwnerBalance`, `FileListItem`, `OwnerEscrowTransaction`, `WithdrawRequest/Response`, FR-001, FR-006, FR-014, FR-019, FR-021, FR-059, DM §4.9 (`owner_escrow_events` — see the flagged corrections below)
