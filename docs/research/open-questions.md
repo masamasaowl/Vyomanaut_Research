@@ -322,7 +322,16 @@ Raised by: Paper 66 (Ateniese), Paper 67 (Juels & Kaliski), Paper 68 (Shacham & 
 
 Q66-2 — Does SHELBY Condition (i) hold at 1% sampling, and is the required slashing V/2,909 or 99×G?
 
-Raised by: Paper 66 (Ateniese), reading-list-v2 Domain B prerequisite 1 Status: open — blocks ADR-060's approval and is upstream of ADR-024 Blocked on: re-derivation against SHELBY's actual Theorem 1 statement (Paper 37), which has not been re-read since the sampling design existed. The reading list's (1 − p_au)/p_au = 99× treats p_au as constant. Under proportional sampling it is not: with gain G(t) = t·V and detection P(t) = 1 − (1−t)^c, the requirement S ≥ max_t G(t)(1−P(t))/P(t) evaluates at c = 2,867 to 3.438 × 10⁻⁴·V, attained as t → 0, against the small-t limit 1/c = 3.488 × 10⁻⁴. That is S ≥ V/2,909 — three orders of magnitude looser, not 99× tighter. Two assumptions carry the result and neither is checked: that gain is linear in the deleted fraction, and that detection is evaluated over a single audit period rather than cumulatively. If either fails the conclusion moves. This is exactly the failure mode the standing rule names — a formula lifted from a paper into an ADR without its substitution shown — so the re-derivation must show its working inline.
+**CLOSED — August 2026, LTS Band 0.** Answer in [answered-questions.md](answered-questions.md).
+Short form: **neither, and the question was malformed.** SHELBY's `p_au` and `t_au` are
+*audit-the-auditor* quantities (SHELBY §2.4), so Condition (i) governs an auditing layer Vyomanaut
+does not have — the microservice is the sole auditor. `t_st`, the storage-side penalty Vyomanaut's
+escrow actually corresponds to, appears nowhere in Theorem 1. The correct condition, derived fresh,
+is `S ≥ C/c − A = C/2,867 − A`, slack by roughly six orders of magnitude; the binding constraint is
+Condition (iii), `r_st ≥ c_st`. Both flagged assumptions discharge: gain *is* linear once it is the
+right quantity (avoided storage cost, not `t·V`), and single-period evaluation is conservative in
+the safe direction. → [ADR-060 Addendum A](../decisions/ADR-060-addendum-a-shelby-substitution-corrected.md),
+[Paper 37](paper-37-shelby-incentive-compatibility.md) (revised in place).
 
 Q67-1 — What is the probability that some provider in a 56-shard stripe is an undetected ε-adversary?
 
@@ -346,9 +355,18 @@ Raised by: Paper 68 (Shacham & Waters) Status: open — unbudgeted; no NFR cover
 
 Q68-3 — How does a reconstructed shard get valid authenticators when the data owner is offline?
 
-Raised by: Paper 68 (Shacham & Waters), reading-list-v2 Domain A / R-03 Status: open — hard blocker on the repair path; unsolved in all three papers Blocked on: literature the corpus does not have (R-03: proof transfer on repair). A shard that migrates intact keeps valid authenticators — tags bind to block content and file-global index, not to provider identity. A shard that is reconstructed by ADR-004's repair is new bytes at the same stripe position with no valid authenticators, and generating them requires (k_prf, α₁…α₆₄), which the owner holds and which the owner is offline by design. Three shapes of answer exist and none is costed: give the repairing party the authenticator keys (they are independent of the encryption key, so this leaks no plaintext — but it lets a repairing provider forge proofs for the position it just wrote); have the microservice hold the keys and tag reconstructed shards itself (it already holds them under ADR-059, so this is nearly free — but it requires the microservice to see the reconstructed shard bytes, which contradicts the pure-P2P transfer model of ADR-021); or leave reconstructed shards unauditable until the owner next comes online, which is unbounded. Until this resolves, every repaired shard is unauditable, and repair is a routine event, not an exceptional one. This is the largest remaining hole in Domain A and it should go to the council with F-01 rather than after it.
-
-**Update (Paper 69 — Erway et al., DPDP):** the canonical R-03 source has now been read, and it narrows rather than closes this question. DPDP's authenticated-update protocol (`PrepareUpdate`/`PerformUpdate`/`VerifyUpdate`) formally proves that a claimed update is the unique valid successor of the prior committed state, in `O(log n)` — a real accountability mechanism for *whichever* of the three shapes of answer above is chosen. It does not answer which shape to choose: computing a valid tag for reconstructed content still requires the same party to hold both the secret key and the new content simultaneously, which is the actual trilemma. DPDP's own standard-model security guarantee is not an escape either — it depends on transmitting the real challenge indices, which is worse than this ADR's existing coefficient-vector bandwidth problem at Vyomanaut's audit volume (733,952 challenged blocks/provider/day). The three shapes of answer stand; a fourth, weaker option now exists — wrap whichever is chosen in a DPDP-style provable update log for dispute resolution — recorded in ADR-059's Open constraints.
+**CLOSED — August 2026, LTS Band 0 (Paper 74).** Answer in
+[answered-questions.md](answered-questions.md). Short form: **the premise was false.** The question
+assumed the new tag must be *computed*, and therefore that some party must hold both the secret key
+and the reconstructed content. For a tag linear in the content over the code's field, the tag is
+*transported* rather than computed, so no party exercises authority over it and there is no
+authority to allocate. The obstruction was a single parameter — ADR-059 evaluates authenticators in
+`Z_p` while `internal/erasure` codes in `GF(2^8)`, and the two operations do not commute. Because
+`8 | 128`, `GF(2^8)` embeds in `GF(2^128)`; moving the tag field restores the homomorphism at
+unchanged tag size, and the key holder supplies a correction term `Δ` computed from
+`(k_prf, indices, coefficients)` with no chunk data. → [ADR-078](../decisions/ADR-078-authenticator-transport-through-repair.md).
+**Residual:** ADR-078 is `Proposed` pending Q78-1 (the Shacham & Waters proof check). **F-69 is
+untouched** — the elected repairer still obtains a decodable package; only auditability is closed.
 
 ---
 
@@ -376,9 +394,134 @@ Raised by: Paper 68 (Shacham & Waters), reading-list-v2 Domain A / R-03 Status: 
 
 ---
 
+### Q73-1 — Can a Vyomanaut provider obtain another provider's shard bytes, and at what cost?
+
+**Raised by:** Paper 73 (Chen & Curtmola) **Status:** open — **structural check, answerable by
+reading code, not by research** **Blocked on:** nobody has traced the paths. The entire
+outsourcing/ROTF analysis in ADR-014 Addendum A assumes a colluding provider can fetch the 16 peer
+shards of a segment it holds one shard of. ADR-072 capability tokens gate *authorised* download, so
+a lone cheater has no sanctioned path — but Chen & Curtmola's adversary is explicitly a colluding
+set, and nothing obviously prevents providers serving each other raw shard bytes over libp2p
+off-protocol. Three sub-questions, in order of cheapness: (1) does any code path in `internal/p2p`
+serve shard bytes to a requester that is not the microservice or a token-bearing owner? (2) does
+ADR-076's elected-repairer protocol create a token that a provider can obtain for a repair it
+nominates itself — this is Q76-1 from the other side; (3) if collusion is required, what does that
+cost, and does it change the α-crossover table materially. If the answer to (1) is "no path exists",
+the finding stands but the attack costs collusion rather than bandwidth, which is a different and
+better place to be.
+
+---
+
+### Q73-2 — What is the honest distribution of per-chunk audit contribution `x` on real provider hardware, and of provider downlink?
+
+**Raised by:** Paper 73 (Chen & Curtmola) §4.2 **Status:** open — **LaunchGate measurement; blocks
+setting `τ` at all** **Blocked on:** a measurement nobody has taken, on hardware nobody has profiled.
+ADR-014 Addendum A restates the deadline as `τ = c·x + 2·t_i` and cannot instantiate it: `x` is
+unmeasured and the provider downlink distribution is unknown. Both matter and they matter
+differently. `x` sets where the honest population sits; the downlink sets where the α-cheater sits,
+and the crossover between them is the entire security margin — at 10 Mbit/s a 0.38% deletion is
+timing-invisible, at 100 Mbit/s it is 3.76%, at 300 Mbit/s it is 11.3%. Chen & Curtmola measured a
+1.36× spread of `x` at the 95th percentile **inside an AWS datacentre** and warned that benign tail
+latency destroys the separation; Vyomanaut's honest path is 2,867 random seeks on a consumer desktop
+under ADR-025's 50 ms p99 background gate, competing with the user's own workload and the storage
+engine's compaction. The tail is the whole question, so a median is not an answer — the deliverable
+is a distribution with its 95th and 99th percentiles. Shares scope with Q23-1 (RocksDB rate limiter)
+and Q65-1 (RS throughput); take all three in one measurement session on the same hardware. Until it
+lands, `τ` is `[UNDERIVED]` under ADR-077 trigger T1.
+
+---
+
+### Q74-1 — Does withholding the masking scalars from a repair aggregator actually make it blind, and what does pre-aggregation cost?
+
+**Raised by:** Paper 74 (Chen, Ammula & Curtmola) §4.2 **Status:** open — **Domain P / R-28 lead;
+the most promising item in that domain and not yet a result** **Blocked on:** a security argument
+that does not exist and a topology that has not been priced. RDC-EC's Aggregation Server sums masked
+partial segments and is *told* `(Z_j, x_j)` so it can localise a faulty contributor — which is also
+exactly what lets it invert each contribution and recover all `k` segments. The paper trusts it
+explicitly and proves nothing about blindness (Theorem 4.1 is about hiding the dispersal matrix `M`).
+Withhold the scalars and the aggregator holds two linear combinations of 16 shards, below `k`, and
+the unmasker holds one shard, also below `k` — **no party assembles `k`**, which is R-28's accept
+criterion exactly. Three things must be settled before this is anything more than a lead. **(a)** The
+aggregator receives contributions *separately*, so it can form the sector-wise ratio `Z_j/x_j`, and
+if it is itself one of the helpers it knows one `b_j` outright and can solve for that `x_j`. The
+construction needs contributions to arrive **pre-aggregated** — a chained or tree topology — whose
+liveness cost under ADR-021's NAT and relay constraints is unpriced and whose failure modes are new.
+**(b)** Paper 16 (AONT-RS) must be re-read against a *linear-combination* adversary holding two
+combinations of 16 shards, which is not the shard-holder adversary its security section considers.
+This re-read is already Domain P's stated must-read; it is now specific. **(c)** Blindness costs
+fault localisation, so a corrupt contribution can be detected but not attributed, and recovery
+becomes a subset search — `O(log k)` rounds by bisection, or a restart with a fresh helper set. That
+is a real availability cost during exactly the events that already threaten durability. Pairs with
+F-LTS-15.
+
+---
+
+### Q74-2 — Does the `GF(2^128)` change interact with anything outside the audit path?
+
+**Raised by:** Paper 74 / ADR-078 **Status:** open — scoping question, low risk, answerable by
+inspection **Blocked on:** a sweep nobody has done. ADR-078 changes the authenticator field only. But
+ADR-059 states that *"every wire format, receipt column, test fixture and stored authenticator
+depends on `(p, s)`"*, and the sweep to confirm the change is confined to `internal/audit` and the
+chunk-upload frame has not been run. Specific things to check: whether any receipt column stores a
+field element in a representation that assumes integer semantics (ordering, comparison, `NUMERIC`
+rather than `BYTEA`); whether any test fixture hardcodes a `Z_p`-reduced value; whether the client's
+upload-path authenticator generation shares code with any non-audit arithmetic; and whether
+`g(Y)`'s choice needs to be a `NetworkProfile` field or a package constant. Also worth confirming
+that the demo track is genuinely untouched — ADR-062 freezes it, but a shared package would make the
+change visible there.
+
+---
+
+### Q75-1 — Where does per-contribution repair verification run: on the repairer or on the microservice?
+
+**Raised by:** Paper 75 (Chen, Curtmola, Ateniese & Burns) §3.1.4 **Status:** open — **design
+decision, not research; blocks ADR-078's implementing session** **Blocked on:** a ruling with a real
+trade-off on both sides. ADR-078 §5 makes verification of each `(z_j·shard_j, ι(z_j)·σ_j)` pair
+mandatory, because Paper 75's pollution attack otherwise lets one malicious helper write a
+permanently and undetectably wrong shard. Where it runs is open. **On the repairer:** cheap (4,096
+PRF evaluations per chunk across all 16 helpers, 0.56% of one provider-day's routine load), keeps
+65,536 B/chunk of tag traffic off the microservice, and self-serving — a repairer has no incentive to
+accept corrupt input. But it cannot be *proved* to have run, so a lazy or colluding repairer is
+indistinguishable from a diligent one, which is F-22's shape in a new place. **On the microservice:**
+accountable and centrally logged, at 65,536 B per chunk — 2.1 MB per 32-fragment gated repair event,
+traffic ADR-076 currently budgets at zero. Note the microservice receiving *tags* does not violate
+ADR-076's constraint, which is about shard bytes; this is a bandwidth and coupling question, not a
+confidentiality one. A third shape exists and should be priced: verify on the repairer, and have the
+repairer commit to the helper set and contribution hashes in the repair receipt, so a later dispute
+is decidable without moving the tags. That is Paper 70's liability pattern applied to repair.
+
+---
+
+### Q78-1 — Does Shacham & Waters' private-scheme security proof carry to `GF(2^128)`?
+
+**Raised by:** ADR-078 **Status:** open — **blocking on ADR-078 leaving `Proposed`; a one-session
+re-read of Paper 68 §4, not a search** **Blocked on:** a proof check nobody has performed. Shacham &
+Waters state the private PRF-based scheme over `Z_p` for prime `p`. The essential argument appears
+field-agnostic: a forged aggregate implies `Σ α_j·Δμ_j = 0` for some `Δμ ≠ 0`, and a randomly chosen
+secret `α` satisfies that with probability `1/|F|` — `2⁻¹²⁸` in `GF(2^128)`, the same order as
+`p = 2^128 + 51`. Extractability is linear algebra over a field and should transfer identically. Two
+instantiations in other fields already exist in the literature and were read this session: Paper 74
+builds a Shacham–Waters-style tag over `GF(2^w)` and Paper 75 over `GF(p)`, whose footnote 5
+explicitly treats the choice as immaterial. **What must be checked line by line is characteristic
+2.** Any step relying on `x + x ≠ 0`, on division by 2, on the integer ordering of `Z_p`, or on the
+distinctness of `+` and `−` fails. Also confirm that Paper 68 Appendix B's coefficient-free attack —
+which ADR-059 already prohibits against — is neither weakened nor strengthened by the change; it
+should be unaffected, since it is about coefficients being 1, not about the field. Until this is
+done, ADR-078 is a construction with a plausible security argument, which is not the same as a
+construction with a proof, and the LTS Literature Standard's `[INFERRED]` rule forbids an ADR
+resting on the difference.
+
+---
+
 | ID | Question | Track | Blocks | Priority |
 | --- | --- | --- | --- | --- |
 | **Q-M17-1** | Was M16 Session 16.1.1 (`demo_timeline_test.go`) actually completed, or does M17 Session 17.2.1 build it? | Demo | Session 17.2.1's scope — the session handles either case, but the answer changes its size | Medium |
+| **Q78-1** | Does Shacham & Waters' proof carry to `GF(2^128)`? | LTS | ADR-078 leaving `Proposed`; the Proof of Storage milestone | **High** |
+| **Q73-1** | Can a provider obtain another provider's shard bytes at all? | LTS | Whether ADR-014 Addendum A's finding costs bandwidth or collusion | **High** |
+| **Q73-2** | Honest `x` distribution and provider downlink distribution | LTS | Setting `τ` at all; ADR-014 Addendum A is un-instantiable without it | **High** |
+| **Q75-1** | Where per-contribution repair verification runs | LTS | ADR-078's implementing session | Medium |
+| **Q74-1** | Does a blind repair aggregator work, and what does pre-aggregation cost? | LTS | Domain P / R-28; F-69 | Medium |
+| **Q74-2** | Does the `GF(2^128)` change reach outside `internal/audit`? | LTS | ADR-078's implementing session | Low |
 | **Q-M18-1** | SHA-256 throughput on minimum-spec hardware without SHA-NI | LTS | The corrected AONT threshold at the Launch Gates milestone | Medium |
 | **Q-M18-6** | Does the corrected NFR-009 threshold change ADR-003's segment-size decision? If measured p50 at 4 MiB is far under budget, a larger segment reduces per-file pointer overhead | LTS | Design council, after Q-M18-1 | Medium |
 | **Q-M19-1** | Do the demo's hand-rolled RS shards decode under `klauspost/reedsolomon`? | LTS | If not, `docs/inherited/DEMO.md` needs a correction — the stash produced non-standard shards | High |
@@ -387,7 +530,5 @@ Raised by: Paper 68 (Shacham & Waters), reading-list-v2 Domain A / R-03 Status: 
 | **Q-ORG-1** | Who is the **second Owner** of the `vyomanaut` GitHub organisation? | Both | The org's bus factor; do this before the M18 tag | High |
 | **Q-SIM-1** | Should the synthetic tier's PRF share a construction with the AONT key stream, or be independent? | LTS | ADR-069's implementing session | Low |
 | **Q-LAB-1** | Are the college's 150+ lab desktops available for a fleet run, and under what access terms? | LTS | The fleet-scale milestone, and the strategy discussion still queued | Medium |
-| **Q-ADR20-1** | What proof should be required beyond a phone+OTP login before accepting a new Ed25519 public key for an existing `owner_id` (re-keying)? Phone-based auth is already this system's entire Sybil defense (FR-001) and may not be a sufficient bar for a high-value action. | LTS | Designing the re-keying endpoint ADR-020 Addendum A names but does not build | Medium |
-| **Q-ADR20-2** | Should `cmd/client` grow a first-class `export-keystore`-style subcommand, so owners have a supported way to carry their Ed25519 identity key to a new device instead of ad hoc file copying? | Demo/LTS | Whether keystore backup stays a documentation-only disclosure or becomes a real feature; not scoped in MVP §8.3's eight-subcommand table | Low |
 
 ---
