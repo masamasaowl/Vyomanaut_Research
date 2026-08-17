@@ -387,5 +387,7 @@ Raised by: Paper 68 (Shacham & Waters), reading-list-v2 Domain A / R-03 Status: 
 | **Q-ORG-1** | Who is the **second Owner** of the `vyomanaut` GitHub organisation? | Both | The org's bus factor; do this before the M18 tag | High |
 | **Q-SIM-1** | Should the synthetic tier's PRF share a construction with the AONT key stream, or be independent? | LTS | ADR-069's implementing session | Low |
 | **Q-LAB-1** | Are the college's 150+ lab desktops available for a fleet run, and under what access terms? | LTS | The fleet-scale milestone, and the strategy discussion still queued | Medium |
+| **Q-ADR20-1** | What proof should be required beyond a phone+OTP login before accepting a new Ed25519 public key for an existing `owner_id` (re-keying)? Phone-based auth is already this system's entire Sybil defense (FR-001) and may not be a sufficient bar for a high-value action. | LTS | Designing the re-keying endpoint ADR-020 Addendum A names but does not build | Medium |
+| **Q-ADR20-2** | Should `cmd/client` grow a first-class `export-keystore`-style subcommand, so owners have a supported way to carry their Ed25519 identity key to a new device instead of ad hoc file copying? | Demo/LTS | Whether keystore backup stays a documentation-only disclosure or becomes a real feature; not scoped in MVP §8.3's eight-subcommand table | Low |
 
 ---
