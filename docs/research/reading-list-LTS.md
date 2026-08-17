@@ -220,7 +220,7 @@ model, and carries all repair egress on one host; the **owner** is offline by de
 assignment of the repair role under RS + AONT-RS leaves every party blind.** F-69 is not a defect to
 be relocated — it is a proof that the code family changes or a party is explicitly trusted.
 
-**Must-read**
+**Must-read:**
 
 | Work | Why |
 | --- | --- |

@@ -876,3 +876,5 @@ superseding ADR. The full resolution record is in `docs/research/answered-questi
 | Question | Answer | ADR |
 |---|---|---|
 | At what provider count does daily full audit become infeasible? | ~100,000 providers × 10,000 chunks (planning estimate). At N=10,000 × 10,000 chunks, challenge rate is 1,157/sec — well within Postgres capacity. At 100,000 × 10,000 = ~11,574/sec, sharding or probabilistic sampling is needed. SHELBY Theorem 1 must be re-verified if sampling is introduced. | ADR-002 |
+
+---
