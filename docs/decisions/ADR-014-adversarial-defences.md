@@ -22,8 +22,19 @@ A single correlated provider group (same subnet, same ISP AS number) must not ho
 - Implementation: the assignment service tracks ASN/subnet per provider; new assignments skip providers that would push a cluster over 20%
 - Activate only after 5 × n shards exist in the network (new networks have too few shards to enforce meaningfully)
 
-**Defence 2 — Outsourcing attack (provider retrieves data on-demand from another node instead of storing it):**
-Use Filecoin's Seal concept: require providers to prove data is stored in a way that cannot be reconstructed in real time from a remote source within the challenge response window. The response deadline is `(chunk_size / p95_measured_upload_throughput) × 1.5`, where
+**Defence 2 — Outsourcing attack (provider retrieves data on-demand from another node instead of storing it):** — **see [ADR-014 Addendum A](ADR-014-addendum-a-outsourcing-defence-restated.md), August 2026.**
+
+> The formula below is **withdrawn**. It is computed against a per-chunk challenge/response that
+> ADR-059/ADR-060 replaced with a single 1,040-byte aggregate response per `(provider, file, day)`
+> covering 2,867 sampled chunks. Its 768 ms worked example admits an honest 36-second audit by a
+> factor of ~47 and rejects it. Addendum A restates the deadline as `τ = c·x + 2·t_i` (Paper 73,
+> Chen & Curtmola), names the α-cheating adversary Defence 2 was implicitly sized against `α = 0`
+> for, and records that the primary deterrent is the reconstruction-cost margin (Paper 37
+> Observation 1, 27–266× at Vyomanaut's parameters against a total cheat), with timing as a
+> secondary signal. **The anomaly-handling machinery below (jit_flag, escalation) is retained
+> unchanged** — it was always a statistical signal, not a gate, and Addendum A does not touch it.
+
+~~Use Filecoin's Seal concept: require providers to prove data is stored in a way that cannot be reconstructed in real time from a remote source within the challenge response window. The response deadline is `(chunk_size / p95_measured_upload_throughput) × 1.5`, where
 `p95_measured_upload_throughput` is the 95th percentile of upload throughput observed
 during the provider's vetting period audit responses. Measured throughput is derived from audit response times during vetting:
   observed_throughput = chunk_size / response_latency_ms  (bytes/ms → KB/s)
@@ -34,7 +45,8 @@ is stored as `p95_throughput_kbps` per provider in the reliability scoring DB. F
 
 This is derived from measured behaviour, not self-declaration. A provider cannot extend
 their deadline by declaring a low upload speed because the deadline is computed from
-what the vetting period observed them actually doing.
+what the vetting period observed them actually doing.~~ *(superseded — see Addendum A)*
+
 For new providers (no vetting history): use the pool-median p95 throughput as the initial
 value. This is updated after every audit response using an exponentially weighted moving
 average (same EWMA used for per-provider RTO in [ADR-006](./ADR-006-polling-interval.md)). Latency floor — anomalous fast response detection:
