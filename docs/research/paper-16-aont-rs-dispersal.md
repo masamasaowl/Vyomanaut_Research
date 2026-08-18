@@ -7,6 +7,99 @@
 
 ---
 
+> **Revised 2026-08-18 (LTS Band 1, Domain P — P-1.1).** Re-read against the repair-time adversary
+> Domain P was opened to analyse: a party that observes RS-layer traffic during a repair event, not
+> a party that acquires whole slices out-of-band. The original note above (2026-04-18, demo track)
+> stands unchanged — nothing in it is withdrawn. This addendum adds a section the demo-track format
+> has no place for. **Corrects ADR-076's F-69 framing**: see [ADR-076 Addendum A](../decisions/ADR-076-addendum-a-blind-repair-menu.md).
+
+---
+
+## LTS Addendum — The Threat Model Boundary AONT-RS's Security Analysis Does Not Cover
+
+**Track:** LTS · **Reading list:** Domain P / R-27 anchor — Band 1 · **Triage score:** N/A (held item,
+re-read by instruction per Domain P's must-read table, not scored)
+**ADRs produced:** ADR-076 Addendum A (jointly with this domain's other Band 1 notes)
+**Findings raised:** contributes to F-LTS-15 · **Questions closed:** none · **Questions raised:** Q74-1 (restated, sharper)
+
+### Provenance
+
+Re-read: the full USENIX FAST 2011 paper, the same PDF as the original note, specifically §5
+("Security Evaluation") and the construction in §3. Nothing new was obtained; this is a targeted
+second pass with a different question, per `reading-list-LTS.md` §5's instruction to re-read this
+paper "against a repair-path adversary before searching outward."
+
+### The finding
+
+§5 states the paper's entire threat model in one sentence: *"For each algorithm, we assume that the
+attacker knows how the slices were generated, except for the random numbers"* `[P §5]`, and the
+security argument that follows is conducted entirely in terms of an attacker who **possesses complete
+slices** — either whole data slices (`c_i` for `i < k`) or whole coding slices (RS parity symbols) —
+never a partial or combined view of several slices at once. The load-bearing sentence for AONT-RS
+specifically: *"if an attacker owns any data slice, then compromise can only occur by discovering K"*,
+and *"owning k−1 slices adds no information — the act of verification still boils down to
+enumerating all potential values of K"* `[P §5]`.
+
+That is a claim about an attacker who holds **whole, complete** RS codeword symbols. It says nothing
+about an attacker — or a repairer — who holds a **linear combination of several codeword symbols**,
+which is exactly what a bandwidth-efficient repair scheme (sub-symbol / trace-based downloads, the
+subject of P-2.2 below) hands to the party computing the repair. AONT-RS's published security proof
+is silent on this adversary because the paper was never asked the question — dispersal-time
+possession, not repair-time partial observation, is 2011 AONT-RS's whole scope.
+
+**This is not a flaw in the paper.** It is a scope boundary that Domain P's question sits outside of,
+and the boundary was invisible until this re-read looked for it specifically.
+
+### Substitution
+
+`[DERIVED]` The paper's computational-security argument (§5) rests on one step: recovering `K`
+requires possessing the full package `c_0, …, c_{s+1}` — equivalently, `s+1` complete words — because
+`K` is only recoverable as `(K ⊕ h) ⊕ h`, and `h = SHA-256(c_0 ‖ … ‖ c_s)` requires all `s+1` inputs.
+A party holding **linear combinations** of several `c_i` (rather than complete `c_i` values) cannot
+compute `h` at all — the hash is not linear, so no combination of partial data reconstructs it. This
+is a genuine, structural reason the AONT step should resist a linear-combination adversary, but it is
+`[INFERRED]` here, not `[P §x]`: the paper never states or proves it, because it never poses the
+question. The inference is strong (SHA-256 is not affine over `GF(2^8)` in any useful sense) but it
+is not a citable result.
+
+### What This Paper Rules Out
+
+- **Nothing about linear-combination adversaries** — this is the paper's silence, not a ruled-out
+  mechanism, and is the reason this re-read exists.
+- The paper does rule out one thing relevant here: a **whole-slice** adversary at `m < k` slices
+  gains nothing regardless of how it combines its holdings, because it is still bounded by the same
+  `2^{w_A}` enumeration `[P §5]`. This does not extend to partial-slice combinations by the paper's
+  own proof structure — the proof is stated slice-by-slice, not degree-of-freedom by
+  degree-of-freedom.
+
+### Falsifiers
+
+- **A proof obligation.** If someone constructs a linear functional of two or more RS-layer codeword
+  symbols whose value, combined with knowledge of the RS generator matrix, yields `SHA-256(c_0‖…‖c_s)`
+  or any fixed function of `K` at lower cost than `2^{w_A}` enumeration, this note's inference is
+  false and F-LTS-15's premise (blindness survives repair) fails for AONT-RS specifically.
+- **A parameter change.** If `w_A` (the AONT key width) is ever reduced below 128 bits for
+  performance reasons, the enumeration bound this whole argument rests on weakens independently of
+  the linear-combination question.
+
+### Corpus Delta
+
+Does not correct anything in the original note — the AONT-RS mechanism description, trade-offs, and
+ADR-022 rationale all stand. It adds a boundary statement the original note had no format for. The
+correction it *does* make is to this session's own prior-turn analysis: an earlier informal pass
+treated "does AONT-RS resist a repair-time adversary" as settled by the original note. It was not
+addressed by the original note at all — the original note documents AONT-RS's own stated threat
+model, which is a different question.
+
+### Open Questions
+
+**Manual step for the reader:** add the following to `docs/research/open-questions.md`, and update
+**Q74-1**'s text to reference this addendum in its "Blocked on" line — Q74-1 already exists
+(`reading-list-LTS.md` §5) and this re-read sharpens rather than replaces it. No new question ID is
+needed; Q74-1 now reads as: *"Does withholding masking scalars from a repair aggregator make it
+blind, given that AONT-RS's own security proof (Paper 16 §5) never analyses a linear-combination
+adversary and the SHA-256 non-affinity argument for why it should is `[INFERRED]`, not proved?"*
+
 ## Problem Solved
 
 Standard erasure coding (Rabin's IDA) achieves good storage efficiency but zero security: an
