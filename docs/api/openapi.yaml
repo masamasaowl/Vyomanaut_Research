@@ -1349,6 +1349,76 @@ components:
             = monthly_cost_paise. The exact amount deducted from escrow balance.
             Equivalent to the escrow check threshold in FR-014.
 
+    RetrieveResolveShard:
+      type: object
+      required:
+        - shard_index
+        - provider_id
+        - chunk_id
+        - multiaddrs
+        - multiaddr_stale
+        - download_token
+      properties:
+        shard_index:
+          type: integer
+          minimum: 0
+        provider_id:
+          $ref: '#/components/schemas/UUID'
+        chunk_id:
+          type: string
+          pattern: '^[0-9a-f]{64}$'
+        multiaddrs:
+          type: array
+          items:
+            $ref: '#/components/schemas/Multiaddr'
+          description: From providers.last_known_multiaddrs — the same field ShardAssignment.multiaddrs exposes to the same owner audience (ADR-078 §2).
+        multiaddr_stale:
+          type: boolean
+          description: True if the most recent heartbeat is stale; the client should prefer other shards or fall back to a DHT lookup.
+        download_token:
+          type: string
+          pattern: '^[0-9a-f]{144}$'
+          description: |
+            Hex-encoded 72-byte download capability token: 8-byte expiry_unix_ms
+            (big-endian int64) || 64-byte Ed25519 signature. Structurally identical to
+            ShardAssignment.capability_token but signed under a distinct domain
+            prefix ("vyomanaut-chunk-download-cap-v1", vs. upload's
+            "vyomanaut-chunk-upload-cap-v1") — the two must never verify as each
+            other. The client forwards this verbatim in Frame 1 of
+            /vyomanaut/chunk-download/1.0.0; it is never constructed or
+            re-derived client-side. (ADR-078 §1, interface-contracts.md §4.6)
+
+    RetrieveResolveSegment:
+      type: object
+      required:
+        - segment_index
+        - segment_id
+        - shards
+      properties:
+        segment_index:
+          type: integer
+          minimum: 0
+        segment_id:
+          $ref: '#/components/schemas/UUID'
+        shards:
+          type: array
+          items:
+            $ref: '#/components/schemas/RetrieveResolveShard'
+
+    RetrieveResolveResponse:
+      type: object
+      required:
+        - file_id
+        - segments
+      properties:
+        file_id:
+          $ref: '#/components/schemas/UUID'
+        segments:
+          type: array
+          items:
+            $ref: '#/components/schemas/RetrieveResolveSegment'
+          description: Every segment of the file, in one response — not paginated per segment (ADR-078 §2's batching requirement).
+
     ErasureParamsInfo:
       description: |
         Erasure coding parameters — fixed for all V2 files. Included in the pointer file
@@ -2908,6 +2978,49 @@ paths:
                     request_id: "01944a6e-8f3c-7000-b000-d4e5f6a7b8c9"
                     retry_after: 300
                     available_asns: 3
+
+  /api/v1/owner/files/{file_id}/retrieve/resolve:
+    post:
+      tags: [Files]
+      summary: Resolve every shard's dial address and download capability token for a file
+      description: |
+        Called once per retrieval, for the whole file — not per segment. Returns, for
+        every segment, every shard's provider_id, chunk_id, current multiaddrs, and a
+        download capability token (ADR-078). The client forwards each token verbatim
+        in Frame 1 of /vyomanaut/chunk-download/1.0.0 (interface-contracts.md §4.6);
+        it is never constructed or re-signed client-side.
+
+        Authorization: the caller's JWT `sub` must equal files.owner_id for file_id.
+        A mismatch and a non-existent file_id both return 404 — a non-owner must not
+        be able to distinguish "not yours" from "doesn't exist" by probing.
+
+        files.status must be ACTIVE. Once a file leaves ACTIVE (e.g. after DELETE
+        /api/v1/file/{file_id}), no further tokens are issued for its chunks — this
+        is what makes the delete guarantee enforceable on the read path, since
+        hash-based access (considered and rejected, see ADR-078) would have no way
+        to revoke an already-known chunk_id. (ADR-078)
+      operationId: resolveRetrieval
+      parameters:
+        - name: file_id
+          in: path
+          required: true
+          schema:
+            $ref: '#/components/schemas/UUID'
+      responses:
+        "200":
+          description: Every shard's dial information and download token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RetrieveResolveResponse'
+        "401":
+          $ref: '#/components/responses/401Unauthorized'
+        "404":
+          description: file_id does not exist, or does not belong to the calling owner (indistinguishable by design — see description above).
+          $ref: '#/components/responses/404NotFound'
+        "409":
+          description: File exists but is not ACTIVE (e.g. DELETION_PENDING or DELETED) — no tokens are issued.
+          $ref: '#/components/responses/409Conflict'
 
   /api/v1/file/register:
     post:
