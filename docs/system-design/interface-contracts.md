@@ -416,6 +416,8 @@ traversal (AutoNAT → DCUtR → Circuit Relay v2) are governed by
 
 6. **Mode-invariant wire formats.** All frame sizes, field layouts, and protocol ID strings defined in §4 are identical in `VYOMANAUT_MODE=demo` and `VYOMANAUT_MODE=prod`. Demo mode only affects time windows, shard counts, and infrastructure dependencies — never the bytes on the wire. (ADR-031)
 
+7. **Participant roles.** Four distinct roles initiate protocols in this section, and the authorization model for each protocol follows from which role initiates it: the **data owner** (§4.1 upload — write; §4.6 retrieve — read), the **coordination microservice** (§4.4 repair, §4.5 vetting GC — both reads/mutations on the microservice's own authority), and the **provider daemon**, which never initiates a protocol in this section, only responds. Before [`ADR-078`](../decisions/ADR-078-data-owner-retrieval-protocol.md), every read path in this section was microservice-initiated, and §4.4.1's authentication model ("is the caller a registered microservice replica") was written under that assumption; §4.6 is the first data-owner-initiated read, with its own authorization model (capability tokens, not peer identity) precisely because that assumption does not hold for it. Any future protocol added to this section must state explicitly which of these roles initiates it, rather than leaving the microservice-only-reader assumption implicit the way it was here.
+
 ---
 
 ### 4.1 Chunk Upload Stream Protocol
@@ -750,6 +752,67 @@ Maximum single frame payload: `4 + (10000 × 32) = 320,004 bytes`.
 - Provider offline at transition time: all synthetic chunk rows set to `'PENDING_DELETION'`; stream initiated on next heartbeat. The audit scheduler must not issue challenges for `'PENDING_DELETION'` rows.
 
 **Concurrency:** Only one vetting GC stream may be active per provider at a time. If a second ACTIVE transition is somehow triggered (e.g. after a re-registration), the microservice must complete the first GC stream before initiating another.
+
+---
+
+### 4.6 Data Owner Retrieval
+
+**Status:** Accepted ([`ADR-078`](../decisions/ADR-078-data-owner-retrieval-protocol.md)). This section did not exist before M17 — see ADR-078's Context for the full account of the gap it closes.
+
+Retrieval is two steps: an owner-authenticated REST call that resolves every shard in a file and mints a download capability token for each, followed by one libp2p stream per shard against the resolved provider.
+
+**4.6.1 — Resolve (data owner → microservice, REST):**
+
+`POST /api/v1/owner/files/{file_id}/retrieve/resolve`
+
+Authentication: BearerAuth, role `owner`. The token's `sub` must equal `files.owner_id` for `file_id`; a mismatch or a `file_id` that does not exist both return `404 NOT_FOUND` (never a distinct "not yours" code — a non-owner must not be able to probe which `file_id`s exist). `files.status` must be `'ACTIVE'`; any other status returns `409` — this is the enforcement point for `rm`'s delete guarantee on the read path, since no further tokens are minted once a file leaves `ACTIVE`.
+
+Called **once per file, not once per segment** — the response covers every segment. At prod parameters a 1 GB file is ~1,365 segments; per-segment resolution would be over a thousand serial round-trips before any shard data moved.
+
+Response body: for every segment, for every shard — `provider_id`, `chunk_id`, `multiaddrs` (from `providers.last_known_multiaddrs`, the same column §4.1's `ShardAssignment.multiaddrs` already exposes to this same audience), `multiaddr_stale`, and `download_token`.
+
+`download_token` is 72 bytes (hex-encoded on the wire, matching §4.1's `capability_token` shape exactly): `expiry_unix_ms(8) || Ed25519_sign(microservice_signing_key, signing_input)`, where
+
+```
+signing_input = "vyomanaut-chunk-download-cap-v1" ‖ chunk_id ‖ provider_id ‖ expiry_unix_ms
+```
+
+This domain prefix is **distinct from** §4.1's `"vyomanaut-chunk-upload-cap-v1"` — a token minted for one direction must never verify as the other. The client never constructs or signs this value; it only forwards it, unmodified, to the resolved provider.
+
+**4.6.2 — Chunk Download Stream (data owner → provider):**
+
+Protocol ID: `/vyomanaut/chunk-download/1.0.0`
+Initiator: Data owner client
+Responder: Provider daemon holding the shard
+
+0-RTT policy: PROHIBITED, for the same reason as §4.4.1 — a replayed stream could exfiltrate chunk data to an unauthenticated party.
+
+Authentication: **Not peer-identity-based.** Unlike §4.4.1 (whose caller set is a small, fixed group of microservice replicas, known in advance), this protocol's callers are arbitrary data owners never pre-registered with any provider — there is nothing to allowlist. Authorization is entirely the `download_token`: the provider verifies it against the `msPublicKey` it already holds for §4.1's tokens, using the identical verification shape.
+
+Frame 1 — ChunkDownloadRequest:
+
+| Field | Type | Size | Description |
+| --- | --- | --- | --- |
+| `length` | uint32 be | 4 B | Must equal 32 + 8 + 64 = 104 bytes |
+| `chunk_id` | bytes | 32 B | Content address of the requested shard |
+| `expiry_unix_ms` | int64 be | 8 B | From the resolved `download_token`, forwarded verbatim |
+| `cap_sig` | bytes | 64 B | From the resolved `download_token`, forwarded verbatim |
+
+Frame 2 — ChunkDownloadResponse (mirrors §4.4.1's shape exactly):
+
+| Field | Type | Size | Description |
+| --- | --- | --- | --- |
+| `length` | uint32 be | 4 B | Success: 1 + 262144 = 262145 B. Error: 1 B |
+| `status` | uint8 | 1 B | `0x00`=OK, `0x01`=NOT_FOUND, `0x02`=NOT_AUTHORISED, `0x03`=CORRUPTION, `0x04`=INTERNAL_ERROR |
+| `chunk_data` | bytes | 262144 B | Raw shard data. Present only when `status=0x00` |
+
+**Status-code semantics are security-relevant, not mechanical.** A token that fails to verify (bad signature, expired, wrong `provider_id`) returns `0x02 NOT_AUTHORISED` **unconditionally, before any storage lookup** — regardless of whether this provider actually holds the chunk. Only once a token verifies does an absent chunk return `0x01 NOT_FOUND`. This ordering is deliberate: an unauthenticated prober with a guessed `chunk_id` learns nothing about a provider's holder-set from the status code alone, while a valid token is already proof the microservice told this caller that this provider holds this chunk, so `NOT_FOUND` at that point leaks nothing new to them.
+
+**No enumeration.** This protocol has exactly one request shape — a single named `chunk_id` with a matching token. There is no listing operation, no wildcard, and no range request; none may be added without a superseding ADR.
+
+Timeout: 10,000 ms, matching §4.4.1 (cold disk reads).
+
+Integrity: the client verifies `SHA-256(chunk_data) == chunk_id` before handing the shard to RS decode — the token authorizes the read; the content address, unrelated to and never derived from the token, verifies its correctness.
 
 ---
 
