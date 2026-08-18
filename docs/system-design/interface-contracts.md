@@ -416,7 +416,7 @@ traversal (AutoNAT → DCUtR → Circuit Relay v2) are governed by
 
 6. **Mode-invariant wire formats.** All frame sizes, field layouts, and protocol ID strings defined in §4 are identical in `VYOMANAUT_MODE=demo` and `VYOMANAUT_MODE=prod`. Demo mode only affects time windows, shard counts, and infrastructure dependencies — never the bytes on the wire. (ADR-031)
 
-7. **Participant roles.** Four distinct roles initiate protocols in this section, and the authorization model for each protocol follows from which role initiates it: the **data owner** (§4.1 upload — write; §4.6 retrieve — read), the **coordination microservice** (§4.4 repair, §4.5 vetting GC — both reads/mutations on the microservice's own authority), and the **provider daemon**, which never initiates a protocol in this section, only responds. Before [`ADR-078`](../decisions/ADR-078-data-owner-retrieval-protocol.md), every read path in this section was microservice-initiated, and §4.4.1's authentication model ("is the caller a registered microservice replica") was written under that assumption; §4.6 is the first data-owner-initiated read, with its own authorization model (capability tokens, not peer identity) precisely because that assumption does not hold for it. Any future protocol added to this section must state explicitly which of these roles initiates it, rather than leaving the microservice-only-reader assumption implicit the way it was here.
+7. **Participant roles.** Four distinct roles initiate protocols in this section, and the authorization model for each protocol follows from which role initiates it: the **data owner** (§4.1 upload — write; §4.6 retrieve — read), the **coordination microservice** (§4.4 repair, §4.5 vetting GC — both reads/mutations on the microservice's own authority), and the **provider daemon**, which never initiates a protocol in this section, only responds. Before [`ADR-080`](../decisions/ADR-080-data-owner-retrieval-protocol.md), every read path in this section was microservice-initiated, and §4.4.1's authentication model ("is the caller a registered microservice replica") was written under that assumption; §4.6 is the first data-owner-initiated read, with its own authorization model (capability tokens, not peer identity) precisely because that assumption does not hold for it. Any future protocol added to this section must state explicitly which of these roles initiates it, rather than leaving the microservice-only-reader assumption implicit the way it was here.
 
 ---
 
@@ -757,7 +757,7 @@ Maximum single frame payload: `4 + (10000 × 32) = 320,004 bytes`.
 
 ### 4.6 Data Owner Retrieval
 
-**Status:** Accepted ([`ADR-078`](../decisions/ADR-078-data-owner-retrieval-protocol.md)). This section did not exist before M17 — see ADR-078's Context for the full account of the gap it closes.
+**Status:** Accepted ([`ADR-080`](../decisions/ADR-080-data-owner-retrieval-protocol.md)). This section did not exist before M17 — see ADR-080's Context for the full account of the gap it closes.
 
 Retrieval is two steps: an owner-authenticated REST call that resolves every shard in a file and mints a download capability token for each, followed by one libp2p stream per shard against the resolved provider.
 
@@ -2295,8 +2295,8 @@ where:
 Only the file owner — who holds `master_secret` — can derive `file_owner_key` and reverse-map
 a DHT key back to its `chunk_hash`. A monitoring node observing DHT traffic cannot correlate
 lookup requests with file identity. This closes DHT Challenge 3 from the SoK DSN survey.
-([`ADR-001`](../decisions/ADR-001-coordination-architecture.md), [`NFR-017`](./requirements.md#78-privacy),
-[`NFR-032`](./requirements.md#78-privacy))
+([`ADR-001`](../decisions/ADR-001-coordination-architecture.md), [`NFR-017`](./requirements.md#80-privacy),
+[`NFR-032`](./requirements.md#80-privacy))
 
 **Key validator ID string registered with libp2p:**
 

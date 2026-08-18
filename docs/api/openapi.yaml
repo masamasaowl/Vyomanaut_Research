@@ -1371,7 +1371,7 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/Multiaddr'
-          description: From providers.last_known_multiaddrs — the same field ShardAssignment.multiaddrs exposes to the same owner audience (ADR-078 §2).
+          description: From providers.last_known_multiaddrs — the same field ShardAssignment.multiaddrs exposes to the same owner audience (ADR-080 §2).
         multiaddr_stale:
           type: boolean
           description: True if the most recent heartbeat is stale; the client should prefer other shards or fall back to a DHT lookup.
@@ -1386,7 +1386,7 @@ components:
             "vyomanaut-chunk-upload-cap-v1") — the two must never verify as each
             other. The client forwards this verbatim in Frame 1 of
             /vyomanaut/chunk-download/1.0.0; it is never constructed or
-            re-derived client-side. (ADR-078 §1, interface-contracts.md §4.6)
+            re-derived client-side. (ADR-080 §1, interface-contracts.md §4.6)
 
     RetrieveResolveSegment:
       type: object
@@ -1417,7 +1417,7 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/RetrieveResolveSegment'
-          description: Every segment of the file, in one response — not paginated per segment (ADR-078 §2's batching requirement).
+          description: Every segment of the file, in one response — not paginated per segment (ADR-080 §2's batching requirement).
 
     ErasureParamsInfo:
       description: |
@@ -2986,7 +2986,7 @@ paths:
       description: |
         Called once per retrieval, for the whole file — not per segment. Returns, for
         every segment, every shard's provider_id, chunk_id, current multiaddrs, and a
-        download capability token (ADR-078). The client forwards each token verbatim
+        download capability token (ADR-080). The client forwards each token verbatim
         in Frame 1 of /vyomanaut/chunk-download/1.0.0 (interface-contracts.md §4.6);
         it is never constructed or re-signed client-side.
 
@@ -2997,8 +2997,8 @@ paths:
         files.status must be ACTIVE. Once a file leaves ACTIVE (e.g. after DELETE
         /api/v1/file/{file_id}), no further tokens are issued for its chunks — this
         is what makes the delete guarantee enforceable on the read path, since
-        hash-based access (considered and rejected, see ADR-078) would have no way
-        to revoke an already-known chunk_id. (ADR-078)
+        hash-based access (considered and rejected, see ADR-080) would have no way
+        to revoke an already-known chunk_id. (ADR-080)
       operationId: resolveRetrieval
       parameters:
         - name: file_id
