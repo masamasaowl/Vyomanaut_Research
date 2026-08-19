@@ -9,7 +9,151 @@ and keep as provenance for topic numbering R-01 → R-72.
 appear only as *evidence about a decision the LTS must take for itself*.
 
 **Incorporates:** the ADR-001–058 interrogation (v2), the ADR-059–073 pass (v3), the five-session
-Design Council of August 2026 (v3.1), and a new assumption-debt audit of all 75 ADR files (§2).
+Design Council of August 2026 (v3.1), a new assumption-debt audit of all 75 ADR files (§2), and
+**§0 — the execution learnings from Domain P, the first domain run end-to-end under this list.**
+
+---
+
+## §0 — What Domain P's execution taught `[NEW — August 2026]`
+
+Domain P is the first Band 1 domain taken from search through triage to drafted notes and ADRs. It
+produced Papers 76–82 plus a Paper 16 revision, ADR-076 Addendum A, ADR-022 Addendum B, and ADR-079.
+It also produced seven process findings, and **every one of them cost real rework**. They are placed
+first because they change how §3 is executed, not merely what it says.
+
+### 0.1 — The tooling decision: Zotero is now the corpus front end
+
+Ratified August 2026. Every process failure in 0.2 below has a Zotero countermeasure, which is why
+the tool is being adopted rather than the discipline merely being restated.
+
+| Failure it prevents | Zotero mechanism |
+| --- | --- |
+| Math stripped from abstracts (0.2 #1) | Attach the **PDF**, never the publisher HTML view. Zotero's own metadata comes from the PDF or DOI, not from a clipboard copy |
+| Duplicate conference/journal versions (0.2 #2) | `Duplicate Items` view before any triage batch is scored |
+| Wrong artefact version cited (0.2 #3) | `Extra` field carries `Artefact: conference precursor` or `Artefact: journal vN`; the reading list's must-read table cites the **DOI**, not the title |
+| Un-walked citation chains (0.2 #6) | Zotero → **Semantic Scholar** or **Connected Papers** on the anchor item, results imported to a `chain-R-NN` collection |
+| Provenance drift between note and source | `[P §x]` tags reference the attached PDF's own section numbering; the PDF stays with the item permanently |
+
+**Library layout.** One group library, `Vyomanaut-LTS`. Collections mirror this list exactly:
+`Band-1/Domain-K`, `Band-1/Domain-A`, `Band-1/Domain-G`, and so on. A paper that survives triage gets
+tag `status:drafted` and its `paper-NN` number in `Extra` as `Corpus: paper-81`. Discarded items are
+**kept**, tagged `status:rejected` with a one-line `Note` giving the reason — this is what makes a
+null result durable and stops the next search re-running the same query.
+
+**Required fields before an item may be scored.** Zotero item must have: PDF attached · DOI or stable
+URL · `Extra: Artefact:` line · the paper's own **parameter-constraint sentence** pasted into a child
+note. That last one is not optional; see 0.2 #1.
+
+### 0.2 — Seven findings from running Domain P
+
+1. **Publisher HTML strips the mathematics, and the parameters go with it.** R-28's triage abstract
+   for Shah et al. reached us as *"any subset of nodes within the -node network"* — IEEE Xplore
+   renders math as MathML and most clipboards drop it silently. `(n,k,d)` was **invisible to the
+   triager**, so no substitution test was possible, so §3.3's mandatory field went unfilled for all
+   23 entries. **Root cause of the entire first triage pass being unusable.** → Zotero, PDF-only.
+
+2. **Duplicates survived to the drafting queue.** Chowdhury & Vardy appeared as both ISIT 2018 and
+   its TIT 2021 journal version; Elmahdy/Kleckler/Mohajer appeared twice across two triage files, once
+   under a title belonging to a third paper entirely. → Zotero duplicate detection, run before scoring.
+
+3. **The artefact read was not the artefact cited.** Paper 82's must-read row named a three-author
+   TIT 2023 journal paper covering Type-I *and* Type-II eavesdroppers; the PDF supplied and read was
+   a two-author conference precursor with Type-I only and a *conjectured* rather than proved
+   optimality claim. Both are legitimate papers; only one answers the question the row was written to
+   ask. → `Extra: Artefact:` and DOI-based must-read rows. Q79-3 tracks obtaining the journal version.
+
+4. **`pdftotext` mis-renders nested binomial coefficients, and the error is silent.** Paper 82's
+   Theorem 1 was transcribed with `(d−ℓ)` distributed across a bracketed difference rather than
+   multiplying `C(d,m)` alone. Every number in that paper's first substitution table was wrong.
+   Caught only by rendering the source page as an image and reading the typeset equation.
+   → **New standing rule: any formula with nested sub/superscripts, binomials, or fractions that
+   will be substituted is verified against a rendered page image, not against extracted text.**
+
+5. **A whole paper class was mis-assigned on keyword rather than on claim.** Guruswami–Wootters and
+   Dau et al. were carried into Domain P as confidentiality candidates through two triage rounds.
+   They are pure repair-**bandwidth** papers with no adversary in the model at all — and in exact
+   repair the repairer is *supposed* to learn the missing shard, so reducing download cost is not
+   reducing disclosure. §3.3's *"Adjacent, not this"* line for R-28 had pre-named this exact class
+   (*"MSR bandwidth-optimality results. They minimise bytes moved, not who can decode"*) and the
+   screen was not run. → **The adjacency screen runs first and is recorded as a scored field, not
+   as prose.** See 0.3.
+
+6. **Citation chains were specified and then not walked.** R-27's block reads
+   `chain forward-cite Pawar et al. 2011, filter 2015+`. The result set returned 2011/2014/2017/2023/
+   2025/2026 with no chain structure — keyword search was substituted. **Both papers that ended up
+   reshaping the domain (76 and 81) were in the must-read table, not in any search result.**
+   → Zotero + Semantic Scholar, `chain-R-NN` collection, and the chain is a *deliverable* with its
+   own null result if it yields nothing.
+
+7. **Named must-reads went missing without a null-result record.** Two of Domain P's four named
+   must-reads never appeared in any result set and no §3.6 note explained why. Both were later
+   supplied by hand and both mattered. → Must-reads are Zotero items **before** the search starts,
+   not names in a table to be rediscovered.
+
+### 0.3 — Amended triage scorecard, ratified for Domains K, A, G
+
+§3.4's original axes were calibrated for systems papers and mis-score coding-theory and
+cryptography domains: **Evidence type** forces every information-theory paper to 0 (there is no
+implementation-and-measurement literature on secrecy capacity and there never will be), and
+**Actionability** forces every candidate in a domain opened *because the codec must change* to 0.
+Under the literal scorecard Domain P's own anchor scored 6/10 and 19 of 23 entries landed ≤6.
+
+**Two axes are replaced. The other three are unchanged. This is not a relaxation — "explicit
+construction with a stated field size" is a real filter that discarded entries the old axes passed.**
+
+| Axis | 0 | 1 | 2 |
+| --- | --- | --- | --- |
+| Parameter reach | stated only ≥4× from ours | within 4× | covers or brackets ours |
+| Trust model | assumes a trusted coordinator | partially trusted | untrusted providers *and* operator |
+| **Proof status** *(replaces Evidence type)* | bound only, no construction | non-constructive, or construction at unusable parameters | explicit construction, parameters and field size stated |
+| **Layer of change** *(replaces Actionability)* | new code family **and** new protocol | new code family behind the existing shard interface | protocol-only change over the existing layer |
+| Corpus delta | duplicates a paper we have | overlaps one | new mechanism or measurement |
+
+**Applicability.** Use the amended axes in **any domain whose subject is a coding, cryptographic, or
+information-theoretic construction** — K, and the crypto half of A and G. Keep the original
+**Evidence type / Actionability** axes for measurement- and systems-shaped domains (U, V, O, D, E, S),
+where implementation-and-measurement is a real and available distinction. State which pair was used
+in the note header; a score is meaningless without it.
+
+**One field is added to §3.3's filter and is mandatory, not optional:**
+
+| Field | Purpose |
+| --- | --- |
+| **Parameter constraint (verbatim)** | The paper's own sentence stating what it requires — *"for `d = n−1`"*, *"for `k = d`"*, *"for high-rate codes"*, *"requires `q ≥ n`"*. Almost never in the abstract's first line; usually in the contributions paragraph. **This single field decided four of Domain P's seven outcomes** — it is what ruled Guruswami–Wootters out (high-rate only), what nearly ruled determinant codes out and then ruled them *in* (`k=d=16` is admissible and, unlike `d=n−1`, `r0`-gate-compatible), and what ruled Paper 76's headline construction *incompatible* with the `r0` gate |
+
+### 0.4 — Two substantive results that change other domains
+
+**A. Rarity is not a mitigation, and this list said it was.** Domain P's substitution instruction read
+*"evaluate against a repair event that is rare (post-`r0`-gate, per ADR-076)... it changes what a
+partial mitigation is worth."* Goparaju et al.'s Theorem 3 precondition (`ℓ1+ℓ2 < k`) **counts
+observations, not rate** — rarity does not relax it. Worse: ADR-076's `r0` gate batches up to 32
+shard regenerations into a single repair cycle, so **one batched cycle can expose `ℓ2` up to 32,
+twice past the `ℓ2 < 16` wall, in one event** rather than accumulating toward it over years.
+→ **Q79-1**, the largest open item in Domain P, and a standing caution for any domain that reasons
+about event frequency as a safety margin.
+
+**B. Repairer election is now a Domain G consumer.** ADR-076's open constraint *"a provider that can
+influence its own election gains plaintext on demand; election must not be predictable or
+petitionable"* (Q76-1) is, stated plainly, a **public randomness requirement**. R-50 was scoped to
+audit-challenge seeds only. It now has a second consumer with a different shape, and that changes
+R-50's substitution test — see Domain G below. This coupling was not visible before Domain P ran.
+
+### 0.5 — Corrected standing constants
+
+Carry these forward; they were derived in Domain P and are not in §2's parameter tables.
+
+```
+Regeneration rate    n·T/MTTF per segment — 56 nodes, 280 d midpoint, 3 yr ⇒ 219 regenerations
+                     73/year. INVARIANT to repair policy: lazy batches them, it does not reduce them
+Expected repairs     219/56 ≈ 3.9 per provider per segment lifetime, under uniform election
+per provider         (Poisson λ=3.9 — the tail is what matters, not the mean)
+IT secret-sharing    56× expansion — a proven floor (Krawczyk), not an engineering estimate
+floor
+Blindness cost       ~3.73–3.83× at ℓ2 = 1, cross-validated by two independent proof techniques
+(single repairer)    ⇒ +7–9% over RS(16,56)'s 3.5%. NOT free, and not order-of-magnitude either
+ASN-scale blindness  82.5× at ℓ2 = 15 — unaffordable at every construction found. This is why
+                     F-34 left Domain P and belongs to Domain K
+```
 
 ---
 
