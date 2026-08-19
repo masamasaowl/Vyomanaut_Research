@@ -523,7 +523,7 @@ shares are TRAI-anchored and the JioFiber placement is `[INFERRED]`. It matters 
 **32.67%** of India's wireline base and no fixed-line ASN appears for it at any inspected rank. If
 JioFiber does originate inside AS55836, then the largest fixed-line domain in India is
 ASN-indistinguishable from the largest mobile domain and no placement rule expressible over ASNs can
-split it. ADR-079's decisions do **not** rest on the answer — Decision 2 makes the *organisation* the
+split it. ADR-081's decisions do **not** rest on the answer — Decision 2 makes the *organisation* the
 unit, and Jio is one organisation either way — but F-LTS-16's status does, and so does any future
 argument that per-ASN enforcement is salvageable. Resolve by retrieving `aspop?c=IN` first-party and
 cross-checking PeeringDB for a Jio fixed-line origin with ≥1 M users.
@@ -556,16 +556,16 @@ head-only hand check (`1/HHI₃ = 5.293`) lands within 0.13 of the full model �
 defensible for any claim about a specific small operator, and §5.4's recruitment-depth table
 (151 enrolments for ACT, 427 for the 8th domain) inherits its precision from it. It is also the
 falsifier for M-01's headline: if the true residue exceeds 45% of the wireline base with no operator
-above 10%, `N_eff` rises past 8 and ADR-079's gate passes on both metrics. **This is the highest-value
+above 10%, `N_eff` rises past 8 and ADR-081's gate passes on both metrics. **This is the highest-value
 open item in Domain K** — it is the only one that could overturn the result rather than confirm it.
 
 ---
 
 ### Q-R17-4 — Is a maintainable ASN→organisation mapping achievable for Indian ISPs, and what is its staleness half-life?
 
-**Raised by:** M-01 §3.3 (F-LTS-17); ADR-079 Decision 2 **Status:** open — **design decision with a
-research input; blocks ADR-079 leaving `Proposed`**
-**Blocked on:** whether the mapping can be built and kept fresh. ADR-079 Decision 2 changes cap
+**Raised by:** M-01 §3.3 (F-LTS-17); ADR-081 Decision 2 **Status:** open — **design decision with a
+research input; blocks ADR-081 leaving `Proposed`**
+**Blocked on:** whether the mapping can be built and kept fresh. ADR-081 Decision 2 changes cap
 enforcement from per-ASN to per-organisation, because ACT / Atria Convergence holds four ASNs
 (AS24309, AS55577, AS18209, AS131269) and a per-ASN 20% cap therefore admits `4 × 11 = 44` of 56
 shards to one company — **78.6% of the stripe, against a disclosure threshold of 16, with no collusion
@@ -688,8 +688,8 @@ blocking anything on.
 | **Q-ORG-1** | Who is the **second Owner** of the `vyomanaut` GitHub organisation? | Both | The org's bus factor; do this before the M18 tag | High |
 | **Q-SIM-1** | Should the synthetic tier's PRF share a construction with the AONT key stream, or be independent? | LTS | ADR-069's implementing session | Low |
 | **Q-LAB-1** | Are the college's 150+ lab desktops available for a fleet run, and under what access terms? | LTS | The fleet-scale milestone, and the strategy discussion still queued | Medium |
-| **Q-R17-3** | Replace M-01's residue decomposition with TRAI's ISP-wise series | LTS | The falsifier for `N_eff = 5.16`; ADR-079's headline | **High** |
-| **Q-R17-4** | Is an ASN→organisation mapping maintainable for Indian ISPs? | LTS | ADR-079 leaving `Proposed`; F-LTS-17's remedy | **High** |
+| **Q-R17-3** | Replace M-01's residue decomposition with TRAI's ISP-wise series | LTS | The falsifier for `N_eff = 5.16`; ADR-081's headline | **High** |
+| **Q-R17-4** | Is an ASN→organisation mapping maintainable for Indian ISPs? | LTS | ADR-081 leaving `Proposed`; F-LTS-17's remedy | **High** |
 | **Q-R17-1** | Does JioFiber originate inside AS55836? | LTS | F-LTS-16's status; per-ASN enforcement salvageability | Medium |
 | **Q-R17-2** | RIPE Atlas probe-per-ASN coverage for India | LTS | Independent confirmation of the 49-operator count | Low |
 | **Q-MKT-2** | Measured wall-power draw of the provider daemon | LTS | ADR-080's replacement allocation; ADR-081's positioning council | **High — do first** |
