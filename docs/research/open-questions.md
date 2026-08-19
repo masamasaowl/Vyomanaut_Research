@@ -394,3 +394,309 @@ Raised by: Paper 68 (Shacham & Waters), reading-list-v2 Domain A / R-03 Status: 
 | **Q-ADR80-3** | Should a provider rate-limit `/vyomanaut/chunk-download/1.0.0` requests per requesting Peer ID? A valid token authorizes a read but does not bound request *volume*. | LTS | Abuse-resistance work; not required for correctness | Low |
 
 ---
+
+### Q73-1 — Can a Vyomanaut provider obtain another provider's shard bytes, and at what cost?
+
+**Raised by:** Paper 73 (Chen & Curtmola) **Status:** open — **structural check, answerable by
+reading code, not by research** **Blocked on:** nobody has traced the paths. The entire
+outsourcing/ROTF analysis in ADR-014 Addendum A assumes a colluding provider can fetch the 16 peer
+shards of a segment it holds one shard of. ADR-072 capability tokens gate *authorised* download, so
+a lone cheater has no sanctioned path — but Chen & Curtmola's adversary is explicitly a colluding
+set, and nothing obviously prevents providers serving each other raw shard bytes over libp2p
+off-protocol. Three sub-questions, in order of cheapness: (1) does any code path in `internal/p2p`
+serve shard bytes to a requester that is not the microservice or a token-bearing owner? (2) does
+ADR-076's elected-repairer protocol create a token that a provider can obtain for a repair it
+nominates itself — this is Q76-1 from the other side; (3) if collusion is required, what does that
+cost, and does it change the α-crossover table materially. If the answer to (1) is "no path exists",
+the finding stands but the attack costs collusion rather than bandwidth, which is a different and
+better place to be.
+
+---
+
+### Q73-2 — What is the honest distribution of per-chunk audit contribution `x` on real provider hardware, and of provider downlink?
+
+**Raised by:** Paper 73 (Chen & Curtmola) §4.2 **Status:** open — **LaunchGate measurement; blocks
+setting `τ` at all** **Blocked on:** a measurement nobody has taken, on hardware nobody has profiled.
+ADR-014 Addendum A restates the deadline as `τ = c·x + 2·t_i` and cannot instantiate it: `x` is
+unmeasured and the provider downlink distribution is unknown. Both matter and they matter
+differently. `x` sets where the honest population sits; the downlink sets where the α-cheater sits,
+and the crossover between them is the entire security margin — at 10 Mbit/s a 0.38% deletion is
+timing-invisible, at 100 Mbit/s it is 3.76%, at 300 Mbit/s it is 11.3%. Chen & Curtmola measured a
+1.36× spread of `x` at the 95th percentile **inside an AWS datacentre** and warned that benign tail
+latency destroys the separation; Vyomanaut's honest path is 2,867 random seeks on a consumer desktop
+under ADR-025's 50 ms p99 background gate, competing with the user's own workload and the storage
+engine's compaction. The tail is the whole question, so a median is not an answer — the deliverable
+is a distribution with its 95th and 99th percentiles. Shares scope with Q23-1 (RocksDB rate limiter)
+and Q65-1 (RS throughput); take all three in one measurement session on the same hardware. Until it
+lands, `τ` is `[UNDERIVED]` under ADR-077 trigger T1.
+
+---
+
+### Q74-1 — Does withholding the masking scalars from a repair aggregator actually make it blind, and what does pre-aggregation cost?
+
+**Raised by:** Paper 74 (Chen, Ammula & Curtmola) §4.2 **Status:** open — **Domain P / R-28 lead;
+the most promising item in that domain and not yet a result** **Blocked on:** a security argument
+that does not exist and a topology that has not been priced. RDC-EC's Aggregation Server sums masked
+partial segments and is *told* `(Z_j, x_j)` so it can localise a faulty contributor — which is also
+exactly what lets it invert each contribution and recover all `k` segments. The paper trusts it
+explicitly and proves nothing about blindness (Theorem 4.1 is about hiding the dispersal matrix `M`).
+Withhold the scalars and the aggregator holds two linear combinations of 16 shards, below `k`, and
+the unmasker holds one shard, also below `k` — **no party assembles `k`**, which is R-28's accept
+criterion exactly. Three things must be settled before this is anything more than a lead. **(a)** The
+aggregator receives contributions *separately*, so it can form the sector-wise ratio `Z_j/x_j`, and
+if it is itself one of the helpers it knows one `b_j` outright and can solve for that `x_j`. The
+construction needs contributions to arrive **pre-aggregated** — a chained or tree topology — whose
+liveness cost under ADR-021's NAT and relay constraints is unpriced and whose failure modes are new.
+**(b)** Paper 16 (AONT-RS) must be re-read against a *linear-combination* adversary holding two
+combinations of 16 shards, which is not the shard-holder adversary its security section considers.
+This re-read is already Domain P's stated must-read; it is now specific. **(c)** Blindness costs
+fault localisation, so a corrupt contribution can be detected but not attributed, and recovery
+becomes a subset search — `O(log k)` rounds by bisection, or a restart with a fresh helper set. That
+is a real availability cost during exactly the events that already threaten durability. Pairs with
+F-LTS-15.
+
+---
+
+### Q74-2 — Does the `GF(2^128)` change interact with anything outside the audit path?
+
+**Raised by:** Paper 74 / ADR-078 **Status:** open — scoping question, low risk, answerable by
+inspection **Blocked on:** a sweep nobody has done. ADR-078 changes the authenticator field only. But
+ADR-059 states that *"every wire format, receipt column, test fixture and stored authenticator
+depends on `(p, s)`"*, and the sweep to confirm the change is confined to `internal/audit` and the
+chunk-upload frame has not been run. Specific things to check: whether any receipt column stores a
+field element in a representation that assumes integer semantics (ordering, comparison, `NUMERIC`
+rather than `BYTEA`); whether any test fixture hardcodes a `Z_p`-reduced value; whether the client's
+upload-path authenticator generation shares code with any non-audit arithmetic; and whether
+`g(Y)`'s choice needs to be a `NetworkProfile` field or a package constant. Also worth confirming
+that the demo track is genuinely untouched — ADR-062 freezes it, but a shared package would make the
+change visible there.
+
+---
+
+### Q75-1 — Where does per-contribution repair verification run: on the repairer or on the microservice?
+
+**Raised by:** Paper 75 (Chen, Curtmola, Ateniese & Burns) §3.1.4 **Status:** open — **design
+decision, not research; blocks ADR-078's implementing session** **Blocked on:** a ruling with a real
+trade-off on both sides. ADR-078 §5 makes verification of each `(z_j·shard_j, ι(z_j)·σ_j)` pair
+mandatory, because Paper 75's pollution attack otherwise lets one malicious helper write a
+permanently and undetectably wrong shard. Where it runs is open. **On the repairer:** cheap (4,096
+PRF evaluations per chunk across all 16 helpers, 0.56% of one provider-day's routine load), keeps
+65,536 B/chunk of tag traffic off the microservice, and self-serving — a repairer has no incentive to
+accept corrupt input. But it cannot be *proved* to have run, so a lazy or colluding repairer is
+indistinguishable from a diligent one, which is F-22's shape in a new place. **On the microservice:**
+accountable and centrally logged, at 65,536 B per chunk — 2.1 MB per 32-fragment gated repair event,
+traffic ADR-076 currently budgets at zero. Note the microservice receiving *tags* does not violate
+ADR-076's constraint, which is about shard bytes; this is a bandwidth and coupling question, not a
+confidentiality one. A third shape exists and should be priced: verify on the repairer, and have the
+repairer commit to the helper set and contribution hashes in the repair receipt, so a later dispute
+is decidable without moving the tags. That is Paper 70's liability pattern applied to repair.
+
+---
+
+### Q78-1 — Does Shacham & Waters' private-scheme security proof carry to `GF(2^128)`?
+
+**Raised by:** ADR-078 **Status:** open — **blocking on ADR-078 leaving `Proposed`; a one-session
+re-read of Paper 68 §4, not a search** **Blocked on:** a proof check nobody has performed. Shacham &
+Waters state the private PRF-based scheme over `Z_p` for prime `p`. The essential argument appears
+field-agnostic: a forged aggregate implies `Σ α_j·Δμ_j = 0` for some `Δμ ≠ 0`, and a randomly chosen
+secret `α` satisfies that with probability `1/|F|` — `2⁻¹²⁸` in `GF(2^128)`, the same order as
+`p = 2^128 + 51`. Extractability is linear algebra over a field and should transfer identically. Two
+instantiations in other fields already exist in the literature and were read this session: Paper 74
+builds a Shacham–Waters-style tag over `GF(2^w)` and Paper 75 over `GF(p)`, whose footnote 5
+explicitly treats the choice as immaterial. **What must be checked line by line is characteristic
+2.** Any step relying on `x + x ≠ 0`, on division by 2, on the integer ordering of `Z_p`, or on the
+distinctness of `+` and `−` fails. Also confirm that Paper 68 Appendix B's coefficient-free attack —
+which ADR-059 already prohibits against — is neither weakened nor strengthened by the change; it
+should be unaffected, since it is about coefficients being 1, not about the field. Until this is
+done, ADR-078 is a construction with a plausible security argument, which is not the same as a
+construction with a proof, and the LTS Literature Standard's `[INFERRED]` rule forbids an ADR
+resting on the difference.
+
+---
+
+### Q-R17-1 — Does Reliance Jio operate a distinct fixed-line origin ASN, or does JioFiber originate inside AS55836?
+
+**Raised by:** M-01 §3.2 (F-LTS-16) **Status:** open — **one first-party retrieval, not a search**
+**Blocked on:** the live APNIC India per-AS table, which could not be fetched: the retrieval returned
+a cached 28 Mar 2024 global snapshot regardless of the `c=IN` and `d=` parameters, so M-01's head
+shares are TRAI-anchored and the JioFiber placement is `[INFERRED]`. It matters because Jio holds
+**32.67%** of India's wireline base and no fixed-line ASN appears for it at any inspected rank. If
+JioFiber does originate inside AS55836, then the largest fixed-line domain in India is
+ASN-indistinguishable from the largest mobile domain and no placement rule expressible over ASNs can
+split it. ADR-079's decisions do **not** rest on the answer — Decision 2 makes the *organisation* the
+unit, and Jio is one organisation either way — but F-LTS-16's status does, and so does any future
+argument that per-ASN enforcement is salvageable. Resolve by retrieving `aspop?c=IN` first-party and
+cross-checking PeeringDB for a Jio fixed-line origin with ≥1 M users.
+
+---
+
+### Q-R17-2 — What is RIPE Atlas probe-per-ASN coverage for India, and does it corroborate 49 recruitable operators?
+
+**Raised by:** M-01 §1 (named in the R-17 search line, not retrieved) **Status:** open — **research**
+**Blocked on:** nothing but effort. M-01's count of 49 independent fixed-line operators comes from a
+single source family (APNIC user estimates) with a ~200k-user visibility floor and known MaxMind
+geolocation artefacts — AS18001 and AS132045 (both Dialog, Sri Lanka) appear marked `IN`, and
+AS151757 (an Indian ISP by name) appears marked `RU`. RIPE Atlas probes are physically hosted, mostly
+on residential connections, so probe-per-ASN coverage is an *independent* lower bound on ASNs with
+reachable residential hosts — the exact population R-17 asks about, arrived at by a different
+instrument. It would also test M-01 §4.3's replacement CGNAT mechanism, since probe reachability
+behind CGNAT is directly observable. Low priority relative to Q-R17-3: it would raise confidence in
+a number (49) that already clears its gate by 6.1×, not in the number that fails.
+
+---
+
+### Q-R17-3 — Replace M-01's APNIC-proportion decomposition of the 26.73% wireline residue with TRAI's ISP-wise series
+
+**Raised by:** M-01 §5.1 **Status:** open — **the one substitution in the measurement**
+**Blocked on:** locating TRAI's ISP-wise wired-broadband breakdown. TRAI publishes wireline totals by
+access provider; the ~26.73% residue (12.78 M subscribers) is not decomposed in the reports read, so
+M-01 splits it across 47 observed fixed ASNs in APNIC user proportion. This is defensible for
+`N_eff` — M-01 §3.6 shows the effective count is flat past about twenty tail operators, and the
+head-only hand check (`1/HHI₃ = 5.293`) lands within 0.13 of the full model — but it is **not**
+defensible for any claim about a specific small operator, and §5.4's recruitment-depth table
+(151 enrolments for ACT, 427 for the 8th domain) inherits its precision from it. It is also the
+falsifier for M-01's headline: if the true residue exceeds 45% of the wireline base with no operator
+above 10%, `N_eff` rises past 8 and ADR-079's gate passes on both metrics. **This is the highest-value
+open item in Domain K** — it is the only one that could overturn the result rather than confirm it.
+
+---
+
+### Q-R17-4 — Is a maintainable ASN→organisation mapping achievable for Indian ISPs, and what is its staleness half-life?
+
+**Raised by:** M-01 §3.3 (F-LTS-17); ADR-079 Decision 2 **Status:** open — **design decision with a
+research input; blocks ADR-079 leaving `Proposed`**
+**Blocked on:** whether the mapping can be built and kept fresh. ADR-079 Decision 2 changes cap
+enforcement from per-ASN to per-organisation, because ACT / Atria Convergence holds four ASNs
+(AS24309, AS55577, AS18209, AS131269) and a per-ASN 20% cap therefore admits `4 × 11 = 44` of 56
+shards to one company — **78.6% of the stripe, against a disclosure threshold of 16, with no collusion
+at all.** The decision is forced; the mechanism is not. Candidate sources are PeeringDB organisation
+records, AS-name clustering, and IRINN membership (4,649 organisations as of January 2026), each with
+different coverage and different failure modes on exactly the small regional ISPs the tail is made of.
+Two sub-questions: (i) what fraction of the 49 operators can be resolved to a parent at all, and
+(ii) how fast does the mapping decay under acquisition — Indian fixed-line consolidation is the same
+force that makes M-01's 2024/2026 splice a threat to validity. A stale mapping fails *open*, admitting
+shards it should reject, which is the direction that matters.
+
+---
+
+### Q-MKT-1 — Does a sovereignty-motivated Indian storage buyer exist below enterprise scale, and what will they pay per GB-month?
+
+**Raised by:** `market-study.md` §4.1; ADR-081 Decision 5 **Status:** open — **the largest open
+question in the project that is not a cryptography question** **Blocked on:** any demand-side
+measurement whatsoever. `market-study.md` §2.3 establishes arithmetically that Vyomanaut cannot
+compete on price — the owner-facing floor is 3.50x the provider's raw cost, which at Indian metro
+marginal tariffs is 1.9x the cheapest consumer cloud plan in the best physically-available scenario
+and 60.5x in the worst, from electricity alone. That rules out one axis, not the product. The
+remaining thesis is that buyers needing India-resident, non-hyperscaler, client-keyed storage are not
+price-sensitive in the way that measurement captures. **This thesis is `[INFERRED]` and has no
+evidence behind it.** ADR-081 Decision 3 forbids an ADR resting on an `[INFERRED]` claim alone, so
+the positioning fork (`market-study.md` §7.2) cannot be resolved until this is measured. The awkward
+part: if such buyers exist only at enterprise scale, Vyomanaut's provider pool — residential desktops
+on unmeasured grid reliability, per Q-MKT-3 — is disqualifying for them, and the two halves of the
+product do not connect. Resolve by talking to buyers, not by reading.
+
+---
+
+### Q-MKT-2 — What is the measured wall-power draw of the provider daemon on representative Indian desktop hardware?
+
+**Raised by:** `market-study.md` §2.2; ADR-080 Decision 3 **Status:** open — **cheapest item on the
+critical path; a wall meter and a weekend** **Blocked on:** nothing. `market-study.md` §2.2 brackets
+the draw at 2 W (I/O only, machine on regardless), 8 W (dedicated HDD) and 65 W (dedicated desktop
+24/7). All three are `[ASSUMED]`. **The bracket is 32x wide and the break-even allocation moves 32x
+across it** — 77 GB at the low end, 2,510 GB at the high end, against the fixed 70 GB constant.
+Every economic number in the market study sits downstream, ADR-080 adopts no replacement allocation
+until this lands, and ADR-081 Decision 5 forbids convening the positioning council before it. Two
+measurements are wanted, not one: idle draw with the daemon resident, and draw under audit load at
+`audit_sample_rate = 0.01`. Measure at the wall, not from datasheets — the question is what the
+household's meter records, and it is charged at the household's **marginal** slab, which
+`market-study.md` §2.2 shows can be triggered into a subsidy cliff by the incremental consumption
+itself.
+
+---
+
+### Q-MKT-3 — R-15: Indian residential grid and broadband availability, and whether a UPS becomes a provider prerequisite
+
+**Raised by:** `market-study.md` §3 **Status:** open — **Domain D, unread; highest-value unread item
+for market purposes** **Blocked on:** CEA and state-utility outage data, plus TRAI/M-Lab/Ookla for
+the broadband half, as `reading-list.md` Domain D already names. Storj's node terms require **99.3%
+uptime per month**, which permits **5.04 hours** of downtime. Whether an Indian residential desktop
+on grid power holds that is unmeasured, and the project has no basis to assume either way. It prices
+two things at once: the redundancy the erasure code must carry — which sets `n/k`, which sets the
+3.50x multiplier, which sets every number in `market-study.md` §2 — and whether a UPS is a *de facto*
+prerequisite. If it is, the provider proposition acquires a Rs 3,000-6,000 capex before the first
+rupee of revenue, against a best-case revenue of **-Rs 0.95/month** at the current allocation
+(ADR-080 §D), which makes the payback period undefined rather than long. Do not derive redundancy
+parameters from Bolosky or from Storj's NAS population until this lands; both describe different
+power regimes.
+
+---
+
+### Q-MKT-4 — R-13: Storj's published node-churn statistics for the incentivised population, and Indian node presence within it
+
+**Raised by:** `market-study.md` §8 **Status:** open — **research; a natural experiment already run**
+**Blocked on:** locating Storj's published node statistics with geographic breakdown. This is the
+cheapest possible test of ADR-080's central finding. If Indian consumer-desktop nodes are rare or
+absent in Storj's incentivised population despite Storj paying $1.50/TB-month, that is direct
+observational support for `market-study.md` §2.4's arithmetic — the economics do not close at Indian
+tariffs on a desktop, and the market has already discovered it. If Indian nodes are *common*, the
+power assumptions in Q-MKT-2 are wrong in the favourable direction and ADR-080's break-even table
+needs revisiting. Either answer is informative, which is what makes it worth doing before the
+expensive measurements.
+
+---
+
+### Q-MKT-5 — Indian fixed-broadband FUP and upload-speed distribution: can a provider sustain repair egress under a consumer plan's fair-use policy?
+
+**Raised by:** `market-study.md` §8 **Status:** open — **research** **Blocked on:** per-plan FUP
+terms from major Indian ISPs, and upload-speed distributions from M-Lab or Ookla. Storj's node terms
+require >=5 Mbps upstream and >=2 TB monthly bandwidth. Vyomanaut's repair path (ADR-076) moves shard
+bytes provider-side by design, and its background budget is 100 KB/s (Blake & Rodrigues 2003, Class
+D). Whether an Indian consumer plan tolerates sustained repair egress without throttling or
+FUP-triggered speed reduction is unmeasured, and it bears on ADR-076's cost model as well as on
+whether providers get silently degraded into unreliability. Note the interaction with Q-MKT-3: a
+provider throttled below the audit response deadline is indistinguishable from a provider that is
+offline.
+
+---
+
+### Q-MKT-6 — What is the correct INR/USD assumption for competitor comparisons?
+
+**Raised by:** `market-study.md` §8 **Status:** open — **low priority; affects precision, not
+direction** **Blocked on:** adopting a dated, sourced FX reference rather than the Rs 87/USD used
+throughout `market-study.md` §2, which is `[ASSUMED]`. Every Storj comparison is denominated in it.
+A 15% move changes ADR-080 §D's revenue figures by 15% and changes no sign: scenario (a) is
+-Rs 0.95/month at Rs 87, and would need roughly Rs 96/USD to reach break-even at the 70 GB
+allocation — which is a currency bet, not a business model. Worth fixing for hygiene; not worth
+blocking anything on.
+
+---
+
+| ID | Question | Track | Blocks | Priority |
+| --- | --- | --- | --- | --- |
+| **Q-M17-1** | Was M16 Session 16.1.1 (`demo_timeline_test.go`) actually completed, or does M17 Session 17.2.1 build it? | Demo | Session 17.2.1's scope — the session handles either case, but the answer changes its size | Medium |
+| **Q78-1** | Does Shacham & Waters' proof carry to `GF(2^128)`? | LTS | ADR-078 leaving `Proposed`; the Proof of Storage milestone | **High** |
+| **Q73-1** | Can a provider obtain another provider's shard bytes at all? | LTS | Whether ADR-014 Addendum A's finding costs bandwidth or collusion | **High** |
+| **Q73-2** | Honest `x` distribution and provider downlink distribution | LTS | Setting `τ` at all; ADR-014 Addendum A is un-instantiable without it | **High** |
+| **Q75-1** | Where per-contribution repair verification runs | LTS | ADR-078's implementing session | Medium |
+| **Q74-1** | Does a blind repair aggregator work, and what does pre-aggregation cost? | LTS | Domain P / R-28; F-69 | Medium |
+| **Q74-2** | Does the `GF(2^128)` change reach outside `internal/audit`? | LTS | ADR-078's implementing session | Low |
+| **Q-M18-1** | SHA-256 throughput on minimum-spec hardware without SHA-NI | LTS | The corrected AONT threshold at the Launch Gates milestone | Medium |
+| **Q-M18-6** | Does the corrected NFR-009 threshold change ADR-003's segment-size decision? If measured p50 at 4 MiB is far under budget, a larger segment reduces per-file pointer overhead | LTS | Design council, after Q-M18-1 | Medium |
+| **Q-M19-1** | Do the demo's hand-rolled RS shards decode under `klauspost/reedsolomon`? | LTS | If not, `docs/inherited/DEMO.md` needs a correction — the stash produced non-standard shards | High |
+| **Q-M19-2** | Does the observed Circuit Relay v2 reservation slot limit match `architecture.md §27.5`'s assumed 128? | LTS | The entire relay capacity model, and ADR-068's alert arithmetic | High |
+| **Q-M19-3** | Does `internal/p2p`'s exported surface survive the libp2p swap unchanged, as `doc.go` claims? | LTS | Session 19.1.1 — if not, it is a finding about the demo, not a refactor | High |
+| **Q-ORG-1** | Who is the **second Owner** of the `vyomanaut` GitHub organisation? | Both | The org's bus factor; do this before the M18 tag | High |
+| **Q-SIM-1** | Should the synthetic tier's PRF share a construction with the AONT key stream, or be independent? | LTS | ADR-069's implementing session | Low |
+| **Q-LAB-1** | Are the college's 150+ lab desktops available for a fleet run, and under what access terms? | LTS | The fleet-scale milestone, and the strategy discussion still queued | Medium |
+| **Q-R17-3** | Replace M-01's residue decomposition with TRAI's ISP-wise series | LTS | The falsifier for `N_eff = 5.16`; ADR-079's headline | **High** |
+| **Q-R17-4** | Is an ASN→organisation mapping maintainable for Indian ISPs? | LTS | ADR-079 leaving `Proposed`; F-LTS-17's remedy | **High** |
+| **Q-R17-1** | Does JioFiber originate inside AS55836? | LTS | F-LTS-16's status; per-ASN enforcement salvageability | Medium |
+| **Q-R17-2** | RIPE Atlas probe-per-ASN coverage for India | LTS | Independent confirmation of the 49-operator count | Low |
+| **Q-MKT-2** | Measured wall-power draw of the provider daemon | LTS | ADR-080's replacement allocation; ADR-081's positioning council | **High — do first** |
+| **Q-MKT-1** | Does a sovereignty-motivated Indian buyer exist below enterprise scale? | LTS | `market-study.md` §7.2; the entire demand thesis | **High** |
+| **Q-MKT-3** | R-15 — Indian residential grid and broadband availability | LTS | Redundancy parameters; whether a UPS is a prerequisite | **High** |
+| **Q-MKT-4** | Storj node-churn statistics and Indian node presence | LTS | Observational check on ADR-080's arithmetic | Medium |
+| **Q-MKT-5** | Indian broadband FUP vs sustained repair egress | LTS | ADR-076's cost model; provider reliability | Medium |
+| **Q-MKT-6** | Dated FX reference for competitor comparisons | LTS | Precision of `market-study.md` §2, not its direction | Low |
+
+---
