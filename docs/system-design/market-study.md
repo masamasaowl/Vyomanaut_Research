@@ -2,7 +2,7 @@
 
 **Status:** Living document. **Track:** LTS. **Standing:** governing, alongside `requirements.md`,
 `architecture.md`, `data-model.md` and `interface-contracts.md`.
-**Governed by:** ADR-081 (this document's standing and amendment rule)
+**Governed by:** ADR-083 (this document's standing and amendment rule)
 **Established:** August 2026, from the R-17 / M-01 measurement.
 
 ---
@@ -110,7 +110,7 @@ that fixes the distribution problem creates the collusion problem. This is a gen
 
 ## §2 — The unit economics: the number that governs everything
 
-*Working: `docs/research/data/market/unit_economics.py`. Decisions in ADR-080.*
+*Working: `docs/research/data/market/unit_economics.py`. Decisions in ADR-082.*
 
 ### 2.1 The expansion factor is the whole story
 
@@ -230,7 +230,7 @@ between 42× and 69× too small to motivate.** The economically coherent allocat
 **3 TB**, not 70 GB.
 
 This is the market study's central design finding, and it is a *fixed compile-time constant* that
-`reading-list.md` §2 already lists among the underived parameters. ADR-080 acts on it.
+`reading-list.md` §2 already lists among the underived parameters. ADR-082 acts on it.
 
 **Why the constant fails:** the provider's dominant cost is a *fixed* host cost — the machine's power
 draw — amortised across the allocation. At 70 GB it is amortised across almost nothing. Storj's node
@@ -293,13 +293,13 @@ measurement.** Q-MKT-1.
 
 §2.4 says this thesis is currently false — providers are cash-negative — and §2.5 says it needs a
 ~45× allocation change to become true. It is not eliminated; it is **priced**, and the price is
-ADR-080.
+ADR-082.
 
 **Caution flagged by the corpus itself:** Paper 47 (Rosenblat & Stark, algorithmic labour) is already
 in the corpus. A platform that pays participants below their marginal cost while presenting it as
 income is the exact failure mode that paper documents. **A provider-facing earnings claim must be
 net of measured electricity at the household's marginal slab, not gross.** This is a requirement, not
-a preference; ADR-081 Decision 4 makes it binding.
+a preference; ADR-083 Decision 4 makes it binding.
 
 ### 4.3 Payment rail as differentiator
 
@@ -322,12 +322,12 @@ fork is real; see §7.2.
 
 | ID | Finding | Evidence | Acts on |
 | --- | --- | --- | --- |
-| **F-MKT-01** | Vyomanaut cannot win on price against Indian consumer cloud in any scenario | §2.3 — best case 1.9×, worst 60.5× Google One 2 TB, electricity alone | ADR-081 |
-| **F-MKT-02** | At 70 GB the provider is cash-negative in all scenarios, including PC-on-anyway | §2.4 — −₹0.95 to −₹318.46/month at Storj payout rates | ADR-080 |
-| **F-MKT-03** | The 70 GB allocation is 1.1–36× below break-even and 42–69× below motivating | §2.5 — coherent allocation ≈ 3 TB | ADR-080 |
+| **F-MKT-01** | Vyomanaut cannot win on price against Indian consumer cloud in any scenario | §2.3 — best case 1.9×, worst 60.5× Google One 2 TB, electricity alone | ADR-083 |
+| **F-MKT-02** | At 70 GB the provider is cash-negative in all scenarios, including PC-on-anyway | §2.4 — −₹0.95 to −₹318.46/month at Storj payout rates | ADR-082 |
+| **F-MKT-03** | The 70 GB allocation is 1.1–36× below break-even and 42–69× below motivating | §2.5 — coherent allocation ≈ 3 TB | ADR-082 |
 | **F-MKT-04** | The confidentiality property imposes a customer-acquisition constraint: decline ~62% of Jio applicants, over-recruit the tail 2.2× | M-01 §5.3; ADR-081 | ADR-081, §7.1 |
 | **F-MKT-05** | The addressable supply base is 47.8 M shrinking wireline connections, 89% urban — not India's mobile scale | §1.2 `[P-num]` TRAI Jun 2026 | §7 planning |
-| **F-MKT-06** | The 3.5× expansion factor is 1.27× worse than the closest deployed comparator and is a compile-time constant | §2.1 | ADR-080, §7.3 |
+| **F-MKT-06** | The 3.5× expansion factor is 1.27× worse than the closest deployed comparator and is a compile-time constant | §2.1 | ADR-082, §7.3 |
 | **F-MKT-07** | Reliability requirements comparable to Storj's 99.3% permit 5.04 h downtime/month; whether Indian residential grid+broadband meets it is **unmeasured** | §3; R-15 unread | Q-MKT-3 |
 
 ---
@@ -339,15 +339,15 @@ change them unilaterally.
 
 | Parameter | Technical owner | Market consequence | Status |
 | --- | --- | --- | --- |
-| **Provider allocation (70 GB)** | ADR-046, audit sampling (`c = 2,867 chunks/day`), `n = 286,720` chunks | §2.5 — the single largest lever on provider viability; ~45× off | **ADR-080 opens it** |
+| **Provider allocation (70 GB)** | ADR-046, audit sampling (`c = 2,867 chunks/day`), `n = 286,720` chunks | §2.5 — the single largest lever on provider viability; ~45× off | **ADR-082 opens it** |
 | **Expansion factor `n/k = 3.5`** | ADR-003, ADR-022, Domain C | §2.1 — multiplies every owner-facing price by 3.5 | Frozen for demo; LTS-open |
 | **ASN placement weight** | ADR-014, ADR-081 | §1.3 — sets the acquisition funnel's shape | **ADR-081 Decision 2** |
 
-`[INFERRED]` Note the coupling that makes ADR-080 non-trivial: raising the allocation to ~3 TB
+`[INFERRED]` Note the coupling that makes ADR-082 non-trivial: raising the allocation to ~3 TB
 multiplies `n` (chunks per provider) by ~45, and the audit sample count `c = audit_sample_rate × n`
 rises with it. At `audit_sample_rate = 0.01`, `c` goes from 2,867 to roughly 128,000 chunks/day per
 provider. **The allocation is not a free parameter; it is an audit-load parameter wearing a storage
-costume.** ADR-080 records this and does not pretend otherwise.
+costume.** ADR-082 records this and does not pretend otherwise.
 
 ---
 
@@ -375,7 +375,7 @@ per-organisation caps are enforceable against a partner who is also a distributi
 
 §2 rules out price. §4.1 and §4.3 point in *opposite* directions: the compliance thesis puts the data
 owner at the centre and tolerates a small expensive supply base; the income thesis puts the provider
-at the centre and requires ADR-080's ~45× allocation change plus a demand base large enough to pay
+at the centre and requires ADR-082's ~45× allocation change plus a demand base large enough to pay
 for it.
 
 **This is the product's identity, and it changes the architecture.** The compliance thesis makes
@@ -383,7 +383,7 @@ provider count a cost to minimise; the income thesis makes it the growth metric.
 compatible roadmaps.
 
 **Settles on:** Q-MKT-1 (does a sovereignty-motivated Indian buyer exist below enterprise scale?) and
-ADR-080's outcome.
+ADR-082's outcome.
 
 ### 7.3 — Whether `n/k = 3.5` survives contact with the market
 
@@ -425,8 +425,8 @@ is upstream of every economic number in this document. It should be done first.
 - `docs/research/data/R-17/` — `analyse.py`, `asn_in_fixed.csv`, `analysis_output.txt` for §1
 - `docs/research/measurement-01-asn-diversity-india.md` — the supply-side measurement, its threats to
   validity and its falsifiers
-- ADR-081, ADR-080, ADR-081 — the decisions this document forced
+- ADR-081, ADR-082, ADR-083 — the decisions this document forced
 
-**Amendment rule (ADR-081):** a number in this document may be replaced only by a measurement, and
+**Amendment rule (ADR-083):** a number in this document may be replaced only by a measurement, and
 the replacement carries its own date and source. A number may not be replaced by a council judgement
 — a council may decide what to *do* about a number, not what the number is.
