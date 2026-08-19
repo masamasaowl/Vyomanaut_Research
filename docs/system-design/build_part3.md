@@ -2530,7 +2530,1160 @@ BUILD_STILL_GREEN:
 
 ---
 
-## MILESTONE 18 — Demo Freeze & Stash *(polished)*
+## Milestone 17 Extended — The Demo Surface
+
+**Deliverable:** all eleven founding functional requirements demonstrable by a human at a keyboard,
+each asserted by a named integration test, on a fleet of physically separate desktops.
+
+**Status:** M17 Phases 17.1–17.3 complete (CLI built, `scripts/test/` complete, relocation recorded).
+M17's own deliverable statement — *"a demo a human can run"* — is **not met**: no human can onboard a
+provider, and no two machines can transfer a shard to each other. M17-E closes it.
+
+**Dependency:** M17 (17.1–17.3) → **M17-E (17.4–17.8)** → M18 Demo Freeze.
+
+**Governing decision:** ADR-084 (D-1…D-7, invariant I-DEMO-1, findings F-D-1…F-D-4, departure matrix
+E-1…E-6).
+
+**Reference:** MVP §7, §8.3; IC §4, §5.3, §5.4, §11, §14; DM §3, §4.2; NFR-038, NFR-044; ADR-020,
+ADR-029, ADR-030, ADR-035, ADR-046, ADR-055, ADR-061, ADR-063, ADR-064, ADR-071, ADR-075, ADR-077.
+
+**Sessions:** 12.
+
+---
+
+### Ordering, and why it is this order
+
+```
+17.4  Provider self-service + real addressing   ── F-D-2, F-D-3, F-D-4
+  │      (a provider must be human-startable and network-reachable
+  │       before anything downstream is worth demonstrating)
+  ▼
+17.5  Local storage proof                       ── requirement 5
+  │      (ChunkStore.ListChunks is the only core-interface change
+  │       in this milestone; land it early, alone, and verified)
+  ▼
+17.6  The operator console                      ── I-DEMO-1
+  │      (needs 17.4's real addresses to show anything true, and
+  │       becomes the instrument 17.7 is observed through)
+  ▼
+17.7  Departure under load                      ── F-D-1, matrix E-1…E-6
+  │      (needs `provider depart` from 17.4 and the console from 17.6;
+  │       this is where defects are expected)
+  ▼
+17.8  The runnable demo                         ── all eleven
+```
+
+**`docs/DEMO.md` is deliberately not in this milestone.** It is drafted after M18 closes, so that
+what it promises is written against a frozen artifact and two completed demo runs rather than against
+an intention. M17-E produces the runnable system and the proof; M18 freezes it; the prose comes last
+and is therefore truthful by construction.
+
+---
+
+### Phase 17.4 — Provider self-service and real addressing
+
+*Closes F-D-2 (not human-runnable), F-D-3 (normal mode untested), F-D-4 (loopback advertisement).
+Requirements 2, 11.*
+
+#### Session 17.4.1 — Subcommand split, `--listen-port`, `--advertise-addr`
+
+**PRECONDITIONS** — M17 Phases 17.1–17.3 complete. `go test -tags integration ./scripts/test/` green.
+ADR-084 accepted.
+
+**TASK**
+
+1. Add subcommand dispatch to `cmd/provider` over `onboard`, `run`, `inspect`, `earnings`, `depart`.
+   **Backward compatibility is mandatory:** if `os.Args[1]` begins with `-`, or `os.Args` has length 1,
+   dispatch to `run`. `demo_timeline_test.go:647` invokes the binary with bare flags and must keep
+   working verbatim, unmodified, through this entire milestone.
+2. Migrate `cmd/provider/main.go`'s package-level `flag.*Var` calls onto a `flag.FlagSet` owned by
+   `run`, so each subcommand parses its own flags. Every existing flag keeps its exact name, default
+   and help text.
+3. Add `--listen-port` (default `defaultProviderListenPort`, 4001) to normal mode. Two providers must
+   be able to share one host — required by 17.8.1's runner and by any single-machine rehearsal of a
+   multi-desktop demo. **F-D-3.**
+4. **Apply F-D-4.** Add `--advertise-addr` (host or `host:port`; empty = autodetect). Replace the two
+   hardcoded loopback constructions:
+   - `main.go:501` — the `initial_multiaddrs` sent to `POST /api/v1/provider/register`
+   - `main.go:663` — the `localMultiaddr` published on heartbeat/DHT
+
+   Autodetection selects the first non-loopback, non-link-local IPv4 address on an up interface.
+   Loopback is used **only** when autodetection finds nothing, and that fallback logs a warning
+   naming it as single-host-only. Both call sites must derive from one function — a divergence
+   between the registration address and the heartbeat address is precisely how F-D-4 stayed hidden.
+5. `cmd/` is wiring only (IC §11). Errors render IC §14 copy codes.
+
+**FILES** — `cmd/provider/dispatch.go`, `cmd/provider/advertise.go`, `cmd/provider/main.go` (edit)
+
+**VERIFY**
+
+```bash
+COMPILE:
+  $ go build ./cmd/provider/ && go vet ./cmd/provider/
+  EXPECT: exit 0
+
+BARE_FLAGS_STILL_MEAN_RUN:                  # harness compatibility, non-negotiable
+  $ grep -cE 'HasPrefix\(os\.Args\[1\], "-"\)|args\[0\]\[0\] == .-.' cmd/provider/dispatch.go
+  EXPECT: >= 1
+
+FIVE_SUBCOMMANDS_DISPATCHED:
+  $ grep -cE '"(onboard|run|inspect|earnings|depart)"' cmd/provider/dispatch.go
+  EXPECT: >= 5
+
+UNKNOWN_SUBCOMMAND_EXITS_2:
+  $ go run ./cmd/provider nonsense >/dev/null 2>&1; echo "exit=$?"
+  EXPECT: exit=2
+
+F_D_4_NO_HARDCODED_LOOPBACK_ADVERTISEMENT:
+  $ grep -cE '/ip4/127\.0\.0\.1/tcp/' cmd/provider/main.go
+  EXPECT: 0
+  $ grep -c "advertiseMultiaddr" cmd/provider/main.go
+  EXPECT: >= 2                              # registration AND heartbeat, one shared source
+
+F_D_4_AUTODETECT_EXCLUDES_LOOPBACK_AND_LINKLOCAL:
+  $ grep -cE "IsLoopback|IsLinkLocalUnicast" cmd/provider/advertise.go
+  EXPECT: >= 2
+
+F_D_3_LISTEN_PORT_IS_A_FLAG:
+  $ grep -c -- "listen-port" cmd/provider/main.go
+  EXPECT: >= 1
+
+LISTENER_STILL_BINDS_ALL_INTERFACES:        # regression guard
+  $ grep -c '0.0.0.0:%d' cmd/provider/main.go
+  EXPECT: >= 1
+
+CMD_IS_WIRING_ONLY:                         # IC §11
+  $ grep -cE "func (Derive|Encode|Decode|Sign|Compute|Validate)[A-Z]" cmd/provider/*.go
+  EXPECT: 0
+
+UNIT_TESTS:
+  $ go test -v ./cmd/provider/
+  EXPECT: exit 0; tests include:
+    TestBareFlagInvocationDispatchesToRun
+    TestNoArgsDispatchesToRun
+    TestUnknownProviderSubcommandExitsTwo
+    TestAdvertiseAddrPrefersNonLoopbackIPv4
+    TestAdvertiseAddrFallsBackToLoopbackWithWarning
+    TestRegistrationAndHeartbeatShareOneAdvertisedAddress
+
+NO_REGRESSION:
+  $ go test -tags integration -run TestDemoTimeline ./scripts/test/ -timeout 60m
+  EXPECT: exit 0
+```
+
+---
+
+#### Session 17.4.2 — `FileOtpSender`, `provider onboard`, `provider depart`
+
+**PRECONDITIONS** — 17.4.1 complete.
+
+**TASK**
+
+1. **Apply ADR-084 D-3.** Add `FileOtpSender` to `internal/api/otp.go` — a second implementation of
+   the existing `OtpSender` interface, alongside `NoopOtpSender`. It appends one line per send to a
+   gateway delivery log, mode `0600`, opened `O_APPEND|O_CREATE|O_WRONLY`:
+
+   ```
+   2026-08-19T11:04:22Z  +919876530001  PROVIDER_REGISTER  418362
+   ```
+
+   Writes are serialised under a mutex. The file is **never** served over HTTP and no handler reads
+   it. `otp_codes.code_hash` is untouched — the schema is not weakened for a demo.
+2. Wire it at `cmd/microservice/main.go:314` behind `--otp-delivery-log` (env
+   `VYOMANAUT_OTP_DELIVERY_LOG`). Empty path → `NoopOtpSender{}`, preserving today's behaviour
+   exactly. **Fatal in production mode:** `profile.Mode != "demo"` with a non-empty path → refuse to
+   start. A file-backed OTP gateway in production is an incident.
+3. `provider onboard` — the human path. `POST /api/v1/auth/otp/send` → print *"OTP sent — ask the
+   network operator for your code"* → read six digits from stdin → `POST /api/v1/auth/otp/verify` →
+   `POST /api/v1/provider/register` with the verify-issued token. Persist `provider_id`, the identity
+   keypair, and the declared allocation under `--data-dir`. `--storage-gb` is required and prompted
+   when omitted — this is requirement 11's user-facing choice, and it must be a question the human
+   answers, not a flag buried in a script.
+4. `run` reads the persisted registration when present. `--registration-bearer-token` keeps working
+   unchanged for the harness path (`demo_timeline_test.go`).
+5. `provider depart` — `POST /api/v1/provider/depart`, signed per ADR-036, using the persisted
+   identity. This is the graceful half of requirement 7 and a precondition of 17.7.
+6. The six-digit code is read from stdin and used once. It is never written to a file, never logged,
+   and never appears in `--json` output.
+
+**FILES** — `internal/api/otp.go` (edit), `cmd/microservice/main.go` (edit),
+`cmd/microservice/config_env.go` (edit), `cmd/provider/onboard.go`, `cmd/provider/depart.go`
+
+**VERIFY**
+
+```bash
+COMPILE:
+  $ go build ./cmd/provider/ ./cmd/microservice/ ./internal/api/ && go vet ./cmd/provider/ ./cmd/microservice/
+  EXPECT: exit 0
+
+D3_FILE_SENDER_IMPLEMENTS_THE_EXISTING_SEAM:
+  $ grep -c "func (.*FileOtpSender) SendOTP" internal/api/otp.go
+  EXPECT: 1
+  $ grep -c "var _ OtpSender = " internal/api/otp.go
+  EXPECT: >= 1
+
+D3_NO_NEW_ROUTE_AND_NO_HANDLER_READS_THE_LOG:
+  $ git diff --stat internal/api/router.go | wc -l
+  EXPECT: 0
+  $ grep -cE "os.ReadFile|os.Open" internal/api/otp.go
+  EXPECT: 0
+
+D3_SCHEMA_UNWEAKENED:                       # code_hash stays hash-only
+  $ grep -cE "code_plaintext|plaintext_code" migrations/generator.go internal/api/otp.go
+  EXPECT: 0
+
+D3_FATAL_IN_PRODUCTION:
+  $ grep -cE 'Mode != "demo"' cmd/microservice/main.go
+  EXPECT: >= 1
+
+D3_DEFAULT_BEHAVIOUR_UNCHANGED:
+  $ grep -c "NoopOtpSender{}" cmd/microservice/main.go
+  EXPECT: >= 1                              # still the empty-path branch
+
+F_D_2_ONBOARD_COMPLETES_AUTH_ITSELF:
+  $ grep -cE '/api/v1/auth/otp/(send|verify)' cmd/provider/onboard.go
+  EXPECT: >= 2
+  $ grep -c "/api/v1/provider/register" cmd/provider/onboard.go
+  EXPECT: >= 1
+
+OTP_CODE_NEVER_PERSISTED_BY_THE_CLIENT:
+  $ grep -cE "os.WriteFile|log\.|slog\." cmd/provider/onboard.go
+  EXPECT: 0
+  $ grep -cE 'json:"[a-z_]*(otp|code)' cmd/provider/*.go
+  EXPECT: 0
+
+STORAGE_ALLOCATION_IS_A_QUESTION:           # requirement 11
+  $ grep -c -- "storage-gb" cmd/provider/onboard.go
+  EXPECT: >= 1
+
+DEPART_IS_SIGNED:                           # ADR-036
+  $ grep -c "/api/v1/provider/depart" cmd/provider/depart.go
+  EXPECT: >= 1
+  $ grep -cE "ed25519.Sign|SignRequest" cmd/provider/depart.go
+  EXPECT: >= 1
+
+HARNESS_TOKEN_PATH_PRESERVED:
+  $ grep -c "registration-bearer-token" cmd/provider/main.go
+  EXPECT: >= 1
+
+UNIT_TESTS:
+  $ go test -v ./cmd/provider/ ./internal/api/ -run 'Otp|Onboard|Depart'
+  EXPECT: exit 0; tests include:
+    TestFileOtpSenderAppendsOneLinePerSend
+    TestFileOtpSenderCreatesLogMode0600
+    TestFileOtpSenderIsConcurrencySafe
+    TestOnboardRejectsMissingStorageGB
+    TestOnboardNeverWritesTheCodeToDisk
+
+INTEGRATION_HUMAN_PATH:
+  $ go test -tags integration -run TestOnboardViaDeliveryLog ./scripts/test/ -timeout 30m
+  EXPECT: exit 0
+```
+
+---
+
+### Phase 17.5 — Local storage proof
+
+*Requirement 5, and requirement 11's proof-of-effect. Contains the only core-interface change in
+M17-E.*
+
+#### Session 17.5.1 — `ChunkStore.ListChunks` on both engines
+
+**PRECONDITIONS** — Phase 17.4 complete.
+
+**TASK**
+
+1. Add to the `ChunkStore` interface:
+
+   ```go
+   // ListChunks returns every chunk ID currently indexed by this store, in
+   // unspecified order. Read-only; goroutine-safe; concurrent with the
+   // writer goroutine. Intended for local operator inspection, not for any
+   // hot path — an O(n) index scan.
+   ListChunks() ([][32]byte, error)
+   ```
+
+2. Implement on **both** engines. `engine_rocksdb.go`: iterate the default column family with a
+   read-only iterator, releasing it deterministically. `engine_badger.go`: `View` + `PrefetchValues:
+   false` key-only iteration.
+3. **Do not extend the interface further.** This is a single, narrow, read-only addition to a core
+   contract; anything else that seems convenient to add belongs in a separate decision.
+4. Both implementations must return an empty slice and `nil` error for an empty store — never a nil
+   slice with nil error, so callers need no special case.
+
+**FILES** — `internal/storage/store.go` (edit), `internal/storage/engine_rocksdb.go` (edit),
+`internal/storage/engine_badger.go` (edit)
+
+**VERIFY**
+
+```bash
+COMPILE_BOTH_ENGINES:
+  $ GOOS=linux   go build ./internal/storage/
+  $ GOOS=windows go build ./internal/storage/
+  EXPECT: exit 0 for both
+
+INTERFACE_GAINED_EXACTLY_ONE_METHOD:
+  $ awk '/^type ChunkStore interface/,/^}/' internal/storage/store.go \
+      | grep -cE "^\s+[A-Z][a-zA-Z]+\("
+  EXPECT: 7                                 # was 6
+
+BOTH_ENGINES_IMPLEMENT_IT:
+  $ grep -c "func (.*) ListChunks()" internal/storage/engine_rocksdb.go
+  EXPECT: 1
+  $ grep -c "func (.*) ListChunks()" internal/storage/engine_badger.go
+  EXPECT: 1
+
+READ_ONLY_NO_WRITER_INTERACTION:
+  $ awk '/func .*ListChunks/,/^}/' internal/storage/engine_rocksdb.go \
+      | grep -cE "Put|Write|Delete|Append"
+  EXPECT: 0
+
+ITERATOR_RELEASED:
+  $ awk '/func .*ListChunks/,/^}/' internal/storage/engine_rocksdb.go | grep -c "defer.*Close()"
+  EXPECT: >= 1
+
+UNIT_TESTS:
+  $ go test -race -v ./internal/storage/ -run ListChunks
+  EXPECT: exit 0; tests include:
+    TestListChunksReturnsEveryAppendedChunkID
+    TestListChunksReturnsEmptySliceNotNilForEmptyStore
+    TestListChunksOmitsDeletedChunks
+    TestListChunksIsSafeConcurrentWithWriter
+
+NO_REGRESSION:
+  $ go test -race ./internal/storage/
+  EXPECT: exit 0
+```
+
+---
+
+#### Session 17.5.2 — `provider inspect`, `provider earnings`
+
+**PRECONDITIONS** — 17.5.1 complete.
+
+**TASK**
+
+1. `provider inspect` — open the local store, `ListChunks`, and for each chunk print the chunk ID,
+   length, and Shannon entropy in bits/byte. `--hex` adds a 128-byte hexdump. `--chunk <id>` narrows
+   to one. `--json` emits the whole report as an object.
+2. Print, alongside: the declared allocation (`--declared-storage-gb` as persisted at onboarding),
+   bytes actually used, and the NFR-044 per-provider chunk ceiling. **This is requirement 11's proof
+   that the allocation is real rather than decorative** — a number the provider chose, shown
+   governing a limit the system enforces.
+3. Entropy is *computed*, not asserted. AONT-RS output is indistinguishable from random and lands at
+   ~7.99 bits/byte; a plaintext file will not. `inspect` prints both when `--compare <path>` is given,
+   which is what makes requirement 5 land on an audience:
+
+   ```
+   chunk c41e9a…  262144 B  entropy 7.9994 bits/byte
+     0000  a3 7f 12 e8 5b c0 44 9d  2a f1 06 bb 71 3e 8c 55  |.....[.D.*...q>.U|
+   compare holiday-photos.zip  1000000 B  entropy 6.2140 bits/byte
+   ```
+
+4. `provider earnings` — `GET /api/v1/provider/receipts`. One paise formatter, `int64` throughout, no
+   floating point on the money path (NFR-038).
+5. **Enforce provider blindness (ADR-084 D-2a).** A provider holds one shard against `DataShards = 3`
+   and must have no import path to a decoding primitive.
+
+**FILES** — `cmd/provider/inspect.go`, `cmd/provider/entropy.go`, `cmd/provider/earnings.go`,
+`cmd/provider/money.go`
+
+**VERIFY**
+
+```bash
+COMPILE:
+  $ go build ./cmd/provider/ && go vet ./cmd/provider/
+  EXPECT: exit 0
+
+PROVIDER_BLINDNESS:                         # ADR-084 D-2a
+  $ go list -deps ./cmd/provider | grep -cE 'internal/(crypto/aont|erasure|client/retrieve)'
+  EXPECT: 0
+
+ENTROPY_IS_COMPUTED_NOT_CLAIMED:
+  $ grep -cE "math.Log2" cmd/provider/entropy.go
+  EXPECT: >= 1
+  $ grep -cE "7\.99|entropyConstant" cmd/provider/entropy.go
+  EXPECT: 0                                 # no hardcoded expected value
+
+INSPECT_READS_THE_REAL_STORE:
+  $ grep -c "ListChunks()" cmd/provider/inspect.go
+  EXPECT: >= 1
+
+ALLOCATION_AND_CEILING_DISPLAYED:           # requirement 11
+  $ grep -cE "declaredStorageGB|declared_storage_gb" cmd/provider/inspect.go
+  EXPECT: >= 1
+  $ grep -cE "NFR-044|chunkCeiling" cmd/provider/inspect.go
+  EXPECT: >= 1
+
+NO_FLOAT_ON_THE_MONEY_PATH:                 # NFR-038
+  $ grep -cE "float64|float32|ParseFloat|%\.2f" cmd/provider/money.go cmd/provider/earnings.go
+  EXPECT: 0
+  # entropy.go is the one legitimate float64 site in this package — it is a
+  # statistic, not currency, and lives in its own file for exactly that reason.
+
+SINGLE_PAISE_FORMATTER:
+  $ grep -c "func formatPaise(paise int64) string" cmd/provider/money.go
+  EXPECT: 1
+
+UNIT_TESTS:
+  $ go test -v ./cmd/provider/
+  EXPECT: exit 0; tests include:
+    TestEntropyOfUniformRandomExceeds7Point9
+    TestEntropyOfRepeatedByteIsZero
+    TestEntropyOfEnglishTextIsBelow5
+    TestInspectReportsDeclaredAllocationAndCeiling
+    TestEarningsFormatsPaiseAsIntegerRupees
+```
+
+---
+
+### Phase 17.6 — The operator console
+
+*Requirements 3, 4, 6, 9, 10. Establishes invariant I-DEMO-1.*
+
+#### Session 17.6.1 — `cmd/operator` skeleton, transport, I-DEMO-1, `shards`, `otp`
+
+**PRECONDITIONS** — Phase 17.5 complete.
+
+**TASK**
+
+1. New binary `cmd/operator`. Subcommands: `watch`, `shards`, `otp`, `audit`, `payout`. Global flags:
+   `--microservice-url`, `--admin-api-key`, `--mode`, `--json`.
+2. **One new admin endpoint, and only one.** `GET /api/v1/admin/file/{file_id}/shards` returns the
+   operator's complete view of a file: per chunk — `chunk_id`, `segment_id`, `shard_index`,
+   `provider_id`, `asn`, `size_bytes` — plus the file's `original_size_bytes` and its
+   `display_name_ciphertext` as hex.
+
+   *This revises ADR-084's earlier "no new server endpoints" framing, deliberately and for a reason
+   worth stating: the alternative was giving `cmd/operator` a database connection, which would
+   destroy the strongest form of I-DEMO-1. A narrow read-only admin endpoint is a smaller
+   concession than a database handle in the console.*
+3. Add `declared_storage_gb` to `adminProviderItem` (`internal/api/admin.go`) — the fleet panel needs
+   it for requirement 11 and it is a single column on a query that already selects the row.
+4. **I-DEMO-1, enforced structurally in three forms.** `cmd/operator` shall have no import path to a
+   decoding primitive, **and no database access at all**:
+
+   ```bash
+   go list -deps ./cmd/operator | grep -cE 'internal/(crypto/aont|erasure|client/(retrieve|upload))'
+   EXPECT: 0
+   go list -deps ./cmd/operator | grep -cE '^database/sql$|github.com/lib/pq'
+   EXPECT: 0
+   ```
+
+   The second is the stronger claim and the one worth making on stage: the console cannot read the
+   database even if it wanted to. Everything it displays arrives over the admin API.
+5. `operator shards <file_id>` renders `display_name_ciphertext` **as hex, explicitly labelled as
+   ciphertext the operator cannot read (ADR-020)**, beside `original_size_bytes` and the chunk
+   placement table. Shown next to the owner's real filename, this is requirement 4's parenthetical
+   made visible.
+6. `operator otp <phone>` reads the `FileOtpSender` delivery log (`--otp-delivery-log`) and prints
+   the most recent code for that number. Refuses unless `profile.Mode == "demo"`. No database, no
+   preimage search.
+7. Add `charmbracelet/bubbletea`, `charmbracelet/lipgloss`, `charmbracelet/bubbles` to `go.mod` at
+   pinned versions (ADR-084 D-2). No console rendering in this session — 17.6.2 owns that.
+
+**FILES** — `cmd/operator/main.go`, `cmd/operator/dispatch.go`, `cmd/operator/client.go`,
+`cmd/operator/shards.go`, `cmd/operator/otp.go`, `internal/api/admin.go` (edit),
+`internal/api/router.go` (edit — one route), `go.mod`, `go.sum`
+
+**VERIFY**
+
+```bash
+COMPILE:
+  $ go build ./cmd/operator/ ./internal/api/ && go vet ./cmd/operator/
+  EXPECT: exit 0
+
+I_DEMO_1_NO_DECODING_PATH:
+  $ go list -deps ./cmd/operator | grep -cE 'internal/(crypto/aont|erasure|client/(retrieve|upload))'
+  EXPECT: 0
+
+I_DEMO_1_NO_DATABASE_PATH:                  # the stronger claim
+  $ go list -deps ./cmd/operator | grep -cE '^database/sql$|github.com/lib/pq'
+  EXPECT: 0
+
+EXACTLY_ONE_NEW_ROUTE:
+  $ git diff -U0 internal/api/router.go | grep -cE '^\+\s+mux\.(Handle|HandleFunc)'
+  EXPECT: 1
+  $ grep -c "admin/file/{file_id}/shards" internal/api/router.go
+  EXPECT: 1
+
+NEW_ROUTE_IS_ADMIN_GATED:
+  $ grep -cE 'admin\(.*shards' internal/api/router.go
+  EXPECT: 1
+
+FILENAME_NEVER_DECRYPTED:                   # ADR-020
+  $ grep -c "display_name_ciphertext" cmd/operator/shards.go
+  EXPECT: >= 1
+  $ grep -cE "display_name_plaintext|DecryptDisplayName|decryptName" cmd/operator/*.go internal/api/admin.go
+  EXPECT: 0
+
+OTP_READS_THE_GATEWAY_LOG_NOT_THE_DB:
+  $ grep -c "otp-delivery-log" cmd/operator/otp.go
+  EXPECT: >= 1
+  $ grep -cE 'Mode != "demo"|profile.Mode == "demo"' cmd/operator/otp.go
+  EXPECT: >= 1
+
+DECLARED_STORAGE_EXPOSED:                   # requirement 11
+  $ grep -c 'json:"declared_storage_gb"' internal/api/admin.go
+  EXPECT: 1
+
+TUI_DEPENDENCIES_PINNED:
+  $ grep -cE 'charmbracelet/(bubbletea|lipgloss|bubbles) v[0-9]' go.mod
+  EXPECT: 3
+  $ grep -c "replace " go.mod
+  EXPECT: 0
+
+UNIT_TESTS:
+  $ go test -v ./cmd/operator/ ./internal/api/ -run 'Shards|Otp'
+  EXPECT: exit 0; tests include:
+    TestShardsRendersCiphertextFilenameAsHexOnly
+    TestShardsNeverRendersPlaintextFilename
+    TestOtpRefusesOutsideDemoMode
+    TestOtpReturnsMostRecentCodeForPhone
+    TestAdminShardsEndpointRequiresAdminKey
+
+NO_REGRESSION:
+  $ go build ./... && go vet ./...
+  EXPECT: exit 0
+```
+
+---
+
+#### Session 17.6.2 — `operator watch`: the console
+
+**PRECONDITIONS** — 17.6.1 complete.
+
+**TASK**
+
+1. Bubble Tea `Model` / `Update` / `View`. A 1 s `tea.Tick` drives one concurrent fan-out fetch across
+   `/api/v1/admin/{readiness,providers,repair/queue,audit/stats,vetting/status}`. Alternate screen,
+   resize handling, `q` to quit.
+2. **Seven panels, each rendered against the profile constant that governs it — never a hardcoded
+   number.** ADR-084 §D-2 specifies them; restated here as the build contract:
+
+   | Panel | Source | Governing constant |
+   | --- | --- | --- |
+   | Readiness gate | `/admin/readiness` | `MinActiveProviders`, `MinDistinctASNs`, `MinMetroRegions`, `MinRelayNodes`, `MinCooledAccounts` |
+   | Provider fleet | `/admin/providers` | `HeartbeatInterval`, effective departure threshold |
+   | ASN cap occupancy | `/admin/providers` + `/admin/file/…/shards` | `floor(TotalShards × ASNCapFraction)` |
+   | Repair | `/admin/repair/queue` | `LazyRepairR0` |
+   | Audit | `/admin/audit/stats` | `AuditPeriodDuration` |
+   | Escrow & release | `/admin/…` + `payout` snapshot | `ChargeComputationInterval`, `ReleaseComputationInterval` |
+   | Event feed | derived from state deltas | — |
+
+3. Heartbeat age past half the effective departure threshold renders a warning and a **live countdown
+   to departure**. This is the instrument 17.7's ungraceful path is observed through; without it the
+   90 seconds is dead air.
+4. The ASN-cap panel shows occupancy against `floor(5 × 0.20) = 1` at demo scale. ADR-075's finding is
+   that the demo topology sits at *exactly* full occupancy — a panel showing zero headroom is what
+   explains the seventh provider to an audience.
+5. `--json` emits one snapshot object and exits, so 17.8.2 can assert on the console's own view.
+6. **Correctness is unit-tested at the model level, not through a terminal.** Bubble Tea's
+   architecture makes `Update` and `View` pure functions of state; that is the reason this dependency
+   was chosen and the tests must exploit it. No `teatest`-driven PTY tests are required.
+7. Money in the escrow panel: `int64`, one formatter, no floats (NFR-038).
+
+**FILES** — `cmd/operator/watch.go`, `cmd/operator/model.go`, `cmd/operator/panels.go`,
+`cmd/operator/theme.go`, `cmd/operator/money.go`
+
+**VERIFY**
+
+```bash
+COMPILE:
+  $ go build ./cmd/operator/ && go vet ./cmd/operator/
+  EXPECT: exit 0
+
+I_DEMO_1_STILL_HOLDS:
+  $ go list -deps ./cmd/operator | grep -cE 'internal/(crypto/aont|erasure|client/(retrieve|upload))'
+  EXPECT: 0
+  $ go list -deps ./cmd/operator | grep -cE '^database/sql$|github.com/lib/pq'
+  EXPECT: 0
+
+SEVEN_PANELS_PRESENT:
+  $ grep -cE "func render(Readiness|Fleet|ASNCap|Repair|Audit|Escrow|Events)" cmd/operator/panels.go
+  EXPECT: 7
+
+NO_HARDCODED_THRESHOLDS:
+  $ grep -cE "profile\.(MinActiveProviders|MinDistinctASNs|ASNCapFraction|TotalShards|LazyRepairR0|AuditPeriodDuration)" cmd/operator/panels.go
+  EXPECT: >= 6
+  $ grep -cE "10 \* time\.Minute|\b= 5\b.*(providers|asns)|0\.20" cmd/operator/*.go
+  EXPECT: 0
+
+COUNTDOWN_USES_EFFECTIVE_THRESHOLD:
+  $ grep -cE "effectiveDepartureThreshold|EffectiveDepartureThreshold" cmd/operator/panels.go
+  EXPECT: >= 1
+
+NO_ADDITIONAL_ROUTES:
+  $ git diff --stat internal/api/router.go | wc -l
+  EXPECT: 0
+
+NO_FLOAT_ON_THE_MONEY_PATH:                 # NFR-038
+  $ grep -cE "float64|float32|ParseFloat|%\.2f" cmd/operator/money.go cmd/operator/panels.go
+  EXPECT: 0
+
+JSON_SNAPSHOT_EXITS:
+  $ grep -c -- "--json" cmd/operator/watch.go
+  EXPECT: >= 1
+
+UNIT_TESTS:                                 # model-level, no PTY
+  $ go test -race -v ./cmd/operator/
+  EXPECT: exit 0; tests include:
+    TestUpdateAdvancesStateOnTickMsg
+    TestUpdateHandlesFetchErrorWithoutPanicking
+    TestViewRendersAllSevenPanels
+    TestHeartbeatAgePastHalfThresholdRendersCountdown
+    TestASNCapPanelShowsZeroHeadroomAtDemoTopology
+    TestReadinessPanelReadsProfileThresholds
+    TestWatchJSONSnapshotShape
+```
+
+---
+
+#### Session 17.6.3 — `operator audit`, `operator payout`
+
+**PRECONDITIONS** — 17.6.2 complete.
+
+**TASK**
+
+1. `operator audit <provider_id>` — `POST /api/v1/audit/challenge`. Print the challenge nonce, the
+   provider's response status, and the signed receipt. **Requirement 9**, on demand, in front of an
+   audience.
+2. `operator payout` — trigger a charge/release cycle and print the per-provider split table with
+   totals reconciled, including the integer-division remainder. **Requirement 10.** ADR-061's flat
+   split means `releasePaise = balancePaise × multiplierBP / 10000` per provider; the remainder must
+   be shown, not silently dropped, because a split table that does not sum to the charge is a table
+   an audience will correctly distrust.
+3. Paise, `int64`, one formatter, no floats.
+4. Both subcommands support `--json`.
+
+**FILES** — `cmd/operator/audit.go`, `cmd/operator/payout.go`
+
+**VERIFY**
+
+```bash
+COMPILE:
+  $ go build ./cmd/operator/ && go vet ./cmd/operator/
+  EXPECT: exit 0
+
+I_DEMO_1_STILL_HOLDS:
+  $ go list -deps ./cmd/operator | grep -cE 'internal/(crypto/aont|erasure|client/(retrieve|upload))|^database/sql$'
+  EXPECT: 0
+
+AUDIT_USES_THE_EXISTING_ENDPOINT:
+  $ grep -c "/api/v1/audit/challenge" cmd/operator/audit.go
+  EXPECT: >= 1
+
+NO_ADDITIONAL_ROUTES:
+  $ git diff --stat internal/api/router.go | wc -l
+  EXPECT: 0
+
+PAYOUT_RECONCILES_INCLUDING_REMAINDER:      # ADR-061
+  $ grep -cE "remainder|ADR-061" cmd/operator/payout.go
+  EXPECT: >= 2
+
+NO_FLOAT_ON_THE_MONEY_PATH:                 # NFR-038
+  $ grep -cE "float64|float32|ParseFloat|%\.2f" cmd/operator/payout.go
+  EXPECT: 0
+
+UNIT_TESTS:
+  $ go test -v ./cmd/operator/
+  EXPECT: exit 0; tests include:
+    TestPayoutSplitSumsToChargedTotalIncludingRemainder
+    TestPayoutRendersEveryProviderEvenAtZeroRelease
+    TestAuditRendersReceiptAndStatus
+```
+
+---
+
+### Phase 17.7 — Departure under load
+
+*Requirements 7 and 8. Closes **F-D-1**, the most serious finding on the demo track. Implements
+ADR-084's matrix E-1…E-6. **Defects are expected here.***
+
+#### Session 17.7.1 — `--departure-threshold`, the derived floor, effective-value exposure
+
+**PRECONDITIONS** — Phase 17.6 complete.
+
+**TASK**
+
+1. Add `--departure-threshold` to `cmd/microservice` (env `VYOMANAUT_DEPARTURE_THRESHOLD`, Go
+   duration syntax). Empty → `profile.DepartureThreshold` unchanged. `DemoProfile` is **not edited**;
+   `TestViabilityActiveTransitionAtTenMinutes` must pass untouched.
+2. **Fatal in production mode.** `profile.Mode != "demo"` with the flag set → refuse to start.
+3. **Enforce the derived floor, fatally, at startup** (ADR-084 D-4):
+
+   ```
+   floor = max( 2 × (HeartbeatInterval + HeartbeatJitter), 2 × DeparturePollingInterval )
+         = max( 2 × (30s + 5s),                            2 × 30s )
+         = max( 70s,                                        60s )
+         = 70s
+   ```
+
+   Compute it from the profile — never write `70 * time.Second`. Below the floor, a *live* provider's
+   normal heartbeat jitter is read as departure, which marks it `DEPARTED`, freezes it, and seizes its
+   escrow via `processDeparture`. Punishing an honest provider to shorten a demo is not an acceptable
+   failure mode, so this is a startup abort with an error message that states the arithmetic.
+4. Apply the override by setting the single field on the profile value handed to
+   `repair.NewDepartureDetector` (`cmd/microservice/main.go:354`). `DepartureThreshold` is read in
+   exactly one place — `findDepartureCandidates` (`internal/repair/departure.go:136`) — which is what
+   makes this confined rather than sprawling. Verify that remains true.
+5. Add `effective_departure_threshold_seconds` to `ReadinessResponse`. The console must display the
+   authoritative value, not a separately-configured guess; a countdown that disagrees with the
+   detector is worse than no countdown. This is a response-body field on an existing route, not a new
+   endpoint.
+6. Log the effective threshold in the startup banner.
+
+**FILES** — `cmd/microservice/main.go` (edit), `cmd/microservice/config_env.go` (edit),
+`internal/api/readiness.go` (edit), `cmd/operator/panels.go` (edit)
+
+**VERIFY**
+
+```bash
+COMPILE:
+  $ go build ./... && go vet ./...
+  EXPECT: exit 0
+
+PROFILE_CONSTANTS_UNCHANGED:                # non-negotiable
+  $ git diff --exit-code internal/config/profiles.go
+  EXPECT: exit 0
+
+FLOOR_IS_DERIVED_NOT_LITERAL:
+  $ grep -cE "HeartbeatInterval \+ .*HeartbeatJitter" cmd/microservice/main.go
+  EXPECT: >= 1
+  $ grep -cE "70 \* time\.Second|70s" cmd/microservice/*.go
+  EXPECT: 0
+
+FLOOR_IS_FATAL_NOT_ADVISORY:
+  $ awk '/departureThresholdFloor|validateDepartureThreshold/,/^}/' cmd/microservice/main.go \
+      | grep -cE "log.Fatal|return.*error"
+  EXPECT: >= 1
+
+FATAL_IN_PRODUCTION:
+  $ grep -cE 'Mode != "demo".*[Dd]eparture|[Dd]eparture.*Mode != "demo"' cmd/microservice/main.go
+  EXPECT: >= 1
+
+SINGLE_READ_SITE_PRESERVED:                 # the reason this is cheap
+  $ grep -rc "profile.DepartureThreshold\|d.profile.DepartureThreshold" internal/ --include=*.go \
+      | grep -v _test.go | grep -v ":0" | wc -l
+  EXPECT: 1
+
+EFFECTIVE_VALUE_EXPOSED_NO_NEW_ROUTE:
+  $ grep -c 'json:"effective_departure_threshold_seconds"' internal/api/readiness.go
+  EXPECT: 1
+  $ git diff --stat internal/api/router.go | wc -l
+  EXPECT: 0
+
+UNIT_TESTS:
+  $ go test -v ./cmd/microservice/ ./internal/api/ -run 'Departure|Readiness'
+  EXPECT: exit 0; tests include:
+    TestDepartureThresholdBelowFloorIsFatal
+    TestDepartureThresholdFloorDerivedFromProfileNotLiteral
+    TestDepartureThresholdRejectedInProductionMode
+    TestEmptyOverrideLeavesProfileValueUnchanged
+    TestReadinessReportsEffectiveDepartureThreshold
+
+NO_REGRESSION:
+  $ go test -tags integration -run TestViabilityActiveTransitionAtTenMinutes ./scripts/test/ -timeout 60m
+  EXPECT: exit 0
+```
+
+---
+
+#### Session 17.7.2 — Departure matrix E-1…E-3, and `TestReqD07`
+
+**PRECONDITIONS** — 17.7.1 complete.
+
+**TASK**
+
+1. New file `scripts/test/demo_departure_test.go`, `//go:build integration`, running at
+   `--departure-threshold=90s`.
+2. Build one reusable harness helper — `departAt(t, ctx, env, phase, mode)` — where `phase` names the
+   moment (`VETTING`, `MID_UPLOAD`, `POST_UPLOAD`, `MID_REPAIR`, `MID_RETRIEVE`, `BURST`) and `mode`
+   is `KILL` (ungraceful, `SIGKILL`) or `DEPART` (graceful, `provider depart`). Every case in this
+   phase and 17.7.3 goes through it; six bespoke setups would drift.
+3. **Every case terminates in a byte-identity assertion.** `pollRepairCompleted` is a waypoint, never
+   a conclusion. This is F-D-1's correction and it is the reason this phase exists.
+4. Implement:
+   - **E-1** `TestDepartureDuringVettingProducesNoRepairJobs` — synthetic vetting chunks soft-deleted,
+     **zero** repair jobs (FR-065), no escrow seizure beyond the specified penalty.
+   - **E-2** `TestDepartureMidUploadLeavesNoHalfRegisteredFile` — kill after `/upload/assign`, before
+     all shards transfer. Upload must either fail with an IC §14 code or complete across the surviving
+     set. It must **never** leave a `files` row whose `available_shard_count` disagrees with the
+     `chunk_assignments` actually holding data. Assert the invariant directly against the database,
+     not merely the CLI's exit code. **High-risk.**
+   - **E-3** `TestDepartureAfterUploadFileStillRetrievable` — the F-D-1 case. Upload → `sha256` →
+     kill → `pollDeparted` → `pollRepairCompleted` → **retrieve** → `sha256` → `bytes.Equal`.
+5. Run E-3 twice: once `KILL`, once `DEPART`. Both departure paths must end in a retrievable file, or
+   requirement 7 is only half true.
+6. `TestReqD07FileRetrievableAfterProviderLossAndRepair` is defined **here**, delegating to the E-3
+   helper, and is referenced (not re-implemented) by 17.8.2.
+
+**FILES** — `scripts/test/demo_departure_test.go`, `scripts/test/helpers_test.go` (extend)
+
+**VERIFY**
+
+```bash
+COMPILE:
+  $ go build -tags integration ./scripts/test/ && go vet -tags integration ./scripts/test/
+  EXPECT: exit 0
+
+ONE_SHARED_HARNESS_NOT_SIX_SETUPS:
+  $ grep -c "func departAt(" scripts/test/demo_departure_test.go
+  EXPECT: 1
+
+F_D_1_EVERY_CASE_ENDS_IN_BYTE_IDENTITY:
+  $ grep -c "pollRepairCompleted" scripts/test/demo_departure_test.go
+  EXPECT: >= 1
+  $ grep -cE "bytes.Equal|sha256.Sum256" scripts/test/demo_departure_test.go
+  EXPECT: >= 3
+
+F_D_1_TESTREQD07_RETRIEVES_AFTER_REPAIR:
+  $ awk '/func TestReqD07/,/^}/' scripts/test/demo_departure_test.go | grep -cE '"retrieve"|departAt'
+  EXPECT: >= 1
+
+BOTH_DEPARTURE_PATHS_COVERED:
+  $ grep -cE '"KILL"|"DEPART"' scripts/test/demo_departure_test.go
+  EXPECT: >= 2
+
+E2_ASSERTS_THE_DB_INVARIANT_NOT_THE_EXIT_CODE:
+  $ awk '/func TestDepartureMidUpload/,/^}/' scripts/test/demo_departure_test.go \
+      | grep -cE "available_shard_count|chunk_assignments"
+  EXPECT: >= 1
+
+OVERRIDE_USED_NOT_PROFILE_EDIT:
+  $ grep -c -- "--departure-threshold=90s" scripts/test/demo_departure_test.go
+  EXPECT: >= 1
+  $ git diff --exit-code internal/config/profiles.go
+  EXPECT: exit 0
+
+INTEGRATION:
+  $ go test -tags integration -v -run 'TestDeparture|TestReqD07' ./scripts/test/ -timeout 120m
+  EXPECT: exit 0; tests include:
+    TestDepartureDuringVettingProducesNoRepairJobs
+    TestDepartureMidUploadLeavesNoHalfRegisteredFile
+    TestDepartureAfterUploadFileStillRetrievable
+    TestReqD07FileRetrievableAfterProviderLossAndRepair
+```
+
+> **Expect findings.** E-2 exercises a window (`/upload/assign` returned, shards mid-flight) that no
+> test has ever entered. If it fails, the failure is the session's product — file it as F-17E-nn,
+> draft the corrective ADR, and do not weaken the assertion to make the session close.
+
+---
+
+#### Session 17.7.3 — Departure matrix E-4…E-6
+
+**PRECONDITIONS** — 17.7.2 complete, including any findings it raised resolved or formally deferred
+with an ADR.
+
+**TASK**
+
+1. **E-4** `TestReplacementProviderDepartsMidRepair` — kill the provider selected as the repair
+   *replacement*, while its repair job is `IN_PROGRESS`. The job must be re-queued to a new
+   replacement (ADR-075's headroom is what makes one available at `testSimCount = 7`), not left
+   stuck. Assert against `RepairPromotionTimeout` (3 min in demo) rather than an arbitrary wait.
+   **High-risk.**
+2. **E-5** `TestDepartureMidRetrievalStillGathersK` — kill a holder while a `retrieve` is in flight.
+   With `DataShards = 3` and `TotalShards = 5`, retrieval must still gather `k = 3` from the
+   remaining holders. Bytes identical. **High-risk.**
+3. **E-6** `TestTwoConcurrentDeparturesAtEmergencyFloor` — two providers depart together, leaving
+   `s = 3` exactly. ADR-055's emergency-eject path must hold; both repairs complete; retrieve
+   succeeds. This is the existing `TestViabilityRepairSucceedsWithTwoOfFiveOffline` scenario **with
+   the retrieval F-D-1 showed it was missing** — supplement it, do not delete it.
+4. Every case ends in byte identity. No exceptions.
+
+**FILES** — `scripts/test/demo_departure_test.go` (extend)
+
+**VERIFY**
+
+```bash
+COMPILE:
+  $ go build -tags integration ./scripts/test/ && go vet -tags integration ./scripts/test/
+  EXPECT: exit 0
+
+SIX_CASES_PRESENT:
+  $ grep -cE "^func TestDeparture|^func TestReplacementProvider|^func TestTwoConcurrent" \
+      scripts/test/demo_departure_test.go
+  EXPECT: >= 6
+
+EVERY_CASE_ENDS_IN_BYTE_IDENTITY:
+  $ grep -cE "bytes.Equal|sha256.Sum256" scripts/test/demo_departure_test.go
+  EXPECT: >= 6
+
+E4_ASSERTS_AGAINST_THE_PROFILE_TIMEOUT:
+  $ awk '/func TestReplacementProviderDeparts/,/^}/' scripts/test/demo_departure_test.go \
+      | grep -c "RepairPromotionTimeout"
+  EXPECT: >= 1
+
+EXISTING_VIABILITY_TEST_NOT_DELETED:        # supplement, never replace
+  $ grep -c "func TestViabilityRepairSucceedsWithTwoOfFiveOffline" scripts/test/demo_timeline_test.go
+  EXPECT: 1
+
+INTEGRATION:
+  $ go test -tags integration -v -run 'TestDeparture|TestReplacement|TestTwoConcurrent' \
+      ./scripts/test/ -timeout 180m
+  EXPECT: exit 0
+
+FULL_SUITE_NO_REGRESSION:
+  $ go test -tags integration ./scripts/test/ -timeout 300m
+  EXPECT: exit 0
+```
+
+---
+
+### Phase 17.8 — The runnable demo
+
+*All eleven requirements, on separate machines, proven.*
+
+#### Session 17.8.1 — `scripts/demo/` runner, normal mode
+
+**PRECONDITIONS** — Phase 17.7 complete.
+
+**TASK**
+
+1. `scripts/demo/up.sh` — Postgres reset, migrations, microservice with `--otp-delivery-log` and
+   `--departure-threshold=90s`, then N providers in **normal mode** (D-7) on distinct
+   `--listen-port` values with real `--advertise-addr`. Wait for readiness. Print the `operator watch`
+   command.
+2. `scripts/demo/down.sh` — clean teardown, preserving logs.
+3. `scripts/demo/join.sh <microservice-url>` — the single command a volunteer runs on **their own
+   desktop**: builds or fetches the provider binary, runs `provider onboard` interactively, then
+   `provider run`. This is requirement 2's actual user experience and it must be one command.
+4. **No `--sim-count` anywhere in `scripts/demo/`.** The demo runs the code path the physical rig
+   runs, which is the whole point of F-D-3.
+5. Windows parity: `up.ps1`, `down.ps1`, `join.ps1`. The provider is pure Go on Windows and Windows
+   is the primary rig platform (ADR-010, ADR-041); a bash-only runner would make the easiest target
+   the hardest to start.
+
+**FILES** — `scripts/demo/up.sh`, `scripts/demo/down.sh`, `scripts/demo/join.sh`,
+`scripts/demo/up.ps1`, `scripts/demo/down.ps1`, `scripts/demo/join.ps1`
+
+**VERIFY**
+
+```bash
+F_D_3_NORMAL_MODE_ONLY:
+  $ grep -rc -- "--sim-count\|--sim-only-index\|--sim-data-dir" scripts/demo/ | grep -v ":0" | wc -l
+  EXPECT: 0
+
+DISTINCT_PORTS_AND_REAL_ADDRESSES:
+  $ grep -c -- "--listen-port" scripts/demo/up.sh
+  EXPECT: >= 1
+  $ grep -c -- "--advertise-addr" scripts/demo/up.sh scripts/demo/join.sh
+  EXPECT: >= 1
+
+VOLUNTEER_PATH_IS_ONE_COMMAND:              # requirement 2
+  $ grep -c "provider onboard" scripts/demo/join.sh
+  EXPECT: >= 1
+
+WINDOWS_PARITY:
+  $ ls scripts/demo/*.ps1 | wc -l
+  EXPECT: 3
+
+SHELLCHECK:
+  $ shellcheck scripts/demo/*.sh
+  EXPECT: exit 0
+
+SMOKE:
+  $ scripts/demo/up.sh --providers 7 && sleep 120 \
+      && curl -sf -H "X-Admin-API-Key: $KEY" "$URL/api/v1/admin/readiness" | grep -q '"all_conditions_met":true'
+  EXPECT: exit 0
+  $ scripts/demo/down.sh
+  EXPECT: exit 0
+```
+
+---
+
+#### Session 17.8.2 — `demo_requirements_test.go`: the eleven
+
+**PRECONDITIONS** — 17.8.1 complete.
+
+**TASK**
+
+1. `scripts/test/demo_requirements_test.go`, `//go:build integration`, one test per founding
+   requirement:
+
+   ```
+   TestReqD01OwnerUploadsLocalFile
+   TestReqD02SevenProvidersVolunteerAndReachActive
+   TestReqD03FileIsEncryptedAndDistributedAcrossDistinctASNs
+   TestReqD04OperatorSeesNetworkStateAndCannotDecode
+   TestReqD05ProviderLocalStorageIsCiphertext
+   TestReqD06HeartbeatMarksProviderOnline
+   TestReqD07FileRetrievableAfterProviderLossAndRepair   ← defined in 17.7.2; referenced, not duplicated
+   TestReqD08RetrievedBytesIdenticalToUploaded
+   TestReqD09AuditChallengeVerifiesProviderStorage
+   TestReqD10PaymentSplitsEquallyAcrossProviders
+   TestReqD11ProviderAllocationIsHonoured
+   ```
+
+2. `TestReqD02` and `TestReqD11` start providers in **normal mode** on distinct ports, via the
+   `onboard` flow against the `FileOtpSender` delivery log — closing F-D-2 and F-D-3 in CI rather
+   than at the rig.
+3. `TestReqD04` asserts I-DEMO-1 from within the suite by shelling `go list -deps ./cmd/operator`, so
+   the invariant is enforced by the test run and not only by the CI script. It also drives
+   `operator watch --json` and `operator shards --json` and asserts no plaintext filename appears.
+4. `TestReqD05` runs `provider inspect --json` and asserts entropy > 7.9 bits/byte on a stored chunk,
+   **and** that no 32-byte window of the original plaintext appears anywhere in the provider's store.
+   The second assertion is the stronger one — high entropy is consistent with a bad cipher; absence
+   of plaintext is not.
+5. `TestReqD10` asserts the split sums to the charge including the integer remainder (ADR-061).
+6. Every assertion parses `--json`. No screen-scraping.
+7. Register the eleven names in `scripts/ci/grep_checks.sh`. The existing `check` helper is a
+   *negative* assertion (fails when a pattern is found); add a `require` companion that fails when a
+   pattern is **absent**, then require all eleven. A deleted requirement test must break CI, not pass
+   quietly.
+
+**FILES** — `scripts/test/demo_requirements_test.go`, `scripts/test/helpers_test.go` (extend),
+`scripts/ci/grep_checks.sh` (edit)
+
+**VERIFY**
+
+```bash
+COMPILE:
+  $ go build -tags integration ./scripts/test/ && go vet -tags integration ./scripts/test/
+  EXPECT: exit 0
+
+ELEVEN_REQUIREMENTS_EACH_HAVE_A_TEST:
+  $ grep -crE "func TestReqD(0[1-9]|1[01])" scripts/test/ | awk -F: '{s+=$2} END {print s}'
+  EXPECT: 11
+
+NO_DUPLICATE_TESTREQD07:                    # defined once, in 17.7.2's file
+  $ grep -rc "func TestReqD07" scripts/test/ | grep -v ":0" | wc -l
+  EXPECT: 1
+
+F_D_2_AND_F_D_3_CLOSED_IN_CI:
+  $ awk '/func TestReqD02/,/^}/' scripts/test/demo_requirements_test.go | grep -c -- "--sim-count"
+  EXPECT: 0
+  $ awk '/func TestReqD02/,/^}/' scripts/test/demo_requirements_test.go | grep -cE "onboard"
+  EXPECT: >= 1
+
+I_DEMO_1_ASSERTED_BY_THE_SUITE:
+  $ awk '/func TestReqD04/,/^}/' scripts/test/demo_requirements_test.go | grep -c "go list -deps"
+  EXPECT: >= 1
+
+REQD05_ASSERTS_PLAINTEXT_ABSENCE_NOT_ONLY_ENTROPY:
+  $ awk '/func TestReqD05/,/^}/' scripts/test/demo_requirements_test.go | grep -cE "bytes.Contains|bytes.Index"
+  EXPECT: >= 1
+
+JSON_PARSED_NOT_SCRAPED:
+  $ grep -c "json.Unmarshal" scripts/test/demo_requirements_test.go
+  EXPECT: >= 9
+
+CI_GUARDS_THE_ELEVEN:
+  $ grep -c "^  require " scripts/ci/grep_checks.sh
+  EXPECT: >= 11
+  $ bash scripts/ci/grep_checks.sh
+  EXPECT: exit 0
+
+FULL_SUITE:
+  $ go test -tags integration -v -run 'TestReqD' ./scripts/test/ -timeout 240m
+  EXPECT: exit 0; 11 tests pass
+
+NO_REGRESSION:
+  $ go test -tags integration ./scripts/test/ -timeout 360m
+  EXPECT: exit 0
+```
+
+---
+
+#### Session 17.8.3 — `mvp.md` §8.3 amendment, vendoring, M17-E close
+
+**PRECONDITIONS** — 17.8.2 complete, all eleven green.
+
+**TASK**
+
+1. **Amend `mvp.md` §8.3** (D-6). The `cmd/provider` row set gains the five subcommands and the
+   `--listen-port` / `--advertise-addr` / `--storage-gb` flags; `cmd/microservice` gains
+   `--otp-delivery-log` and `--departure-threshold`; a new `cmd/operator` table is added with its
+   five subcommands. Corrections are **listed for approval, not silently applied** — per standing
+   convention, produce the diff for review before committing it.
+2. Record the M17-E findings in the research repo: F-D-1 through F-D-4 as numbered findings, plus any
+   F-17E-nn raised by Phase 17.7. Negative and null results are deliverables.
+3. `go mod vendor` (ADR-084 D-2). The vendored tree is committed. This is M18's freeze prerequisite
+   landed early, and it reduces rather than adds to the hand-repackaged-`go.sum` exposure.
+4. Update `internal/storage/doc.go` for the `ListChunks` addition and `internal/api/otp.go`'s header
+   for the second `OtpSender` implementation.
+5. **Explicitly not in scope: `docs/DEMO.md`.** It is written after M18 closes, against a frozen
+   artifact and two completed demo runs. Record that deferral in `build_part3.md` so it is a decision
+   on the record rather than an omission.
+
+**FILES** — `docs/system-design/mvp.md` (edit), `docs/system-design/build_part3.md` (edit),
+`internal/storage/doc.go` (edit), `internal/api/otp.go` (edit), `vendor/` (new)
+
+**VERIFY**
+
+```bash
+MVP_8_3_AMENDED:
+  $ grep -cE "cmd/operator" docs/system-design/mvp.md
+  EXPECT: >= 1
+  $ grep -cE "\-\-advertise-addr|--otp-delivery-log|--departure-threshold" docs/system-design/mvp.md
+  EXPECT: >= 3
+
+FINDINGS_RECORDED:
+  $ grep -cE "F-D-0[1-4]" docs/research/open-questions.md docs/decisions/ADR-084*.md
+  EXPECT: >= 4
+
+VENDORED:
+  $ test -d vendor && go build -mod=vendor ./... && go vet -mod=vendor ./...
+  EXPECT: exit 0
+
+DEMO_MD_DEFERRAL_IS_ON_THE_RECORD:
+  $ grep -cE "DEMO.md.*after M18|drafted after M18" docs/system-design/build_part3.md
+  EXPECT: >= 1
+  $ test -f docs/DEMO.md && echo PRESENT || echo ABSENT
+  EXPECT: ABSENT
+
+BUILD_STILL_GREEN:
+  $ go build ./... && go vet ./... && bash scripts/ci/grep_checks.sh
+  EXPECT: exit 0
+
+FINAL_GATE:
+  $ go test -tags integration ./scripts/test/ -timeout 360m
+  EXPECT: exit 0
+```
+
+---
+
+### Exit criteria for M17-E
+
+M17-E closes when all of the following hold simultaneously:
+
+1. `TestReqD01`…`TestReqD11` pass. Eleven requirements, eleven named tests.
+2. E-1…E-6 pass, each terminating in a byte-identity assertion. **F-D-1 closed.**
+3. A person with no database access can run `scripts/demo/join.sh` on their own desktop and reach
+   `ACTIVE`. **F-D-2 closed.**
+4. That desktop is a *different machine* from the microservice, and shards genuinely transit the
+   network between hosts. **F-D-3 and F-D-4 closed.**
+5. `go list -deps ./cmd/operator` returns no decoding primitive and no database driver. **I-DEMO-1
+   holds.**
+6. `internal/config/profiles.go` is unchanged from its M17 state.
+7. `scripts/ci/grep_checks.sh` passes, including the eleven `require` checks.
+8. The tree builds and vets under `-mod=vendor`.
+
+M18 then freezes this.
+
+---
+
+### Standing risks carried into M17-E
+
+- **E-2, E-4 and E-5 are expected to fail on first execution.** They enter windows no test has entered.
+  A failure there is the session's product, not its obstruction: file the finding, draft the ADR,
+  fix, re-run. Do not weaken an assertion to close a session.
+- **`ChunkStore.ListChunks` touches a core interface on two engines**, one of which (`grocksdb`) is
+  cgo and cannot be exercised on a Windows developer machine, and the other of which
+  (`engine_badger.go`) cannot be exercised on Linux. Both need cross-compilation checks at minimum,
+  and ideally one real run each.
+- **F-LTS-07 (the `r0` gate was never built — the system repairs eagerly) and F-LTS-08 (the
+  microservice reconstructs the AONT package on every repair, violating ADR-004 and ADR-019) are
+  untouched by this milestone.** The console makes the first *visible*; neither is closed. Both remain
+  LTS-track and must not be described as resolved when `docs/DEMO.md` is eventually written.
+- **The demo remains single-LAN.** NAT traversal, real Kademlia routing across hosts, QUIC, and relays
+  are ADR-063 substitutions restored at M19. `docs/DEMO.md` must state that boundary; M17-E's job is
+  to make the LAN claim true, not to overstate it.
+
+---
+
+## Milestone 18 — Demo Freeze & Stash *(polished)*
 
 **Deliverable:** two recorded demo runs, an honest scope record, and a vendored, tagged,
 offline-reproducible archive.
