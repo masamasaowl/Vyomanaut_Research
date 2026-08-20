@@ -2188,7 +2188,7 @@ components:
 
 
     503ServiceUnavailable:
-      description: Network readiness gate is not satisfied or service is temporarily unavailable.
+      description: Network readiness gate is not satisfied, provider capacity is insufficient, or the service is temporarily unavailable.
       content:
         application/json:
           schema:
@@ -2199,11 +2199,19 @@ components:
                   readiness_url:
                     type: string
                     format: uri
-                    description: Check this endpoint for per-condition status.
-          example:
-            error_code: NETWORK_NOT_READY
-            message: "Upload rejected: only 42 of 56 required active vetted providers are available."
-            readiness_url: "https://api.vyomanaut.com/api/v1/admin/readiness"
+                    description: Check this endpoint for per-condition status. Present only for NETWORK_NOT_READY; absent for INSUFFICIENT_PROVIDER_CAPACITY (see NFR-044, INV-CEIL — this is a chunk-ceiling capacity limit, not a readiness-gate condition, so there is no per-condition readiness endpoint to point at).
+          examples:
+            NetworkNotReady:
+              value:
+                error_code: NETWORK_NOT_READY
+                message: "Upload rejected: only 42 of 56 required active vetted providers are available."
+                readiness_url: "https://api.vyomanaut.com/api/v1/admin/readiness"
+            InsufficientProviderCapacity:
+              value:
+                error_code: INSUFFICIENT_PROVIDER_CAPACITY
+                message: "Upload rejected: the eligible provider pool dropped below the required minimum after applying the per-provider chunk ceiling."
+                request_id: "01944a6e-8f3c-7000-b000-d4e5f6a7b8ca"
+                retry_after: 3600
 
 # ─────────────────────────────────────────────────────────────────────────────
 # PATHS

@@ -45,6 +45,7 @@
   - [Phase 16.1 — End-to-End Demo Test](#phase-161--end-to-end-demo-test)
   - [Phase 16.2 — Simulation Mode](#phase-162--simulation-mode)
 - [Milestone 17 — Demo Completion](#milestone-17--demo-completion-rewritten-replaces-production-hardening)
+- [Milestone 17 Extended — The Demo Surface](#milestone-17-extended--the-demo-surface)
 - [Milestone 18 — Launch Readiness](#milestone-18--demo-freeze--stash-polished)
 - [Desktop Setup for Demo](#the-six-desktop-rig--specification-wiring-and-expected-outcomes)
 - [Stashing the Demo version](#stashing-the-demo-cleanly-and-the-github-question)
@@ -189,7 +190,8 @@ Do not write any code. Analysis only.
 **PRECONDITIONS:**
 
 - Milestones 1–10 complete (config, crypto, erasure, storage, p2p, audit, scoring, repair, payment) and Milestone 11 Phase 11.1–11.3 complete (error envelope, readiness handler, router)
-- `internal/cluster/mock_cluster.go`'s `MockClusterMembership` is usable as a startup-time stub even though its permanent home is Milestone 17 Phase 17.2.1 — same for `internal/cluster/router.go`'s `ResponsibleReplica`
+- `internal/cluster/router.go`'s `ResponsibleReplica` is usable as a startup-time stub even though its permanent home is Milestone 17 Phase 17.2.1
+- [Corrected — M12 audit corrections, Finding 10] `internal/cluster` package (`Membership` interface, plus a `SoloMembership`/`GossipCluster` implementation) does NOT pre-exist before this session — it was empty except for `doc.go`. An earlier revision of this precondition claimed a pre-existing `internal/cluster/mock_cluster.go` with a usable `MockClusterMembership` stub; that file never existed. This session's own implementer caught the discrepancy live and built `internal/cluster/membership.go` from scratch instead, under different (and clearer) names — `cluster.SoloMembership{}` for demo mode, `cluster.GossipCluster` (via `cluster.NewGossipCluster(seeds)`) as the stub-until-M17 quorum path referenced in step 6 below. No code impact resulted (the correct thing was built either way), but this precondition previously described a file and type that were never there — corrected here so a future session reading this precondition does not inherit the same false assumption.
 
 **TASK:**
 
@@ -210,9 +212,10 @@ Replace the stub in `cmd/microservice/main.go` with the following fully-ordered 
  6. IF profile.RequireQuorum:
       a. Read VYOMANAUT_SEED_NODE_1 / VYOMANAUT_SEED_NODE_2 (fail-fast if absent in prod)
       b. gossipCluster := cluster.NewGossipCluster(seeds)  — 1-second reconciliation ticker
-         (until Milestone 17 Phase 17.2.1 lands, this is internal/cluster's
-         MockClusterMembership returning healthy=3 — same stub-until-M17
-         pattern as step 3's env-var secrets fallback)
+         (until Milestone 17 Phase 17.2.1 lands, this is a stub — cluster.GossipCluster's
+         own real implementation, built THIS session; see this session's own corrected
+         PRECONDITIONS above — same stub-until-M17 pattern as step 3's env-var secrets
+         fallback)
       c. BLOCK until >= 2 peers ack membership (prevents split-brain false-ready
          on cold start) — this wait MUST complete before step 7
     ELSE:
@@ -226,9 +229,25 @@ Replace the stub in `cmd/microservice/main.go` with the following fully-ordered 
     STUB that always returns the load balancer's address (i.e., the latency
     optimisation is a no-op until M17) — do not attempt the real
     membership-aware routing logic here.
-10. p2pHost := <construct the real p2p.Host, Milestone 6>
-11. repairTransport := p2pHost   — satisfies repair.RepairTransport (Milestone 9
-    Session 9.2.1) structurally; internal/repair never imports internal/p2p
+10. p2pHost, dht := <construct the real p2p.Host (Milestone 6) and a p2p.DHT
+    alongside it (Milestone 6, internal/p2p/dht.go — no configured Seeds/
+    SelfAddrs; this entrypoint is a read-only DHT participant, see step 11a
+    below and Session 12.1.2 step 1)>
+11. [Corrected — M12 audit corrections, Phase 2 creative-engineering note]
+    Previously read "repairTransport := p2pHost — satisfies
+    repair.RepairTransport (Milestone 9 Session 9.2.1) structurally;
+    internal/repair never imports internal/p2p". This is factually wrong and
+    was overridden correctly by the actual implementation rather than
+    followed literally: repair.RepairTransport and p2p.Host have different
+    parameter types (repair.RepairTransport.NewStream takes a provider_id
+    string; p2p.Host.NewStream takes a p2p.PeerID plus already requires a
+    prior Connect), so no bare structural cast or type alias satisfies the
+    interface — a real adapter is required. Corrected pseudocode:
+    repairTransport := &repairTransportAdapter{db: db, host: p2pHost, dht: dht}
+    — see cmd/microservice/adapters.go's own header note and its
+    resolveProviderPeer (Session 12.1.2 step 1) for the adapter's actual
+    provider_id-to-PeerID resolution logic, including the DHT fallback added
+    by this audit corrections session (Finding 2).
 12. paymentProvider := <RazorpayProvider or MockProvider per profile.PaymentMode>
 13. departureDetector := repair.NewDepartureDetector(db, profile, paymentProvider.Penalise)
     — this is the exact site Milestone 9 Session 9.3.1 deferred payment.Penalise
@@ -354,32 +373,70 @@ VET:
 For each active chunk in `active_chunk_assignments`:
 
 ```
-1. Determine provider multiaddrs: providers.last_known_multiaddrs (primary);
-   DHT fallback if multiaddr_stale = true
-2. versionByte, serverSecret, _ := cache.CurrentSecret()   // Milestone 7 Phase 7.4
+1. [Corrected — M12 audit corrections, Finding 1] FOR EACH active chunk
+   assignment, compute an independent random dispatch delay within
+   [0, profile.PollingInterval) — crypto/rand, not math/rand (see
+   cmd/microservice/audit_dispatch.go's randomJitterDelay doc comment for
+   why) — and schedule that assignment's steps 1-8 below to run after its
+   own delay elapses, rather than firing every assignment immediately at
+   cycle start. This was MISSING from this task's original text entirely
+   (not just from the code) — FR-037, ADR-002, and ADR-014 all independently
+   require challenge timing a provider cannot anticipate, and firing every
+   assignment at tick time with no jitter defeats that purpose regardless of
+   how carefully the rest of this session is implemented. See
+   cmd/microservice/audit_dispatch.go's dispatchAuditCycle for the concrete
+   implementation, including the documented trade-off this introduces (a
+   cycle's total wall-clock duration can now approach profile.PollingInterval
+   itself, since dispatch is genuinely spread across the full window rather
+   than clustered at the front).
+2. Determine provider multiaddrs: providers.last_known_multiaddrs (primary);
+   [Corrected — M12 audit corrections, Finding 2] DHT fallback if
+   multiaddr_stale = true — specifically dht.FindPeer(peerID), a routing-
+   table lookup keyed by the provider's own (never-stale) PeerID, NOT
+   dht.FindProviders(dht_key). FindProviders is keyed by a content-address
+   dht_key this coordination microservice structurally never has access to
+   (it is HKDF-derived from an owner's file_owner_key, IC §12.2 — owner-only
+   material). FindPeer is the primitive Session 12.1.1's own dht construction
+   (step 10) exists to support; see internal/p2p/dht.go's FindPeer doc
+   comment and cmd/microservice/adapters.go's resolveProviderPeer for the
+   full fallback logic (falls through to the stored, possibly-stale address
+   if the DHT has nothing yet, rather than failing the lookup outright).
+3. versionByte, serverSecret, _ := cache.CurrentSecret()   // Milestone 7 Phase 7.4
    nonce := audit.ChallengeNonce(serverSecret, versionByte, chunkID, serverTsMs)
-3. Build fields := audit.ReceiptFields{ChunkID: chunkID, FileID: fileID (nil for
+4. Build fields := audit.ReceiptFields{ChunkID: chunkID, FileID: fileID (nil for
    vetting chunks), ProviderID: providerID, ChallengeNonce: nonce,
    ServerChallengeTs: now, AddressWasStale: multiaddrStale}
    receiptID, err := audit.WriteReceiptPhase1(ctx, db, fields)   // before dispatch
-4. Open libp2p stream to the provider via /vyomanaut/audit-challenge/1.0.0
+5. Open libp2p stream to the provider via /vyomanaut/audit-challenge/1.0.0
    (repairTransport-equivalent for audit — the real p2p.Host from Session 12.1.1)
-5. Send ChallengeRequest frame (IC §4.2: chunk_id(32) || challenge_nonce(33) ||
+6. Send ChallengeRequest frame (IC §4.2: chunk_id(32) || challenge_nonce(33) ||
    server_challenge_ts_ms(8) = 73 bytes)
-6. Apply the per-provider RTO timeout: scoring.PoolMedianRTO(ctx, db) if
+7. Apply the per-provider RTO timeout: scoring.PoolMedianRTO(ctx, db) if
    rto_sample_count < 5, else avg_rtt_ms + 4*var_rtt_ms (IC §4.2, Milestone 8)
-7. On response:
+8. On response:
    a. IF NOT cache.IsVersionValid(nonce[0]): treat as invalid — do not proceed
       to a PASS/FAIL write (Milestone 7 Phase 7.2's item 2, deferred to here)
-   b. err := audit.ValidateResponse(nonce, responseHash, serverChallengeTsMs,
-      providerID, providerSig, providerPubKey)   // corrected 6-param signature
+   b. IF status == 0x00 (OK): err := audit.ValidateResponse(nonce, responseHash,
+      serverChallengeTsMs, providerID, providerSig, providerPubKey)   // corrected 6-param signature
+      [Corrected — M12 audit corrections, Finding 4] IF status == 0x01/0x02
+      (FAIL_NOT_FOUND/FAIL_CORRUPTION): err := audit.ValidateFailResponse(status,
+      nonce, serverChallengeTsMs, providerID, providerSig, providerPubKey) — IC
+      §4.2's SECOND, distinct signing-input shape for FAIL statuses
+      (SHA-256(status_byte || nonce || ts || provider_id), not response_hash in
+      place of status_byte). Either way the result is scored as AuditFail on a
+      verification error — an unverifiable FAIL is not "verified deliberate,"
+      but it is still not a PASS — see cmd/microservice/audit_dispatch.go's
+      adjudicateResponse for the full mapping, including status 0x03/0x04
+      (INVALID_NONCE/INTERNAL_ERROR), which carry no provider_sig at all per
+      IC §4.2's own field table and map directly to AuditFail with no
+      signature check.
    c. audit.WriteReceiptPhase2(ctx, db, receiptID, result, serviceSig, serviceTS)
-8. IF result == AuditPass:
+9. IF result == AuditPass:
      scoring.IncrementConsecutivePasses(ctx, db, providerID, profile)  // profile param added in M8 revision
    ELSE IF NOT (result == AuditTimeout AND fields.AddressWasStale):
      scoring.ResetConsecutivePasses(ctx, db, providerID)
    // else: a stale-address TIMEOUT — do nothing, per DM §4.7 (Milestone 8 Phase 8.2)
-9. IF result != AuditTimeout:
+10. IF result != AuditTimeout:
      scoring.UpdateRTO(ctx, db, providerID, responseLatencyMs, throughputKbps)
      // never called for TIMEOUT — no response_latency_ms to sample (Milestone 8 Phase 8.3)
 ```
@@ -426,6 +483,16 @@ PHASE1_BEFORE_DISPATCH:
 FRAME_SIZE_IS_73_BYTES:
   $ grep -c "73" cmd/microservice/audit_dispatch.go
   EXPECT: >= 1
+
+DISPATCH_TIMING_IS_RANDOMISED:
+  # [Added — M12 audit corrections, Finding 1] FR-037/ADR-002/ADR-014
+  $ grep -c "crypto/rand\|randomJitterDelay" cmd/microservice/audit_dispatch.go
+  EXPECT: >= 1
+
+FAIL_STATUS_SIGNATURE_VERIFIED:
+  # [Added — M12 audit corrections, Finding 4] IC §4.2's second signing shape
+  $ grep -c "ValidateFailResponse" cmd/microservice/audit_dispatch.go internal/audit/validate.go
+  EXPECT: >= 2
 
 UNIT_TESTS:
   $ go test -v -run TestAuditDispatchLoop ./cmd/microservice/
@@ -2134,7 +2201,6 @@ VET:
   $ go vet ./cmd/provider/
   EXPECT: exit 0; zero output
 ```
-
 ---
 
 ## Milestone 17 — Demo Completion *(rewritten; replaces Production Hardening)*
